@@ -6,7 +6,7 @@ import "./reconciliation.css";
 
 export function ReconciliationDialog({account,onClose,onSaved}:{account:Account;onClose:()=>void;onSaved:()=>Promise<void>}) {
   const [statementEndDate,setStatementEndDate]=useState(new Date().toISOString().slice(0,10));
-  const [opening,setOpening]=useState("");
+  const [opening,setOpening]=useState("0.00");
   const [closing,setClosing]=useState("");
   const [transactions,setTransactions]=useState<Transaction[]>([]);
   const [selected,setSelected]=useState<Set<string>>(new Set());
@@ -17,20 +17,31 @@ export function ReconciliationDialog({account,onClose,onSaved}:{account:Account;
 
   useEffect(()=>{
     let current=true;
+    repository.listReconciliations(account.id).then(reconciliations=>{
+      if(!current)return;
+      setHistory(reconciliations);
+      if(reconciliations.length)setOpening((reconciliations[0].closingBalanceMinor/100).toFixed(2));
+    }).catch(reason=>current&&setError(reason instanceof Error?reason.message:String(reason)));
+    return()=>{current=false;};
+  },[account.id]);
+
+  useEffect(()=>{
+    let current=true;
     setLoading(true);
-    Promise.all([
-      repository.listReconciliationTransactions(account.id,statementEndDate),
-      repository.listReconciliations(account.id)
-    ]).then(([rows,reconciliations])=>{
+    repository.listReconciliationTransactions(account.id,statementEndDate).then(rows=>{
       if(!current)return;
       setTransactions(rows);
       setSelected(new Set(rows.filter(row=>row.status==="cleared").map(row=>row.id)));
-      setHistory(reconciliations);
-      if(!opening&&reconciliations.length)setOpening((reconciliations[0].closingBalanceMinor/100).toFixed(2));
       setError("");
     }).catch(reason=>current&&setError(reason instanceof Error?reason.message:String(reason))).finally(()=>current&&setLoading(false));
     return()=>{current=false;};
   },[account.id,statementEndDate]);
+
+  useEffect(()=>{
+    function closeOnEscape(event:KeyboardEvent){if(event.key==="Escape"&&!saving)onClose();}
+    window.addEventListener("keydown",closeOnEscape);
+    return()=>window.removeEventListener("keydown",closeOnEscape);
+  },[onClose,saving]);
 
   const checked=useMemo(()=>transactions.filter(transaction=>selected.has(transaction.id)),[selected,transactions]);
   const difference=useMemo(()=>{
