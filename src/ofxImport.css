@@ -1,0 +1,11 @@
+.ofx-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.ofx-summary > div { border: 1px solid var(--line); background: #f8fafb; border-radius: 6px; padding: 10px; min-width: 0; }
+.ofx-summary span, .ofx-summary strong { display: block; }
+.ofx-summary span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 5px; }
+.ofx-summary strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.ofx-account { display: grid; gap: 5px; max-width: 360px; font-size: 11px; font-weight: 650; color: #435861; }
+.ofx-account select { border: 1px solid #bdcbd0; border-radius: 5px; padding: 8px; background: #fff; }
+.split-count { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+@media(max-width:1050px){.ofx-summary{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:700px){.ofx-summary{grid-template-columns:1fr 1fr}}
+@media(max-width:450px){.ofx-summary{grid-template-columns:1fr}}

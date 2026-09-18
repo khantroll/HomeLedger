@@ -1,0 +1,182 @@
+export type AccountType = "checking" | "savings" | "credit" | "cash" | "loan" | "asset";
+export type TransactionStatus = "pending" | "cleared" | "reconciled" | "review";
+
+export interface Account {
+  id: string;
+  name: string;
+  institution?: string;
+  type: AccountType;
+  currency: string;
+  balanceMinor: number;
+  ownerLabel: string;
+  needsReview?: boolean;
+}
+
+export interface TransactionSplit {
+  id: string;
+  category: string;
+  amountMinor: number;
+  memo?: string;
+}
+
+export interface Transaction {
+  id: string;
+  accountId: string;
+  postedDate: string;
+  payee: string;
+  category: string;
+  amountMinor: number;
+  status: TransactionStatus;
+  memo?: string;
+  externalId?: string;
+  splits?: TransactionSplit[];
+  source?: "manual" | "import" | "transfer" | "adjustment";
+  importBatchId?: string;
+  transferLinkId?: string;
+  transferAccountId?: string;
+}
+
+export interface FinanceRepository {
+  listAccounts(): Promise<Account[]>;
+  listTransactions(accountId?: string): Promise<Transaction[]>;
+  createAccount(input: CreateAccountInput): Promise<Account>;
+  createTransaction(input: CreateTransactionInput): Promise<Transaction>;
+  updateTransaction(id: string, input: CreateTransactionInput): Promise<Transaction>;
+  deleteTransaction(id: string): Promise<void>;
+  createTransfer(input: CreateTransferInput): Promise<TransferResult>;
+  updateTransfer(id: string, input: CreateTransferInput): Promise<TransferResult>;
+  deleteTransfer(id: string): Promise<void>;
+  importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
+  listImportBatches(): Promise<ImportBatch[]>;
+  undoImportBatch(batchId: string): Promise<UndoImportResult>;
+}
+
+export interface ImportTransactionRow {
+  postedDate: string;
+  payee: string;
+  amountMinor: number;
+  memo?: string;
+  externalId?: string;
+  category?: string;
+  splits?: ImportTransactionSplit[];
+}
+
+export interface ImportTransactionSplit {
+  category: string;
+  amountMinor: number;
+  memo?: string;
+}
+
+export interface ImportTransactionsInput {
+  accountId: string;
+  sourceName: string;
+  rows: ImportTransactionRow[];
+}
+
+export interface ImportResult {
+  batchId: string;
+  importedCount: number;
+}
+
+export interface ImportBatch {
+  id: string;
+  accountId: string;
+  accountName: string;
+  sourceName: string;
+  importedAt: string;
+  undoneAt?: string;
+  transactionCount: number;
+  totalMinor: number;
+}
+
+export interface UndoImportResult {
+  batchId: string;
+  removedCount: number;
+}
+
+export interface RestoreResult {
+  accountCount: number;
+  transactionCount: number;
+}
+
+export interface BackupRepository {
+  exportSnapshot(): Promise<string>;
+  saveEncryptedFile(contents: string): Promise<boolean>;
+  chooseEncryptedFile(): Promise<string | null>;
+  restoreSnapshot(snapshotBase64: string): Promise<RestoreResult>;
+}
+
+export interface CreateAccountInput {
+  name: string;
+  institution?: string;
+  type: AccountType;
+  currency: string;
+  openingBalanceMinor: number;
+  ownerLabel: string;
+}
+
+export interface CreateTransactionInput {
+  accountId: string;
+  postedDate: string;
+  payee: string;
+  category: string;
+  amountMinor: number;
+  status: TransactionStatus;
+  memo?: string;
+  splits?: CreateTransactionSplit[];
+}
+
+export interface CreateTransactionSplit {
+  category: string;
+  amountMinor: number;
+  memo?: string;
+}
+
+export interface CreateTransferInput {
+  fromAccountId: string;
+  toAccountId: string;
+  postedDate: string;
+  payee: string;
+  amountMinor: number;
+  status: TransactionStatus;
+  memo?: string;
+}
+
+export interface TransferResult {
+  linkId: string;
+  fromTransactionId: string;
+  toTransactionId: string;
+}
+
+export function formatMoney(minor: number, currency = "USD"): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 100);
+}
+
+export function parseMoney(value: string): number {
+  const normalized = value.trim().replaceAll(",", "").replace(/^\$/, "");
+  const match = normalized.match(/^(-?)(\d+)(?:\.(\d{1,2}))?$/);
+  if (!match) throw new Error("Enter a valid amount with no more than two decimal places");
+  const [, sign, whole, fraction = ""] = match;
+  const minor = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  if (!Number.isSafeInteger(minor)) throw new Error("Amount is too large");
+  return sign === "-" ? -minor : minor;
+}
+
+export function sumMoney(values: readonly number[]): number {
+  return values.reduce((total, value) => {
+    if (!Number.isSafeInteger(value)) throw new Error("Money values must be safe integers");
+    const next = total + value;
+    if (!Number.isSafeInteger(next)) throw new Error("Money total exceeds safe integer range");
+    return next;
+  }, 0);
+}
+
+export function validateSplits(transaction: Pick<Transaction, "amountMinor" | "splits">): boolean {
+  if (!transaction.splits?.length) return true;
+  return sumMoney(transaction.splits.map((split) => split.amountMinor)) === transaction.amountMinor;
+}
+
+export function runningBalances(openingMinor: number, transactions: readonly Transaction[]): number[] {
+  let running = openingMinor;
+  return transactions.map((transaction) => (running = sumMoney([running, transaction.amountMinor])));
+}

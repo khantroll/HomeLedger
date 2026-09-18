@@ -1,0 +1,7 @@
+.import-history .panel-heading > svg { color: var(--muted); }
+.undo-button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d5b1ae; color: #983d37; background: #fff; border-radius: 5px; padding: 5px 8px; cursor: pointer; font-size: 11px; }
+.undo-button:hover { background: #fff5f4; }
+.undo-dialog { width: min(490px, 100%); }
+.undo-body { padding: 18px 20px; color: #43545c; font-size: 13px; line-height: 1.55; }
+.undo-body p { margin: 0 0 13px; }
+.danger-action { background: #a43d37 !important; border-color: #a43d37 !important; color: #fff; }
