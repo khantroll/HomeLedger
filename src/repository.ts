@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupRepository, CreateAccountInput, CreateTransactionInput, CreateTransferInput, FinanceRepository, ImportBatch, ImportResult, ImportTransactionsInput, RestoreResult, Transaction, TransferResult, UndoImportResult } from "./domain";
+import type { Account, BackupRepository, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, FinanceRepository, ImportBatch, ImportResult, ImportTransactionsInput, Reconciliation, RestoreResult, Transaction, TransferResult, UndoImportResult } from "./domain";
 
 class TauriFinanceRepository implements FinanceRepository {
   listAccounts(): Promise<Account[]> { return invoke("list_accounts"); }
   listTransactions(accountId?: string): Promise<Transaction[]> { return invoke("list_transactions", { accountId: accountId ?? null }); }
+  listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]> { return invoke("list_reconciliation_transactions", { accountId, statementEndDate }); }
+  listReconciliations(accountId: string): Promise<Reconciliation[]> { return invoke("list_reconciliations", { accountId }); }
+  completeReconciliation(input: CompleteReconciliationInput): Promise<Reconciliation> { return invoke("complete_reconciliation", { request: input }); }
   createAccount(input: CreateAccountInput): Promise<Account> { return invoke("create_account", { request: input }); }
   createTransaction(input: CreateTransactionInput): Promise<Transaction> { return invoke("create_transaction", { request: input }); }
   updateTransaction(id: string, input: CreateTransactionInput): Promise<Transaction> { return invoke("update_transaction", { transactionId: id, request: input }); }

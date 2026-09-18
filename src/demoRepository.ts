@@ -1,4 +1,4 @@
-import { sumMoney, type Account, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportResult, type ImportTransactionsInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportResult, type ImportTransactionsInput, type Reconciliation, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 
 const initialAccounts: Account[] = [
   { id: "checking", name: "Household Checking", institution: "Sample Credit Union", type: "checking", currency: "USD", balanceMinor: 428640, ownerLabel: "Household" },
@@ -20,10 +20,45 @@ export class DemoFinanceRepository implements FinanceRepository {
   private transactions = structuredClone(initialTransactions);
   private importBatches: ImportBatch[] = [];
   private importedTransactionIds = new Map<string, string[]>();
+  private reconciliations: Reconciliation[] = [];
+  private reconciledTransactionIds = new Set<string>();
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
     return structuredClone(accountId ? this.transactions.filter((item) => item.accountId === accountId) : this.transactions);
+  }
+  async listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]> {
+    if (!this.accounts.some(item => item.id === accountId)) throw new Error("Account does not exist");
+    return structuredClone(this.transactions.filter(item =>
+      item.accountId === accountId && item.postedDate <= statementEndDate &&
+      item.status !== "reconciled" && !this.reconciledTransactionIds.has(item.id)
+    ));
+  }
+  async listReconciliations(accountId: string): Promise<Reconciliation[]> {
+    return structuredClone(this.reconciliations.filter(item => item.accountId === accountId));
+  }
+  async completeReconciliation(input: CompleteReconciliationInput): Promise<Reconciliation> {
+    if (!this.accounts.some(item => item.id === input.accountId)) throw new Error("Account does not exist");
+    if (this.reconciliations.some(item => item.accountId === input.accountId && item.statementEndDate === input.statementEndDate)) throw new Error("This account already has a reconciliation for that statement end date");
+    if (new Set(input.transactionIds).size !== input.transactionIds.length) throw new Error("A transaction was selected more than once");
+    const selected = input.transactionIds.map(id => {
+      const transaction = this.transactions.find(item => item.id === id);
+      if (!transaction) throw new Error("A selected transaction does not exist");
+      if (transaction.accountId !== input.accountId) throw new Error("Every selected transaction must belong to the reconciled account");
+      if (transaction.postedDate > input.statementEndDate) throw new Error("A selected transaction is after the statement end date");
+      if (transaction.status === "reconciled" || this.reconciledTransactionIds.has(id)) throw new Error("A selected transaction has already been reconciled");
+      return transaction;
+    });
+    if (reconciliationDifference(input.openingBalanceMinor, input.closingBalanceMinor, selected) !== 0) throw new Error("Selected transactions do not match the statement closing balance");
+    const reconciliation: Reconciliation = {
+      id: crypto.randomUUID(), accountId: input.accountId, statementEndDate: input.statementEndDate,
+      openingBalanceMinor: input.openingBalanceMinor, closingBalanceMinor: input.closingBalanceMinor,
+      reconciledAt: new Date().toISOString(), transactionCount: selected.length,
+      adjustmentTotalMinor: sumMoney(selected.map(item => item.amountMinor))
+    };
+    selected.forEach(item => { item.status = "reconciled"; this.reconciledTransactionIds.add(item.id); });
+    this.reconciliations.unshift(reconciliation);
+    return structuredClone(reconciliation);
   }
   async createAccount(input: CreateAccountInput): Promise<Account> {
     const account: Account = { id: crypto.randomUUID(), name: input.name, institution: input.institution, type: input.type, currency: input.currency, balanceMinor: input.openingBalanceMinor, ownerLabel: input.ownerLabel };
@@ -43,6 +78,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     const index = this.transactions.findIndex(item=>item.id===id);
     if(index<0)throw new Error("Transaction does not exist");
     const current=this.transactions[index];
+    if(this.reconciledTransactionIds.has(id))throw new Error("Reconciled transactions cannot be edited");
     if(current.transferLinkId)throw new Error("Linked transfers must be edited through the transfer editor");
     const oldAccount=this.accounts.find(item=>item.id===current.accountId);
     const newAccount=this.accounts.find(item=>item.id===input.accountId);
@@ -57,6 +93,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     const index=this.transactions.findIndex(item=>item.id===id);
     if(index<0)throw new Error("Transaction does not exist");
     const transaction=this.transactions[index];
+    if(this.reconciledTransactionIds.has(id))throw new Error("Reconciled transactions cannot be deleted");
     if(transaction.importBatchId)throw new Error("Imported transactions must be removed by undoing their complete import batch");
     if(transaction.transferLinkId)throw new Error("Linked transfers must be removed through the transfer editor");
     this.transactions.splice(index,1);
@@ -78,6 +115,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     validateTransferInput(input,this.accounts);
     const pair=this.transactions.filter(item=>item.transferLinkId===id);
     if(pair.length!==2)throw new Error("Transfer does not exist or is incomplete");
+    if(pair.some(item=>this.reconciledTransactionIds.has(item.id)))throw new Error("A reconciled transfer cannot be edited");
     for(const item of pair){const account=this.accounts.find(account=>account.id===item.accountId);if(account)account.balanceMinor-=item.amountMinor;}
     const from=this.accounts.find(item=>item.id===input.fromAccountId)!,to=this.accounts.find(item=>item.id===input.toAccountId)!;
     const outgoing=pair.find(item=>item.amountMinor<0)??pair[0],incoming=pair.find(item=>item.amountMinor>0)??pair[1];
@@ -89,6 +127,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   async deleteTransfer(id:string):Promise<void>{
     const pair=this.transactions.filter(item=>item.transferLinkId===id);
     if(pair.length!==2)throw new Error("Transfer does not exist or is incomplete");
+    if(pair.some(item=>this.reconciledTransactionIds.has(item.id)))throw new Error("A reconciled transfer cannot be deleted");
     for(const item of pair){const account=this.accounts.find(account=>account.id===item.accountId);if(account)account.balanceMinor-=item.amountMinor;}
     this.transactions=this.transactions.filter(item=>item.transferLinkId!==id);
   }
@@ -115,6 +154,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     if (!batch) throw new Error("Import batch does not exist");
     if (batch.undoneAt) throw new Error("This import has already been undone");
     const ids = new Set(this.importedTransactionIds.get(batchId) ?? []);
+    if([...ids].some(id=>this.reconciledTransactionIds.has(id)))throw new Error("This import contains reconciled transactions and cannot be undone");
     const removed = this.transactions.filter(item => ids.has(item.id));
     this.transactions = this.transactions.filter(item => !ids.has(item.id));
     const account = this.accounts.find(item => item.id === batch.accountId);
@@ -125,6 +165,7 @@ export class DemoFinanceRepository implements FinanceRepository {
 }
 
 function validateTransactionInput(input:CreateTransactionInput){
+  if(input.status==="reconciled")throw new Error("Transactions are marked reconciled through account reconciliation");
   if(!input.splits?.length)return;
   if(input.splits.length<2)throw new Error("A split transaction requires at least two splits");
   if(input.splits.some(split=>!split.category.trim()||split.amountMinor===0))throw new Error("Every split needs a category and non-zero amount");
@@ -132,6 +173,7 @@ function validateTransactionInput(input:CreateTransactionInput){
 }
 
 function validateTransferInput(input:CreateTransferInput,accounts:Account[]){
+  if(input.status==="reconciled")throw new Error("Transfers are marked reconciled through account reconciliation");
   if(input.fromAccountId===input.toAccountId)throw new Error("Choose two different accounts");
   if(input.amountMinor<=0)throw new Error("Transfer amount must be greater than zero");
   const from=accounts.find(item=>item.id===input.fromAccountId),to=accounts.find(item=>item.id===input.toAccountId);

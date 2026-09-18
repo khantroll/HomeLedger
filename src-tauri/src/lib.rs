@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::{path::Path, sync::Mutex, time::Duration};
+use std::{collections::HashSet, path::Path, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -160,6 +160,29 @@ struct UndoImportResult {
     removed_count: usize,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteReconciliationRequest {
+    account_id: String,
+    statement_end_date: String,
+    opening_balance_minor: i64,
+    closing_balance_minor: i64,
+    transaction_ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Reconciliation {
+    id: String,
+    account_id: String,
+    statement_end_date: String,
+    opening_balance_minor: i64,
+    closing_balance_minor: i64,
+    reconciled_at: String,
+    transaction_count: i64,
+    adjustment_total_minor: i64,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RestoreResult {
@@ -167,7 +190,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 5;
+const CURRENT_SCHEMA_VERSION: i64 = 6;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -219,6 +242,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(5, 'transaction split ordering')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+    if version < 6 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/006_reconciliations.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(6, 'account statement reconciliations')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -242,12 +271,21 @@ fn create_account(request: CreateAccountRequest, state: State<DbState>) -> Resul
     Ok(account)
 }
 
-#[tauri::command]
-fn list_transactions(account_id: Option<String>, state: State<DbState>) -> Result<Vec<LedgerTransaction>, String> {
-    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+fn query_transactions(connection: &Connection, account_id: Option<&str>, statement_end_date: Option<&str>, reconciliation_candidates: bool) -> Result<Vec<LedgerTransaction>, String> {
     let mut items = {
-        let mut statement = connection.prepare("SELECT id, account_id, posted_date, payee, category, amount_minor, status, memo, external_id, source, import_batch_id FROM transactions WHERE (?1 IS NULL OR account_id = ?1) ORDER BY posted_date DESC, created_at DESC LIMIT 1000").map_err(|e| e.to_string())?;
-        let rows = statement.query_map(params![account_id], |row| Ok(LedgerTransaction { id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, category: row.get(4)?, amount_minor: row.get(5)?, status: row.get(6)?, memo: row.get(7)?, external_id: row.get(8)?, source: row.get(9)?, import_batch_id: row.get(10)?, splits: vec![], transfer_link_id: None, transfer_account_id: None })).map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare(
+            "SELECT id, account_id, posted_date, payee, category, amount_minor, status, memo, external_id, source, import_batch_id
+             FROM transactions
+             WHERE (?1 IS NULL OR account_id = ?1)
+               AND (?2 IS NULL OR posted_date <= ?2)
+               AND (?3 = 0 OR (status <> 'reconciled' AND NOT EXISTS (
+                 SELECT 1 FROM reconciliation_items item WHERE item.transaction_id = transactions.id
+               )))
+             ORDER BY posted_date DESC, created_at DESC
+             LIMIT ?4"
+        ).map_err(|e| e.to_string())?;
+        let limit = if reconciliation_candidates { i64::MAX } else { 1000 };
+        let rows = statement.query_map(params![account_id, statement_end_date, reconciliation_candidates, limit], |row| Ok(LedgerTransaction { id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, category: row.get(4)?, amount_minor: row.get(5)?, status: row.get(6)?, memo: row.get(7)?, external_id: row.get(8)?, source: row.get(9)?, import_batch_id: row.get(10)?, splits: vec![], transfer_link_id: None, transfer_account_id: None })).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     };
     let mut split_statement = connection.prepare("SELECT id, category, amount_minor, memo FROM transaction_splits WHERE transaction_id = ?1 ORDER BY sort_order, rowid").map_err(|e| e.to_string())?;
@@ -263,8 +301,24 @@ fn list_transactions(account_id: Option<String>, state: State<DbState>) -> Resul
     Ok(items)
 }
 
+#[tauri::command]
+fn list_transactions(account_id: Option<String>, state: State<DbState>) -> Result<Vec<LedgerTransaction>, String> {
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    query_transactions(&connection, account_id.as_deref(), None, false)
+}
+
+#[tauri::command]
+fn list_reconciliation_transactions(account_id: String, statement_end_date: String, state: State<DbState>) -> Result<Vec<LedgerTransaction>, String> {
+    let account_id = clean_required(account_id, "Account", 80)?;
+    if NaiveDate::parse_from_str(&statement_end_date, "%Y-%m-%d").is_err() { return Err("Statement end date must be a valid YYYY-MM-DD date".into()); }
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    let exists: Option<i64> = connection.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if exists.is_none() { return Err("Account does not exist".into()); }
+    query_transactions(&connection, Some(&account_id), Some(&statement_end_date), true)
+}
+
 fn clean_transaction_request(request: CreateTransactionRequest) -> Result<LedgerTransaction, String> {
-    const STATUSES: &[&str] = &["pending", "cleared", "reconciled", "review"];
+    const STATUSES: &[&str] = &["pending", "cleared", "review"];
     if !STATUSES.contains(&request.status.as_str()) { return Err("Unsupported transaction status".into()); }
     if NaiveDate::parse_from_str(&request.posted_date, "%Y-%m-%d").is_err() { return Err("Date must be a valid YYYY-MM-DD date".into()); }
     let account_id = clean_required(request.account_id, "Account", 80)?;
@@ -307,7 +361,7 @@ fn create_transaction_inner(connection: &mut Connection, request: CreateTransact
 }
 
 fn clean_transfer_request(request: TransferRequest) -> Result<TransferRequest, String> {
-    const STATUSES: &[&str] = &["pending", "cleared", "reconciled", "review"];
+    const STATUSES: &[&str] = &["pending", "cleared", "review"];
     if request.amount_minor <= 0 { return Err("Transfer amount must be greater than zero".into()); }
     if !STATUSES.contains(&request.status.as_str()) { return Err("Unsupported transaction status".into()); }
     if NaiveDate::parse_from_str(&request.posted_date, "%Y-%m-%d").is_err() { return Err("Date must be a valid YYYY-MM-DD date".into()); }
@@ -354,6 +408,8 @@ fn update_transfer_inner(connection:&mut Connection,transfer_id:String,request:T
     let tx=connection.transaction().map_err(|e|e.to_string())?;
     let pair:Option<(String,String)>=tx.query_row("SELECT from_transaction_id,to_transaction_id FROM transfer_links WHERE id=?1",params![transfer_id],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|e.to_string())?;
     let (from_transaction_id,to_transaction_id)=pair.ok_or("Transfer does not exist")?;
+    let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id IN (?1, ?2) LIMIT 1", params![from_transaction_id, to_transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if reconciled.is_some() { return Err("A reconciled transfer cannot be edited".into()); }
     let (from_name,to_name)=transfer_accounts(&tx,&request.from_account_id,&request.to_account_id)?;
     let outgoing_updated=tx.execute("UPDATE transactions SET account_id=?2,posted_date=?3,payee=?4,category=?5,amount_minor=?6,status=?7,memo=?8,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND source='transfer'",params![from_transaction_id,request.from_account_id,request.posted_date,request.payee,format!("Transfer: {to_name}"),-request.amount_minor,request.status,request.memo]).map_err(|e|e.to_string())?;
     let incoming_updated=tx.execute("UPDATE transactions SET account_id=?2,posted_date=?3,payee=?4,category=?5,amount_minor=?6,status=?7,memo=?8,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND source='transfer'",params![to_transaction_id,request.to_account_id,request.posted_date,request.payee,format!("Transfer: {from_name}"),request.amount_minor,request.status,request.memo]).map_err(|e|e.to_string())?;
@@ -367,6 +423,8 @@ fn delete_transfer_inner(connection:&mut Connection,transfer_id:String)->Result<
     let tx=connection.transaction().map_err(|e|e.to_string())?;
     let pair:Option<(String,String)>=tx.query_row("SELECT from_transaction_id,to_transaction_id FROM transfer_links WHERE id=?1",params![transfer_id],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|e.to_string())?;
     let (from_transaction_id,to_transaction_id)=pair.ok_or("Transfer does not exist")?;
+    let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id IN (?1, ?2) LIMIT 1", params![from_transaction_id, to_transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if reconciled.is_some() { return Err("A reconciled transfer cannot be deleted".into()); }
     tx.execute("DELETE FROM transfer_links WHERE id=?1",params![transfer_id]).map_err(|e|e.to_string())?;
     let removed=tx.execute("DELETE FROM transactions WHERE id IN (?1,?2) AND source='transfer'",params![from_transaction_id,to_transaction_id]).map_err(|e|e.to_string())?;
     if removed!=2{return Err("Transfer pair is incomplete; nothing was deleted".into());}
@@ -391,6 +449,8 @@ fn update_transaction_inner(connection: &mut Connection, transaction_id: String,
     let mut item = clean_transaction_request(request)?;
     let transaction_id = clean_required(transaction_id, "Transaction", 80)?;
     let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if reconciled.is_some() { return Err("Reconciled transactions cannot be edited".into()); }
     let linked: Option<i64> = tx.query_row("SELECT 1 FROM transfer_links WHERE from_transaction_id = ?1 OR to_transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if linked.is_some() { return Err("Linked transfers must be edited through the transfer editor".into()); }
     let existing: Option<(Option<String>, String, Option<String>, String)> = tx.query_row("SELECT external_id, source, import_batch_id, account_id FROM transactions WHERE id = ?1", params![transaction_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(|e| e.to_string())?;
@@ -417,6 +477,8 @@ fn update_transaction(transaction_id: String, request: CreateTransactionRequest,
 
 fn delete_transaction_inner(connection: &Connection, transaction_id: String) -> Result<(), String> {
     let transaction_id = clean_required(transaction_id, "Transaction", 80)?;
+    let reconciled: Option<i64> = connection.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if reconciled.is_some() { return Err("Reconciled transactions cannot be deleted".into()); }
     let imported: Option<Option<String>> = connection.query_row("SELECT import_batch_id FROM transactions WHERE id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     let import_batch_id = imported.ok_or("Transaction does not exist")?;
     if import_batch_id.is_some() { return Err("Imported transactions must be removed by undoing their complete import batch".into()); }
@@ -509,6 +571,8 @@ fn undo_import_batch_inner(connection: &mut Connection, batch_id: &str) -> Resul
     let batch: Option<(Option<String>, i64)> = tx.query_row("SELECT undone_at, original_transaction_count FROM import_batches WHERE id = ?1", params![batch_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|e| e.to_string())?;
     let (undone_at, expected_count) = batch.ok_or("Import batch does not exist")?;
     if undone_at.is_some() { return Err("This import has already been undone".into()); }
+    let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items item JOIN transactions transaction ON transaction.id = item.transaction_id WHERE transaction.import_batch_id = ?1 LIMIT 1", params![batch_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if reconciled.is_some() { return Err("This import contains reconciled transactions and cannot be undone".into()); }
     let removed_count = tx.execute("DELETE FROM transactions WHERE import_batch_id = ?1", params![batch_id]).map_err(|e| e.to_string())?;
     if removed_count as i64 != expected_count { return Err("Import batch no longer matches its original transaction count; nothing was removed".into()); }
     tx.execute("UPDATE import_batches SET undone_at = CURRENT_TIMESTAMP WHERE id = ?1 AND undone_at IS NULL", params![batch_id]).map_err(|e| e.to_string())?;
@@ -520,6 +584,96 @@ fn undo_import_batch_inner(connection: &mut Connection, batch_id: &str) -> Resul
 fn undo_import_batch(batch_id: String, state: State<DbState>) -> Result<UndoImportResult, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
     undo_import_batch_inner(&mut connection, &batch_id)
+}
+
+fn complete_reconciliation_inner(connection: &mut Connection, request: CompleteReconciliationRequest) -> Result<Reconciliation, String> {
+    let account_id = clean_required(request.account_id, "Account", 80)?;
+    if NaiveDate::parse_from_str(&request.statement_end_date, "%Y-%m-%d").is_err() { return Err("Statement end date must be a valid YYYY-MM-DD date".into()); }
+    if request.transaction_ids.len() > 10_000 { return Err("A reconciliation is limited to 10,000 transactions".into()); }
+    let unique_ids: HashSet<&str> = request.transaction_ids.iter().map(String::as_str).collect();
+    if unique_ids.len() != request.transaction_ids.len() { return Err("A transaction was selected more than once".into()); }
+
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let account_exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if account_exists.is_none() { return Err("Account does not exist".into()); }
+    let existing: Option<i64> = tx.query_row("SELECT 1 FROM reconciliations WHERE account_id = ?1 AND statement_end_date = ?2", params![account_id, request.statement_end_date], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if existing.is_some() { return Err("This account already has a reconciliation for that statement end date".into()); }
+
+    let mut selected = Vec::with_capacity(request.transaction_ids.len());
+    let mut adjustment_total_minor = 0_i64;
+    for transaction_id in &request.transaction_ids {
+        let item: Option<(String, String, i64, String, bool)> = tx.query_row(
+            "SELECT account_id, posted_date, amount_minor, status, EXISTS(SELECT 1 FROM reconciliation_items item WHERE item.transaction_id = transactions.id) FROM transactions WHERE id = ?1",
+            params![transaction_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        ).optional().map_err(|e| e.to_string())?;
+        let (transaction_account_id, posted_date, amount_minor, status, already_reconciled) = item.ok_or("A selected transaction does not exist")?;
+        if transaction_account_id != account_id { return Err("Every selected transaction must belong to the reconciled account".into()); }
+        if posted_date > request.statement_end_date { return Err("A selected transaction is after the statement end date".into()); }
+        if already_reconciled || status == "reconciled" { return Err("A selected transaction has already been reconciled".into()); }
+        adjustment_total_minor = adjustment_total_minor.checked_add(amount_minor).ok_or("Reconciliation total is too large")?;
+        selected.push((transaction_id, amount_minor, status));
+    }
+    let calculated_closing = request.opening_balance_minor.checked_add(adjustment_total_minor).ok_or("Reconciliation balance is too large")?;
+    if calculated_closing != request.closing_balance_minor { return Err("Selected transactions do not match the statement closing balance".into()); }
+
+    let reconciliation_id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO reconciliations(id, account_id, statement_end_date, opening_balance_minor, closing_balance_minor) VALUES(?1, ?2, ?3, ?4, ?5)",
+        params![reconciliation_id, account_id, request.statement_end_date, request.opening_balance_minor, request.closing_balance_minor]
+    ).map_err(|e| e.to_string())?;
+    for (transaction_id, amount_minor, status_before) in selected {
+        tx.execute(
+            "INSERT INTO reconciliation_items(reconciliation_id, transaction_id, amount_minor, status_before) VALUES(?1, ?2, ?3, ?4)",
+            params![reconciliation_id, transaction_id, amount_minor, status_before]
+        ).map_err(|e| e.to_string())?;
+        tx.execute("UPDATE transactions SET status = 'reconciled', modified_at = CURRENT_TIMESTAMP WHERE id = ?1", params![transaction_id]).map_err(|e| e.to_string())?;
+    }
+    let reconciled_at: String = tx.query_row("SELECT reconciled_at FROM reconciliations WHERE id = ?1", params![reconciliation_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Reconciliation {
+        id: reconciliation_id,
+        account_id,
+        statement_end_date: request.statement_end_date,
+        opening_balance_minor: request.opening_balance_minor,
+        closing_balance_minor: request.closing_balance_minor,
+        reconciled_at,
+        transaction_count: request.transaction_ids.len() as i64,
+        adjustment_total_minor,
+    })
+}
+
+#[tauri::command]
+fn complete_reconciliation(request: CompleteReconciliationRequest, state: State<DbState>) -> Result<Reconciliation, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    complete_reconciliation_inner(&mut connection, request)
+}
+
+#[tauri::command]
+fn list_reconciliations(account_id: String, state: State<DbState>) -> Result<Vec<Reconciliation>, String> {
+    let account_id = clean_required(account_id, "Account", 80)?;
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    let mut statement = connection.prepare(
+        "SELECT reconciliation.id, reconciliation.account_id, reconciliation.statement_end_date,
+                reconciliation.opening_balance_minor, reconciliation.closing_balance_minor,
+                reconciliation.reconciled_at, COUNT(item.transaction_id), COALESCE(SUM(item.amount_minor), 0)
+         FROM reconciliations reconciliation
+         LEFT JOIN reconciliation_items item ON item.reconciliation_id = reconciliation.id
+         WHERE reconciliation.account_id = ?1
+         GROUP BY reconciliation.id
+         ORDER BY reconciliation.statement_end_date DESC, reconciliation.reconciled_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = statement.query_map(params![account_id], |row| Ok(Reconciliation {
+        id: row.get(0)?,
+        account_id: row.get(1)?,
+        statement_end_date: row.get(2)?,
+        opening_balance_minor: row.get(3)?,
+        closing_balance_minor: row.get(4)?,
+        reconciled_at: row.get(5)?,
+        transaction_count: row.get(6)?,
+        adjustment_total_minor: row.get(7)?,
+    })).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 fn copy_database(source: &Connection, destination: &mut Connection) -> Result<(), String> {
@@ -557,6 +711,13 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         [], |row| row.get(0)
     ).map_err(|e| e.to_string())?;
     if required_tables != 8 { return Err("The backup is missing required HomeLedger tables".into()); }
+    if version >= 6 {
+        let reconciliation_tables: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('reconciliations','reconciliation_items')",
+            [], |row| row.get(0)
+        ).map_err(|e| e.to_string())?;
+        if reconciliation_tables != 2 { return Err("The backup is missing required reconciliation tables".into()); }
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -640,7 +801,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

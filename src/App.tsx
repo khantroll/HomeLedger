@@ -6,9 +6,10 @@ import { ImportPage } from "./ImportPage";
 import { BackupPage } from "./BackupPage";
 import { TransactionDialog } from "./TransactionDialog";
 import { TransferDialog } from "./TransferDialog";
+import { ReconciliationDialog } from "./ReconciliationDialog";
 import "./register.css";
 
-type EditorDialog = "account" | {kind:"transaction";transaction?:Transaction} | {kind:"transfer";transaction?:Transaction} | null;
+type EditorDialog = "account" | {kind:"transaction";transaction?:Transaction} | {kind:"transfer";transaction?:Transaction} | {kind:"reconciliation";account:Account} | null;
 
 const navItems = [
   ["Overview", LayoutDashboard], ["Accounts", Landmark], ["Transactions", ReceiptText], ["Imports", FileInput],
@@ -54,7 +55,7 @@ export default function App() {
             <Summary label="Needs review" value={String(transactions.filter(t => t.status === "review").length)} detail="Transactions requiring attention" tone="warning"/>
           </div>
           <div className="workspace-grid">
-            <section className="panel accounts-panel"><div className="panel-heading"><div><h2>Accounts</h2><p>Balances as of today</p></div><button onClick={() => setDialog("account")}>+ Add account</button></div>{accounts.length === 0 ? <Empty text="Add your first local account."/> : accounts.map(a => <div className="account-row" key={a.id}><div className={`account-icon ${a.type}`}><WalletCards size={17}/></div><div><strong>{a.name}</strong><small>{[a.institution, a.ownerLabel].filter(Boolean).join(" · ")}</small></div><span className={a.balanceMinor < 0 ? "negative" : ""}>{formatMoney(a.balanceMinor, a.currency)}</span></div>)}</section>
+            <section className="panel accounts-panel"><div className="panel-heading"><div><h2>Accounts</h2><p>Balances as of today</p></div><button onClick={() => setDialog("account")}>+ Add account</button></div>{accounts.length === 0 ? <Empty text="Add your first local account."/> : accounts.map(a => <div className="account-row" key={a.id}><div className={`account-icon ${a.type}`}><WalletCards size={17}/></div><div><strong>{a.name}</strong><small>{[a.institution, a.ownerLabel].filter(Boolean).join(" · ")}</small></div><div className="account-balance"><span className={a.balanceMinor < 0 ? "negative" : ""}>{formatMoney(a.balanceMinor, a.currency)}</span><button onClick={()=>setDialog({kind:"reconciliation",account:a})}>Reconcile</button></div></div>)}</section>
             <section className="panel register-panel"><div className="panel-heading"><div><h2>Recent transactions</h2><p>{filtered.length} shown</p></div><div className="register-actions"><button disabled={accounts.length<2} onClick={() => setDialog({kind:"transfer"})}><ArrowLeftRight size={13}/> Transfer</button><button disabled={!accounts.length} onClick={() => setDialog({kind:"transaction"})}>+ New transaction</button></div></div>{filtered.length === 0 ? <Empty text={accounts.length ? "No matching transactions." : "Create an account before entering transactions."}/> : <div className="table-wrap"><table><thead><tr><th>Date</th><th>Payee</th><th>Category</th><th>Status</th><th>Amount</th><th></th></tr></thead><tbody>{filtered.map(t => <tr key={t.id}><td>{t.postedDate}</td><td><strong>{t.payee}</strong></td><td className="transaction-category">{t.category}{t.transferLinkId?<small><ArrowLeftRight size={11}/> Linked transfer</small>:t.splits?.length?<small>{t.splits.length} splits</small>:null}</td><td><span className={`status ${t.status}`}>{t.status}</span></td><td className={t.amountMinor < 0 ? "amount negative" : "amount positive"}>{formatMoney(t.amountMinor,accounts.find(account=>account.id===t.accountId)?.currency)}</td><td><button className="edit-transaction" onClick={()=>setDialog({kind:t.transferLinkId?"transfer":"transaction",transaction:t})}>{t.transferLinkId?"Transfer":"Edit"}</button></td></tr>)}</tbody></table></div>}</section>
           </div>
         </>}
@@ -69,6 +70,9 @@ export default function App() {
     {dialog&&dialog!=="account"&&dialog.kind==="transfer" && (<TransferDialog accounts={accounts} transaction={dialog.transaction} onClose={() => setDialog(null)} onSaved={async () => {
       setDialog(null); await refresh();
     }}/>)}
+    {dialog&&dialog!=="account"&&dialog.kind==="reconciliation" && <ReconciliationDialog account={dialog.account} onClose={()=>setDialog(null)} onSaved={async()=>{
+      setDialog(null);await refresh();
+    }}/>}
   </div>;
 }
 
