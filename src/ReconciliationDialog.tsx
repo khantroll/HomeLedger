@@ -3,6 +3,7 @@ import { CheckCircle2, Scale, X } from "lucide-react";
 import { formatMoney, parseMoney, reconciliationBalance, reconciliationDifference, type Account, type Reconciliation, type Transaction } from "./domain";
 import { financeRepository as repository } from "./repository";
 import "./reconciliation.css";
+import "./focus.css";
 
 export function ReconciliationDialog({account,onClose,onSaved}:{account:Account;onClose:()=>void;onSaved:()=>Promise<void>}) {
   const [statementEndDate,setStatementEndDate]=useState(new Date().toISOString().slice(0,10));
