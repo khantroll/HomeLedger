@@ -58,7 +58,7 @@ export function parseQif(text: string): QifStatement {
 }
 
 export function buildQifPreview(statement: QifStatement, existing: Transaction[]): PreviewRow[] {
-  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.payee, item.amountMinor)));
+  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.originalPayee??item.payee, item.amountMinor)));
   const seen = new Set<string>();
   return statement.rows.map((row, index) => {
     const key = transactionDuplicateKey(row.postedDate, row.payee, row.amountMinor);

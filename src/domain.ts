@@ -24,6 +24,7 @@ export interface Transaction {
   accountId: string;
   postedDate: string;
   payee: string;
+  originalPayee?: string;
   category: string;
   amountMinor: number;
   status: TransactionStatus;
@@ -49,6 +50,10 @@ export interface FinanceRepository {
   createTransfer(input: CreateTransferInput): Promise<TransferResult>;
   updateTransfer(id: string, input: CreateTransferInput): Promise<TransferResult>;
   deleteTransfer(id: string): Promise<void>;
+  listMerchantRules(): Promise<MerchantRule[]>;
+  createMerchantRule(input: MerchantRuleInput): Promise<MerchantRule>;
+  updateMerchantRule(id: string, input: MerchantRuleInput): Promise<MerchantRule>;
+  deleteMerchantRule(id: string): Promise<void>;
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
@@ -76,6 +81,7 @@ export interface CompleteReconciliationInput {
 export interface ImportTransactionRow {
   postedDate: string;
   payee: string;
+  originalPayee?: string;
   amountMinor: number;
   memo?: string;
   externalId?: string;
@@ -170,6 +176,22 @@ export interface TransferResult {
   toTransactionId: string;
 }
 
+export type MerchantRuleMatchType = "contains" | "starts_with" | "exact";
+export type MerchantRuleDirection = "any" | "expense" | "income";
+
+export interface MerchantRule {
+  id: string;
+  name: string;
+  pattern: string;
+  matchType: MerchantRuleMatchType;
+  direction: MerchantRuleDirection;
+  renameTo?: string;
+  category?: string;
+  priority: number;
+  enabled: boolean;
+}
+
+export type MerchantRuleInput = Omit<MerchantRule,"id">;
 export function formatMoney(minor: number, currency = "USD"): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 100);
 }

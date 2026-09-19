@@ -92,4 +92,16 @@ describe("finance repository contract", () => {
     await expect(repository.updateTransaction(purchase.id, { accountId: account.id, postedDate: "2026-09-02", payee: "Store", category: "Food", amountMinor: -1250, status: "cleared" })).rejects.toThrow("cannot be edited");
     await expect(repository.deleteTransaction(purchase.id)).rejects.toThrow("cannot be deleted");
   });
+
+  it("applies managed merchant rules during import while retaining the bank description", async () => {
+    const repository = new DemoFinanceRepository();
+    const account = await repository.createAccount({name:"Rules Account",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const rule = await repository.createMerchantRule({name:"Market",pattern:"NEIGHBORHOOD MARKET",matchType:"contains",direction:"expense",renameTo:"Neighborhood Market",category:"Food: Groceries",priority:100,enabled:true});
+    await repository.importTransactions({accountId:account.id,sourceName:"rules.csv",rows:[{postedDate:"2026-09-18",payee:"SQ *NEIGHBORHOOD MARKET #42",amountMinor:-1250}]});
+    expect((await repository.listTransactions(account.id))[0]).toMatchObject({payee:"Neighborhood Market",originalPayee:"SQ *NEIGHBORHOOD MARKET #42",category:"Food: Groceries"});
+    await repository.updateMerchantRule(rule.id,{...rule,name:"Disabled",enabled:false});
+    expect((await repository.listMerchantRules())[0]).toMatchObject({name:"Disabled",enabled:false});
+    await repository.deleteMerchantRule(rule.id);
+    expect(await repository.listMerchantRules()).toHaveLength(0);
+  });
 });

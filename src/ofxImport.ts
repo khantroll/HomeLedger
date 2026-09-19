@@ -51,7 +51,7 @@ export function parseOfx(text: string): OfxStatement {
 
 export function buildOfxPreview(statement: OfxStatement, existing: Transaction[]): PreviewRow[] {
   const existingIds = new Set(existing.map(item => item.externalId).filter(Boolean));
-  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.payee, item.amountMinor)));
+  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.originalPayee??item.payee, item.amountMinor)));
   const seenIds = new Set<string>();
   const seenKeys = new Set<string>();
   return statement.rows.map((row, index) => {

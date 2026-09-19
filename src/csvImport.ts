@@ -80,7 +80,7 @@ export function parseStatementMoney(value: string): number {
 }
 
 export function buildPreview(table: ParsedTable, mapping: ColumnMapping, existing: Transaction[]): PreviewRow[] {
-  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.payee, item.amountMinor)));
+  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.originalPayee??item.payee, item.amountMinor)));
   const seen = new Set<string>();
   return table.rows.map((row, index) => {
     try {

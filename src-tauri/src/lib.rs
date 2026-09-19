@@ -43,6 +43,7 @@ struct LedgerTransaction {
     account_id: String,
     posted_date: String,
     payee: String,
+    original_payee: Option<String>,
     category: String,
     amount_minor: i64,
     status: String,
@@ -105,6 +106,33 @@ struct TransferResult {
     to_transaction_id: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MerchantRule {
+    id: String,
+    name: String,
+    pattern: String,
+    match_type: String,
+    direction: String,
+    rename_to: Option<String>,
+    category: Option<String>,
+    priority: i64,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MerchantRuleRequest {
+    name: String,
+    pattern: String,
+    match_type: String,
+    direction: String,
+    rename_to: Option<String>,
+    category: Option<String>,
+    priority: i64,
+    enabled: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportTransactionSplit {
@@ -118,6 +146,7 @@ struct ImportTransactionSplit {
 struct ImportTransactionRow {
     posted_date: String,
     payee: String,
+    original_payee: Option<String>,
     amount_minor: i64,
     memo: Option<String>,
     external_id: Option<String>,
@@ -190,7 +219,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 6;
+const CURRENT_SCHEMA_VERSION: i64 = 7;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -248,6 +277,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(6, 'account statement reconciliations')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+    if version < 7 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/007_merchant_rules.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(7, 'deterministic merchant rules')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -274,7 +309,7 @@ fn create_account(request: CreateAccountRequest, state: State<DbState>) -> Resul
 fn query_transactions(connection: &Connection, account_id: Option<&str>, statement_end_date: Option<&str>, reconciliation_candidates: bool) -> Result<Vec<LedgerTransaction>, String> {
     let mut items = {
         let mut statement = connection.prepare(
-            "SELECT id, account_id, posted_date, payee, category, amount_minor, status, memo, external_id, source, import_batch_id
+            "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, external_id, source, import_batch_id
              FROM transactions
              WHERE (?1 IS NULL OR account_id = ?1)
                AND (?2 IS NULL OR posted_date <= ?2)
@@ -285,7 +320,7 @@ fn query_transactions(connection: &Connection, account_id: Option<&str>, stateme
              LIMIT ?4"
         ).map_err(|e| e.to_string())?;
         let limit = if reconciliation_candidates { i64::MAX } else { 1000 };
-        let rows = statement.query_map(params![account_id, statement_end_date, reconciliation_candidates, limit], |row| Ok(LedgerTransaction { id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, category: row.get(4)?, amount_minor: row.get(5)?, status: row.get(6)?, memo: row.get(7)?, external_id: row.get(8)?, source: row.get(9)?, import_batch_id: row.get(10)?, splits: vec![], transfer_link_id: None, transfer_account_id: None })).map_err(|e| e.to_string())?;
+        let rows = statement.query_map(params![account_id, statement_end_date, reconciliation_candidates, limit], |row| Ok(LedgerTransaction { id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, original_payee: row.get(4)?, category: row.get(5)?, amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, external_id: row.get(9)?, source: row.get(10)?, import_batch_id: row.get(11)?, splits: vec![], transfer_link_id: None, transfer_account_id: None })).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
     };
     let mut split_statement = connection.prepare("SELECT id, category, amount_minor, memo FROM transaction_splits WHERE transaction_id = ?1 ORDER BY sort_order, rowid").map_err(|e| e.to_string())?;
@@ -335,7 +370,7 @@ fn clean_transaction_request(request: CreateTransactionRequest) -> Result<Ledger
         if total != request.amount_minor { return Err("Split total does not equal the transaction amount".into()); }
     }
     Ok(LedgerTransaction {
-        id: Uuid::new_v4().to_string(), account_id, posted_date: request.posted_date, payee,
+        id: Uuid::new_v4().to_string(), account_id, posted_date: request.posted_date, payee, original_payee: None,
         category: if splits.is_empty() { clean_required(request.category, "Category", 120)? } else { "Split transaction".into() },
         amount_minor: request.amount_minor, status: request.status, memo, external_id: None,
         source: "manual".into(), import_batch_id: None, splits, transfer_link_id: None, transfer_account_id: None
@@ -439,6 +474,81 @@ fn update_transfer(transfer_id:String,request:TransferRequest,state:State<DbStat
 #[tauri::command]
 fn delete_transfer(transfer_id:String,state:State<DbState>)->Result<(),String>{let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;delete_transfer_inner(&mut connection,transfer_id)}
 
+fn normalize_merchant(value:&str)->String{
+    let mut output=String::new();
+    let mut spacing=false;
+    for character in value.to_lowercase().chars(){
+        if character.is_alphanumeric(){output.push(character);spacing=false;}
+        else if !output.is_empty()&&!spacing{output.push(' ');spacing=true;}
+    }
+    output.trim().to_string()
+}
+
+fn clean_merchant_rule(request:MerchantRuleRequest,id:String)->Result<(MerchantRule,String),String>{
+    const MATCH_TYPES:&[&str]=&["contains","starts_with","exact"];
+    const DIRECTIONS:&[&str]=&["any","expense","income"];
+    if !MATCH_TYPES.contains(&request.match_type.as_str()){return Err("Unsupported merchant-rule match type".into());}
+    if !DIRECTIONS.contains(&request.direction.as_str()){return Err("Unsupported merchant-rule direction".into());}
+    if !(-10_000..=10_000).contains(&request.priority){return Err("Priority must be between -10000 and 10000".into());}
+    let pattern=clean_required(request.pattern,"Match text",120)?;
+    let normalized_pattern=normalize_merchant(&pattern);
+    if normalized_pattern.is_empty(){return Err("Match text must contain a letter or number".into());}
+    let rename_to=clean_optional(request.rename_to,160)?;
+    let category=clean_optional(request.category,120)?;
+    if rename_to.is_none()&&category.is_none(){return Err("A rule must rename the payee, assign a category, or both".into());}
+    Ok((MerchantRule{id,name:clean_required(request.name,"Rule name",80)?,pattern,match_type:request.match_type,direction:request.direction,rename_to,category,priority:request.priority,enabled:request.enabled},normalized_pattern))
+}
+
+fn load_merchant_rules(connection:&Connection)->Result<Vec<MerchantRule>,String>{
+    let mut statement=connection.prepare("SELECT id,name,pattern,match_type,direction,rename_to,category,priority,enabled FROM merchant_rules ORDER BY priority DESC,id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],|row|Ok(MerchantRule{id:row.get(0)?,name:row.get(1)?,pattern:row.get(2)?,match_type:row.get(3)?,direction:row.get(4)?,rename_to:row.get(5)?,category:row.get(6)?,priority:row.get(7)?,enabled:row.get(8)?})).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+fn list_merchant_rules(state:State<DbState>)->Result<Vec<MerchantRule>,String>{
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    load_merchant_rules(&connection)
+}
+
+#[tauri::command]
+fn create_merchant_rule(request:MerchantRuleRequest,state:State<DbState>)->Result<MerchantRule,String>{
+    let (rule,normalized)=clean_merchant_rule(request,Uuid::new_v4().to_string())?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled]).map_err(|e|e.to_string())?;
+    Ok(rule)
+}
+
+#[tauri::command]
+fn update_merchant_rule(rule_id:String,request:MerchantRuleRequest,state:State<DbState>)->Result<MerchantRule,String>{
+    let rule_id=clean_required(rule_id,"Merchant rule",80)?;
+    let (rule,normalized)=clean_merchant_rule(request,rule_id)?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let changed=connection.execute("UPDATE merchant_rules SET name=?2,pattern=?3,normalized_pattern=?4,match_type=?5,direction=?6,rename_to=?7,category=?8,priority=?9,enabled=?10,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled]).map_err(|e|e.to_string())?;
+    if changed!=1{return Err("Merchant rule does not exist".into());}
+    Ok(rule)
+}
+
+#[tauri::command]
+fn delete_merchant_rule(rule_id:String,state:State<DbState>)->Result<(),String>{
+    let rule_id=clean_required(rule_id,"Merchant rule",80)?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let removed=connection.execute("DELETE FROM merchant_rules WHERE id=?1",params![rule_id]).map_err(|e|e.to_string())?;
+    if removed!=1{return Err("Merchant rule does not exist".into());}
+    Ok(())
+}
+
+fn matching_merchant_rule<'a>(rules:&'a [MerchantRule],payee:&str,amount_minor:i64)->Option<&'a MerchantRule>{
+    let normalized=normalize_merchant(payee);
+    rules.iter().find(|rule|{
+        if !rule.enabled{return false;}
+        if rule.direction=="expense"&&amount_minor>=0{return false;}
+        if rule.direction=="income"&&amount_minor<=0{return false;}
+        let pattern=normalize_merchant(&rule.pattern);
+        match rule.match_type.as_str(){"exact"=>normalized==pattern,"starts_with"=>normalized.starts_with(&pattern),_=>normalized.contains(&pattern)}
+    })
+}
+
 #[tauri::command]
 fn create_transaction(request: CreateTransactionRequest, state: State<DbState>) -> Result<LedgerTransaction, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
@@ -503,6 +613,7 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
     for row in &request.rows {
         if NaiveDate::parse_from_str(&row.posted_date, "%Y-%m-%d").is_err() { return Err(format!("Invalid import date: {}", row.posted_date)); }
         clean_required(row.payee.clone(), "Description/payee", 160)?;
+        clean_optional(row.original_payee.clone(), 160)?;
         clean_optional(row.memo.clone(), 500)?;
         clean_optional(row.external_id.clone(), 255)?;
         clean_optional(row.category.clone(), 120)?;
@@ -521,23 +632,28 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     let account_exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if account_exists.is_none() { return Err("Account does not exist".into()); }
+    let merchant_rules=load_merchant_rules(&tx)?;
 
     let batch_id = Uuid::new_v4().to_string();
     let imported_count = request.rows.len();
     let original_total_minor: i64 = request.rows.iter().map(|row| row.amount_minor).try_fold(0_i64, |total, amount| total.checked_add(amount).ok_or("Import total is too large"))?;
     tx.execute("INSERT INTO import_batches(id, account_id, source_name, original_transaction_count, original_total_minor) VALUES(?1, ?2, ?3, ?4, ?5)", params![batch_id, account_id, source_name, imported_count as i64, original_total_minor]).map_err(|e| e.to_string())?;
     for row in request.rows {
+        let original_payee=clean_required(row.original_payee.unwrap_or_else(||row.payee.clone()),"Description/payee",160)?;
+        let matched_rule=matching_merchant_rule(&merchant_rules,&original_payee,row.amount_minor);
+        let payee=matched_rule.and_then(|rule|rule.rename_to.clone()).unwrap_or_else(||row.payee.trim().to_string());
         let duplicate: Option<i64> = tx.query_row(
-            "SELECT 1 FROM transactions WHERE account_id = ?1 AND ((?5 IS NOT NULL AND external_id = ?5) OR (posted_date = ?2 AND amount_minor = ?3 AND lower(trim(payee)) = lower(trim(?4)))) LIMIT 1",
-            params![account_id, row.posted_date, row.amount_minor, row.payee, row.external_id],
+            "SELECT 1 FROM transactions WHERE account_id = ?1 AND ((?5 IS NOT NULL AND external_id = ?5) OR (posted_date = ?2 AND amount_minor = ?3 AND (lower(trim(COALESCE(original_payee,payee))) = lower(trim(?4)) OR lower(trim(payee)) = lower(trim(?4))))) LIMIT 1",
+            params![account_id, row.posted_date, row.amount_minor, original_payee, row.external_id],
             |result| result.get(0)
         ).optional().map_err(|e| e.to_string())?;
         if duplicate.is_some() { return Err(format!("A matching transaction already exists for {}. Nothing was imported.", row.posted_date)); }
         let transaction_id = Uuid::new_v4().to_string();
-        let category = row.category.as_deref().map(str::trim).filter(|value| !value.is_empty()).unwrap_or("Uncategorized");
+        let source_category=row.category.as_deref().map(str::trim).filter(|value|!value.is_empty()&&*value!="Uncategorized");
+        let category=source_category.or_else(||matched_rule.and_then(|rule|rule.category.as_deref())).unwrap_or("Uncategorized");
         tx.execute(
-            "INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, memo, source, import_batch_id, external_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'review', ?7, 'import', ?8, ?9)",
-            params![transaction_id, account_id, row.posted_date, row.payee.trim(), category, row.amount_minor, row.memo, batch_id, row.external_id]
+            "INSERT INTO transactions(id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, source, import_batch_id, external_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'review', ?8, 'import', ?9, ?10)",
+            params![transaction_id, account_id, row.posted_date, payee, original_payee, category, row.amount_minor, row.memo, batch_id, row.external_id]
         ).map_err(|e| e.to_string())?;
         if let Some(splits) = row.splits {
             for (index, split) in splits.into_iter().enumerate() {
@@ -718,6 +834,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         ).map_err(|e| e.to_string())?;
         if reconciliation_tables != 2 { return Err("The backup is missing required reconciliation tables".into()); }
     }
+    if version >= 7 {
+        let merchant_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='merchant_rules'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if merchant_tables!=1{return Err("The backup is missing merchant rules".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -801,7 +921,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }
