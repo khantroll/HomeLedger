@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransferResult, UndoImportResult } from "./domain";
+import type { Account, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransferResult, UndoImportResult } from "./domain";
 
 class TauriFinanceRepository implements FinanceRepository {
   listAccounts(): Promise<Account[]> { return invoke("list_accounts"); }
@@ -39,6 +39,10 @@ class TauriFinanceRepository implements FinanceRepository {
   deleteBudgetCategory(id:string):Promise<void>{return invoke("delete_budget_category",{budgetCategoryId:id});}
   setBudgetAllocation(input:BudgetAllocationInput):Promise<void>{return invoke("set_budget_allocation",{request:input});}
   getBudgetMonth(month:string):Promise<BudgetMonth>{return invoke("get_budget_month",{month});}
+  listSavingsGoals():Promise<SavingsGoal[]>{return invoke("list_savings_goals");}
+  createSavingsGoal(input:SavingsGoalInput):Promise<SavingsGoal>{return invoke("create_savings_goal",{request:input});}
+  updateSavingsGoal(id:string,input:SavingsGoalInput):Promise<SavingsGoal>{return invoke("update_savings_goal",{savingsGoalId:id,request:input});}
+  deleteSavingsGoal(id:string):Promise<void>{return invoke("delete_savings_goal",{savingsGoalId:id});}
   getDebtPlan(currency:string):Promise<DebtPlan>{return invoke("get_debt_plan",{currency});}
   saveDebtPlan(input:DebtPlanInput):Promise<DebtPlan>{return invoke("save_debt_plan",{request:input});}
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult> { return invoke("import_transactions", { request: input }); }
