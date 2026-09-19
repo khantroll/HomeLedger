@@ -403,6 +403,27 @@ struct BudgetMonth {
     lines: Vec<BudgetMonthLine>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavingsGoal {
+    id: String,
+    name: String,
+    account_id: String,
+    target_minor: i64,
+    target_date: String,
+    planned_monthly_minor: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavingsGoalRequest {
+    name: String,
+    account_id: String,
+    target_minor: i64,
+    target_date: String,
+    planned_monthly_minor: i64,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DebtTerm {
@@ -438,7 +459,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 13;
+const CURRENT_SCHEMA_VERSION: i64 = 14;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -536,6 +557,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/013_debt_plans.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(13, 'debt payoff plans')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 14 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/014_savings_goals.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(14, 'account-linked savings goals')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1320,6 +1347,53 @@ fn get_budget_month(month:String,state:State<DbState>)->Result<BudgetMonth,Strin
     get_budget_month_inner(&connection,month)
 }
 
+fn savings_goal_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<SavingsGoal>{Ok(SavingsGoal{id:row.get(0)?,name:row.get(1)?,account_id:row.get(2)?,target_minor:row.get(3)?,target_date:row.get(4)?,planned_monthly_minor:row.get(5)?})}
+
+fn clean_savings_goal(connection:&Connection,request:SavingsGoalRequest,id:String)->Result<SavingsGoal,String>{
+    let name=clean_required(request.name,"Savings goal name",120)?;
+    let account_id=clean_required(request.account_id,"Savings account",80)?;
+    if request.target_minor<=0{return Err("Savings target must be greater than zero".into());}
+    if request.planned_monthly_minor<0{return Err("Planned monthly savings must be zero or greater".into());}
+    NaiveDate::parse_from_str(&request.target_date,"%Y-%m-%d").map_err(|_|"Savings target date is invalid")?;
+    let eligible:Option<i64>=connection.query_row("SELECT 1 FROM accounts WHERE id=?1 AND account_type='savings' AND archived_at IS NULL",params![account_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    if eligible.is_none(){return Err("Savings goals require an active savings account".into());}
+    let duplicate:Option<i64>=connection.query_row("SELECT 1 FROM savings_goals WHERE account_id=?1 AND id<>?2",params![account_id,id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    if duplicate.is_some(){return Err("This savings account already has a goal".into());}
+    Ok(SavingsGoal{id,name,account_id,target_minor:request.target_minor,target_date:request.target_date,planned_monthly_minor:request.planned_monthly_minor})
+}
+
+fn list_savings_goals_inner(connection:&Connection)->Result<Vec<SavingsGoal>,String>{
+    let mut statement=connection.prepare("SELECT goal.id,goal.name,goal.account_id,goal.target_minor,goal.target_date,goal.planned_monthly_minor FROM savings_goals goal JOIN accounts account ON account.id=goal.account_id WHERE account.archived_at IS NULL ORDER BY goal.target_date,goal.name COLLATE NOCASE,goal.id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],savings_goal_from_row).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+fn create_savings_goal_inner(connection:&Connection,request:SavingsGoalRequest)->Result<SavingsGoal,String>{
+    let item=clean_savings_goal(connection,request,Uuid::new_v4().to_string())?;
+    connection.execute("INSERT INTO savings_goals(id,name,account_id,target_minor,target_date,planned_monthly_minor) VALUES(?1,?2,?3,?4,?5,?6)",params![item.id,item.name,item.account_id,item.target_minor,item.target_date,item.planned_monthly_minor]).map_err(|e|e.to_string())?;
+    Ok(item)
+}
+
+fn update_savings_goal_inner(connection:&Connection,id:String,request:SavingsGoalRequest)->Result<SavingsGoal,String>{
+    let item=clean_savings_goal(connection,request,clean_required(id,"Savings goal",80)?)?;
+    if connection.execute("UPDATE savings_goals SET name=?2,account_id=?3,target_minor=?4,target_date=?5,planned_monthly_minor=?6,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![item.id,item.name,item.account_id,item.target_minor,item.target_date,item.planned_monthly_minor]).map_err(|e|e.to_string())?!=1{return Err("Savings goal does not exist".into());}
+    Ok(item)
+}
+
+fn delete_savings_goal_inner(connection:&Connection,id:String)->Result<(),String>{if connection.execute("DELETE FROM savings_goals WHERE id=?1",params![clean_required(id,"Savings goal",80)?]).map_err(|e|e.to_string())?!=1{return Err("Savings goal does not exist".into());}Ok(())}
+
+#[tauri::command]
+fn list_savings_goals(state:State<DbState>)->Result<Vec<SavingsGoal>,String>{let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;list_savings_goals_inner(&connection)}
+
+#[tauri::command]
+fn create_savings_goal(request:SavingsGoalRequest,state:State<DbState>)->Result<SavingsGoal,String>{let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;create_savings_goal_inner(&connection,request)}
+
+#[tauri::command]
+fn update_savings_goal(savings_goal_id:String,request:SavingsGoalRequest,state:State<DbState>)->Result<SavingsGoal,String>{let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;update_savings_goal_inner(&connection,savings_goal_id,request)}
+
+#[tauri::command]
+fn delete_savings_goal(savings_goal_id:String,state:State<DbState>)->Result<(),String>{let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;delete_savings_goal_inner(&connection,savings_goal_id)}
+
 fn clean_debt_currency(value:String)->Result<String,String>{
     let currency=value.trim().to_uppercase();
     if currency.len()!=3||!currency.chars().all(|item|item.is_ascii_alphabetic()){return Err("Currency must be a three-letter code".into());}
@@ -1687,6 +1761,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let debt_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('debt_plan_settings','debt_terms')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if debt_tables!=2{return Err("The backup is missing debt plan tables".into());}
     }
+    if version >= 14 {
+        let savings_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='savings_goals'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if savings_tables!=1{return Err("The backup is missing savings goals".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -1770,7 +1848,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

@@ -78,6 +78,10 @@ export interface FinanceRepository {
   deleteBudgetCategory(id: string): Promise<void>;
   setBudgetAllocation(input: BudgetAllocationInput): Promise<void>;
   getBudgetMonth(month: string): Promise<BudgetMonth>;
+  listSavingsGoals(): Promise<SavingsGoal[]>;
+  createSavingsGoal(input: SavingsGoalInput): Promise<SavingsGoal>;
+  updateSavingsGoal(id: string,input: SavingsGoalInput): Promise<SavingsGoal>;
+  deleteSavingsGoal(id: string): Promise<void>;
   getDebtPlan(currency: string): Promise<DebtPlan>;
   saveDebtPlan(input: DebtPlanInput): Promise<DebtPlan>;
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
@@ -162,6 +166,17 @@ export interface BudgetMonth {
   availableMinor: number;
   lines: BudgetMonthLine[];
 }
+
+export interface SavingsGoal {
+  id: string;
+  name: string;
+  accountId: string;
+  targetMinor: number;
+  targetDate: string;
+  plannedMonthlyMinor: number;
+}
+
+export type SavingsGoalInput = Omit<SavingsGoal,"id">;
 
 export type DebtStrategy = "snowball"|"avalanche"|"custom";
 

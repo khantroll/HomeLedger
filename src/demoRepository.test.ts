@@ -198,6 +198,19 @@ describe("finance repository contract", () => {
     await expect(repository.getDebtPlan("CAD")).resolves.toEqual({currency:"CAD",strategy:"avalanche",extraPaymentMinor:0,terms:[]});
   });
 
+  it("persists one validated savings goal per savings account",async()=>{
+    const repository=new DemoFinanceRepository();
+    const savings=await repository.createAccount({name:"Emergency savings",type:"savings",currency:"USD",openingBalanceMinor:250000,ownerLabel:"Household"});
+    const checking=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const created=await repository.createSavingsGoal({name:" Emergency fund ",accountId:savings.id,targetMinor:1000000,targetDate:"2027-09-19",plannedMonthlyMinor:75000});
+    expect((await repository.listSavingsGoals())[0]).toMatchObject({id:created.id,name:"Emergency fund",accountId:savings.id});
+    await expect(repository.createSavingsGoal({name:"Duplicate",accountId:savings.id,targetMinor:1000,targetDate:"2027-01-01",plannedMonthlyMinor:0})).rejects.toThrow("already has a goal");
+    await expect(repository.createSavingsGoal({name:"Invalid",accountId:checking.id,targetMinor:1000,targetDate:"2027-01-01",plannedMonthlyMinor:0})).rejects.toThrow("savings account");
+    await repository.updateSavingsGoal(created.id,{name:"Six months",accountId:savings.id,targetMinor:1200000,targetDate:"2028-01-01",plannedMonthlyMinor:80000});
+    expect((await repository.listSavingsGoals())[0]).toMatchObject({name:"Six months",targetMinor:1200000});
+    await repository.deleteSavingsGoal(created.id);expect(await repository.listSavingsGoals()).toEqual([]);
+  });
+
   it("posts recurring transfers as a balanced linked pair", async () => {
     const repository = new DemoFinanceRepository();
     const from=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
