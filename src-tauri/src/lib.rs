@@ -19,6 +19,7 @@ const MAX_WORKBOOK_ROWS: usize = 50_000;
 const MAX_WORKBOOK_COLUMNS: usize = 256;
 const MAX_WORKBOOK_CELLS: usize = 500_000;
 const MAX_WORKBOOK_CELL_CHARS: usize = 20_000;
+const MAX_PDF_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +69,22 @@ fn parse_workbook(contents_base64: String, file_name: String) -> Result<ParsedWo
     }
     if sheets.is_empty() { return Err("The workbook does not contain a readable worksheet".into()); }
     Ok(ParsedWorkbook { sheets })
+}
+
+#[derive(Serialize)]
+struct PdfExtraction { text: String }
+
+#[tauri::command]
+async fn extract_pdf_text(contents_base64: String, file_name: String) -> Result<PdfExtraction, String> {
+    if !file_name.to_lowercase().ends_with(".pdf") { return Err("Only PDF documents are supported".into()); }
+    let bytes = BASE64.decode(contents_base64).map_err(|_| "The PDF data is not valid base64".to_string())?;
+    if bytes.is_empty() { return Err("The PDF is empty".into()); }
+    if bytes.len() > MAX_WORKBOOK_BYTES { return Err("PDF statement files are limited to 10 MB".into()); }
+    if !bytes.starts_with(b"%PDF-") { return Err("The selected file is not a valid PDF document".into()); }
+    let text = tauri::async_runtime::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes).map_err(|error| format!("Could not extract PDF text: {error}")))
+        .await.map_err(|error| format!("PDF extraction worker failed: {error}"))??;
+    if text.len() > MAX_PDF_TEXT_BYTES { return Err("The extracted PDF text is too large to review safely (2 MB limit)".into()); }
+    Ok(PdfExtraction { text })
 }
 
 #[derive(Serialize)]
@@ -1906,7 +1923,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }
