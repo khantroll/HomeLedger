@@ -174,6 +174,21 @@ describe("finance repository contract", () => {
     expect((await repository.listScheduledOccurrences({fromDate:"2026-09-01",toDate:"2026-09-30"}))[0].status).toBe("expected");
   });
 
+  it("persists monthly budgets and carries sinking-fund availability",async()=>{
+    const repository=new DemoFinanceRepository();
+    const account=await repository.createAccount({name:"Budget checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const category=await repository.createBudgetCategory({category:"Home: Repairs",rolloverEnabled:true});
+    await repository.setBudgetAllocation({budgetCategoryId:category.id,month:"2026-08",plannedMinor:10000});
+    await repository.setBudgetAllocation({budgetCategoryId:category.id,month:"2026-09",plannedMinor:10000});
+    await repository.createTransaction({accountId:account.id,postedDate:"2026-08-10",payee:"Hardware",category:"Home: Repairs",amountMinor:-2500,status:"cleared"});
+    await repository.createTransaction({accountId:account.id,postedDate:"2026-09-10",payee:"Hardware",category:"Home: Repairs",amountMinor:-2000,status:"cleared"});
+    expect((await repository.getBudgetMonth("2026-09")).lines[0]).toMatchObject({plannedMinor:10000,spentMinor:2000,carryInMinor:7500,availableMinor:15500});
+    await repository.updateBudgetCategory(category.id,{category:"Home: Maintenance",rolloverEnabled:false});
+    expect((await repository.listBudgetCategories())[0]).toMatchObject({category:"Home: Maintenance",rolloverEnabled:false});
+    await repository.deleteBudgetCategory(category.id);
+    expect((await repository.getBudgetMonth("2026-09")).lines).toHaveLength(0);
+  });
+
   it("stores the account relationship for future recurring transfers without posting them", async () => {
     const repository = new DemoFinanceRepository();
     const from=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});

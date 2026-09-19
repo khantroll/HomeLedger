@@ -1,7 +1,8 @@
-import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
+import { calculateBudgetMonth,validateMonth } from "./budgetMath";
 
 const initialAccounts: Account[] = [
   { id: "checking", name: "Household Checking", institution: "Sample Credit Union", type: "checking", currency: "USD", balanceMinor: 428640, ownerLabel: "Household" },
@@ -30,6 +31,8 @@ export class DemoFinanceRepository implements FinanceRepository {
   private scheduledTransactions: ScheduledTransaction[] = [];
   private scheduledOccurrences: ScheduledOccurrence[] = [];
   private archivedScheduledIds = new Set<string>();
+  private budgetCategories:BudgetCategory[]=[];
+  private budgetAllocations:BudgetAllocation[]=[];
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
@@ -217,6 +220,29 @@ export class DemoFinanceRepository implements FinanceRepository {
     if(!this.accounts.some(item=>item.id===input.accountId))throw new Error("Account does not exist");
     return structuredClone(input.rows.map(row=>({sourceRow:row.sourceRow,candidates:findScheduledMatches(row,input.accountId,this.scheduledTransactions,this.scheduledOccurrences)})));
   }
+  async listBudgetCategories():Promise<BudgetCategory[]>{return structuredClone([...this.budgetCategories].sort((a,b)=>a.category.localeCompare(b.category)));}
+  async createBudgetCategory(input:BudgetCategoryInput):Promise<BudgetCategory>{
+    const category=cleanBudgetCategory(input.category);
+    if(this.budgetCategories.some(item=>item.category.toLocaleLowerCase()===category.toLocaleLowerCase()))throw new Error("Budget category already exists");
+    const item={id:crypto.randomUUID(),category,rolloverEnabled:input.rolloverEnabled};this.budgetCategories.push(item);return structuredClone(item);
+  }
+  async updateBudgetCategory(id:string,input:BudgetCategoryInput):Promise<BudgetCategory>{
+    const index=this.budgetCategories.findIndex(item=>item.id===id);if(index<0)throw new Error("Budget category does not exist");
+    const category=cleanBudgetCategory(input.category);
+    if(this.budgetCategories.some(item=>item.id!==id&&item.category.toLocaleLowerCase()===category.toLocaleLowerCase()))throw new Error("Budget category already exists");
+    const item={id,category,rolloverEnabled:input.rolloverEnabled};this.budgetCategories[index]=item;return structuredClone(item);
+  }
+  async deleteBudgetCategory(id:string):Promise<void>{
+    const index=this.budgetCategories.findIndex(item=>item.id===id);if(index<0)throw new Error("Budget category does not exist");
+    this.budgetCategories.splice(index,1);this.budgetAllocations=this.budgetAllocations.filter(item=>item.budgetCategoryId!==id);
+  }
+  async setBudgetAllocation(input:BudgetAllocationInput):Promise<void>{
+    validateMonth(input.month);if(!this.budgetCategories.some(item=>item.id===input.budgetCategoryId))throw new Error("Budget category does not exist");
+    if(!Number.isSafeInteger(input.plannedMinor)||input.plannedMinor<0)throw new Error("Budget amount must be zero or greater");
+    const index=this.budgetAllocations.findIndex(item=>item.budgetCategoryId===input.budgetCategoryId&&item.month===input.month);
+    if(index<0)this.budgetAllocations.push({...input});else this.budgetAllocations[index]={...input};
+  }
+  async getBudgetMonth(month:string):Promise<BudgetMonth>{return structuredClone(calculateBudgetMonth(month,this.budgetCategories,this.budgetAllocations,this.transactions));}
   async importTransactions(input: ImportTransactionsInput): Promise<ImportResult> {
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (!account) throw new Error("Account does not exist");
@@ -264,6 +290,8 @@ export class DemoFinanceRepository implements FinanceRepository {
     return { batchId, removedCount: removed.length };
   }
 }
+
+function cleanBudgetCategory(value:string):string{const category=value.trim();if(!category)throw new Error("Budget category is required");if(category.length>120)throw new Error("Budget category is too long");return category;}
 
 function validateTransactionInput(input:CreateTransactionInput){
   if(input.status==="reconciled")throw new Error("Transactions are marked reconciled through account reconciliation");

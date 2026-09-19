@@ -10,6 +10,7 @@ import { ReconciliationDialog } from "./ReconciliationDialog";
 import "./register.css";
 import { RulesPage } from "./RulesPage";
 import { BillsPage } from "./BillsPage";
+import { BudgetPage } from "./BudgetPage";
 import { addDaysIso,formatDate,occurrenceDisplayState,occurrenceStateLabel,todayIso } from "./scheduledPresentation";
 
 type EditorDialog = "account" | {kind:"transaction";transaction?:Transaction} | {kind:"transfer";transaction?:Transaction} | {kind:"reconciliation";account:Account} | null;
@@ -47,13 +48,13 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">H</span><div><strong>HomeLedger</strong><small>Local household finance</small></div></div>
-      <nav aria-label="Primary navigation">{navItems.map(([label, Icon]) => <button key={label} className={active === label ? "active" : ""} onClick={() => setActive(label)}><Icon size={17}/><span>{label}</span>{!["Overview","Accounts","Transactions","Imports","Rules","Bills","Settings"].includes(label) && <em>Planned</em>}</button>)}</nav>
+      <nav aria-label="Primary navigation">{navItems.map(([label, Icon]) => <button key={label} className={active === label ? "active" : ""} onClick={() => setActive(label)}><Icon size={17}/><span>{label}</span>{!["Overview","Accounts","Transactions","Imports","Rules","Budget","Bills","Settings"].includes(label) && <em>Planned</em>}</button>)}</nav>
       <div className="privacy"><LockKeyhole size={16}/><div><strong>Local mode</strong><small>No network activity</small></div></div>
     </aside>
     <main>
       <header className="topbar"><button className="icon-button mobile-menu" aria-label="Open menu"><Menu/></button><div><h1>{active}</h1><p>{new Intl.DateTimeFormat("en-US", { dateStyle: "full" }).format(new Date())}</p></div><label className="search"><Search size={16}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search transactions" aria-label="Search transactions"/></label><button className="lock"><LockKeyhole size={16}/> Lock</button></header>
       <section className="content">
-        {active === "Imports" ? <ImportPage accounts={accounts} transactions={transactions} onImported={refresh}/> : active === "Rules" ? <RulesPage/> : active === "Bills" ? <BillsPage accounts={accounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh}/> : active === "Settings" ? <BackupPage onRestored={refresh}/> : active !== "Overview" && active !== "Accounts" && active !== "Transactions" ? <Planned title={active}/> : <>
+        {active === "Imports" ? <ImportPage accounts={accounts} transactions={transactions} onImported={refresh}/> : active === "Rules" ? <RulesPage/> : active === "Budget" ? <BudgetPage transactions={transactions}/> : active === "Bills" ? <BillsPage accounts={accounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh}/> : active === "Settings" ? <BackupPage onRestored={refresh}/> : active !== "Overview" && active !== "Accounts" && active !== "Transactions" ? <Planned title={active}/> : <>
           <div className="notice"><strong>{isNativeApp ? "Local SQLite" : "Browser preview"}</strong><span>{isNativeApp ? "Records are stored on this device. No network service is used." : "Synthetic, in-memory data only. Run through Tauri for durable SQLite storage."}</span></div>
           {error && <div className="error-banner" role="alert">{error}</div>}
           <div className="summary-grid">
