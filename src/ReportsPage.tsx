@@ -1,0 +1,47 @@
+import {useEffect,useMemo,useState} from "react";
+import {BarChart3,CalendarRange,ChevronRight,Tags} from "lucide-react";
+import {formatMoney,type Account,type Transaction} from "./domain";
+import {formatDate,todayIso} from "./scheduledPresentation";
+import {calculateTransactionReport,reportRange,type ReportGroup,type ReportPreset} from "./reportMath";
+import "./reports.css";
+
+export function ReportsPage({accounts,transactions,today=todayIso()}:{accounts:Account[];transactions:Transaction[];today?:string}){
+  const currencies=useMemo(()=>[...new Set(accounts.map(item=>item.currency))].sort(),[accounts]);
+  const [currency,setCurrency]=useState(currencies[0]??"USD"),[accountId,setAccountId]=useState("all"),[preset,setPreset]=useState<ReportPreset>("quarter");
+  const initial=reportRange("quarter",today),[fromDate,setFromDate]=useState(initial.fromDate),[toDate,setToDate]=useState(initial.toDate);
+  const [grouping,setGrouping]=useState<"category"|"payee">("category"),[selectedKey,setSelectedKey]=useState("");
+  const availableAccounts=accounts.filter(item=>item.currency===currency);
+  useEffect(()=>{if(currencies.length&&!currencies.includes(currency))setCurrency(currencies[0]);},[currencies,currency]);
+  useEffect(()=>{if(accountId!=="all"&&!availableAccounts.some(item=>item.id===accountId))setAccountId("all");},[accountId,availableAccounts]);
+  const result=useMemo(()=>{try{return{report:calculateTransactionReport({fromDate,toDate,currency,accountId:accountId==="all"?undefined:accountId,accounts,transactions}),error:""};}catch(reason){return{report:null,error:reason instanceof Error?reason.message:String(reason)};}},[accountId,accounts,currency,fromDate,toDate,transactions]);
+  const groups=result.report?(grouping==="category"?result.report.categories:result.report.payees):[],selected=groups.find(item=>item.key===selectedKey)??groups[0];
+  function choosePreset(next:ReportPreset){setPreset(next);setSelectedKey("");if(next!=="custom"){const range=reportRange(next,today);setFromDate(range.fromDate);setToDate(range.toDate);}}
+  return <div className="reports-page">
+    <section className="panel reports-header"><div><h2>Income and spending reports</h2><p>Deterministic local totals with direct access to every contributing ledger entry.</p></div><div className="reports-controls"><label>Currency<select value={currency} onChange={event=>{setCurrency(event.target.value);setSelectedKey("");}}>{currencies.length?currencies.map(item=><option key={item}>{item}</option>):<option>USD</option>}</select></label><label>Account<select value={accountId} onChange={event=>{setAccountId(event.target.value);setSelectedKey("");}}><option value="all">All {currency} accounts</option>{availableAccounts.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>Period<select value={preset} onChange={event=>choosePreset(event.target.value as ReportPreset)}><option value="month">This month</option><option value="quarter">Last 3 months</option><option value="year">Year to date</option><option value="twelve">Last 12 months</option><option value="custom">Custom range</option></select></label></div></section>
+    {preset==="custom"&&<section className="panel custom-report-range"><CalendarRange size={18}/><label>From<input type="date" value={fromDate} onChange={event=>{setFromDate(event.target.value);setSelectedKey("");}}/></label><label>Through<input type="date" value={toDate} onChange={event=>{setToDate(event.target.value);setSelectedKey("");}}/></label></section>}
+    {result.error&&<div className="error-banner" role="alert">{result.error}</div>}
+    {!result.report?null:<>
+      <div className="summary-grid report-summary"><Summary label="Income" value={formatMoney(result.report.incomeMinor,currency)} detail={`${result.report.transactionCount} ledger entries in range`} tone="positive"/><Summary label="Spending" value={formatMoney(result.report.spendingMinor,currency)} detail="Transfers and balance adjustments excluded" tone="negative"/><Summary label="Net cash flow" value={formatMoney(result.report.netMinor,currency)} detail={`${formatDate(fromDate)} – ${formatDate(toDate)}`} tone={result.report.netMinor<0?"negative":"positive"}/><Summary label="Savings rate" value={result.report.savingsRatePercent===null?"—":`${result.report.savingsRatePercent.toFixed(1)}%`} detail="Net cash flow divided by income" tone={result.report.savingsRatePercent!==null&&result.report.savingsRatePercent<0?"negative":""}/></div>
+      <div className="reports-grid"><section className="panel report-ranking"><div className="panel-heading"><div><h2>Where money went</h2><p>Expense totals use split categories when present</p></div><div className="report-grouping" aria-label="Group spending by"><button className={grouping==="category"?"active":""} onClick={()=>{setGrouping("category");setSelectedKey("");}}><Tags size={13}/> Category</button><button className={grouping==="payee"?"active":""} onClick={()=>{setGrouping("payee");setSelectedKey("");}}><BarChart3 size={13}/> Payee</button></div></div>{groups.length?<Ranking groups={groups} selected={selected} currency={currency} onSelect={setSelectedKey}/>:<div className="empty-state">No spending in this report range.</div>}</section><section className="panel report-trend"><div className="panel-heading"><div><h2>Monthly cash flow</h2><p>Income and spending by calendar month</p></div></div><div className="month-trends">{result.report.months.map(month=><MonthRow key={month.month} month={month.month} income={month.incomeMinor} spending={month.spendingMinor} currency={currency} max={Math.max(1,...result.report!.months.flatMap(item=>[item.incomeMinor,item.spendingMinor]))}/>)}</div></section></div>
+      {selected&&<Drilldown group={selected} grouping={grouping} accounts={accounts} transactions={transactions} currency={currency}/>}
+      <p className="report-note">Reports are calculated locally from saved ledger entries. Transfers and reconciliation adjustments are excluded; pending entries remain included until removed or changed in the register.</p>
+    </>}
+  </div>;
+}
+
+function Ranking({groups,selected,currency,onSelect}:{groups:ReportGroup[];selected?:ReportGroup;currency:string;onSelect:(key:string)=>void}){
+  const max=groups[0]?.amountMinor??1;
+  return <div className="ranking-list">{groups.map(group=><button key={group.key} className={selected?.key===group.key?"active":""} onClick={()=>onSelect(group.key)}><span className="ranking-label"><strong>{group.label}</strong><small>{group.transactionCount} transaction{group.transactionCount===1?"":"s"}</small></span><span className="ranking-value"><strong>{formatMoney(group.amountMinor,currency)}</strong><span><i style={{width:`${group.amountMinor/max*100}%`}}/></span></span><ChevronRight size={15}/></button>)}</div>;
+}
+
+function MonthRow({month,income,spending,currency,max}:{month:string;income:number;spending:number;currency:string;max:number}){
+  const label=new Intl.DateTimeFormat("en-US",{month:"short",year:"numeric",timeZone:"UTC"}).format(new Date(`${month}-01T00:00:00Z`));
+  return <article><strong>{label}</strong><div className="month-bars"><span><i className="income" style={{width:`${income/max*100}%`}}/><small>Income {formatMoney(income,currency)}</small></span><span><i className="spending" style={{width:`${spending/max*100}%`}}/><small>Spending {formatMoney(spending,currency)}</small></span></div><strong className={income-spending<0?"negative":"positive"}>{formatMoney(income-spending,currency)}</strong></article>;
+}
+
+function Drilldown({group,grouping,accounts,transactions,currency}:{group:ReportGroup;grouping:"category"|"payee";accounts:Account[];transactions:Transaction[];currency:string}){
+  const rows=group.contributions.map(contribution=>({contribution,transaction:transactions.find(item=>item.id===contribution.transactionId)})).filter((row):row is {contribution:typeof group.contributions[number];transaction:Transaction}=>Boolean(row.transaction)).sort((a,b)=>b.transaction.postedDate.localeCompare(a.transaction.postedDate)||a.transaction.id.localeCompare(b.transaction.id));
+  return <section className="panel report-drilldown"><div className="panel-heading"><div><h2>{group.label}</h2><p>{grouping==="category"?"Transactions contributing to this category":"Transactions paid to this payee"}</p></div><strong>{formatMoney(group.amountMinor,currency)}</strong></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>Payee</th><th>Account</th><th>Category</th><th>Report amount</th><th>Transaction total</th></tr></thead><tbody>{rows.map(({contribution,transaction})=><tr key={transaction.id}><td>{formatDate(transaction.postedDate)}</td><td><strong>{transaction.payee}</strong></td><td>{accounts.find(item=>item.id===transaction.accountId)?.name??"Missing account"}</td><td>{transaction.category}{transaction.splits?.length?<small className="report-split-note">{transaction.splits.length} split lines</small>:null}</td><td className="amount negative">{formatMoney(contribution.amountMinor,currency)}</td><td className="amount negative">{formatMoney(-transaction.amountMinor,currency)}</td></tr>)}</tbody></table></div></section>;
+}
+
+function Summary({label,value,detail,tone=""}:{label:string;value:string;detail:string;tone?:string}){return <article className={`summary ${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;}
