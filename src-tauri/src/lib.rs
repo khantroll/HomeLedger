@@ -29,14 +29,13 @@ struct ParsedWorkbook { sheets: Vec<WorkbookSheet> }
 struct WorkbookSheet { name: String, first_row: usize, rows: Vec<Vec<String>> }
 
 fn workbook_cell_text(cell: &Data) -> String {
-    if let Some(date) = cell.as_date() { return date.format("%Y-%m-%d").to_string(); }
     match cell {
         Data::Empty => String::new(),
-        Data::String(value) | Data::DateTimeIso(value) | Data::DurationIso(value) => value.clone(),
+        Data::DateTime(_) | Data::DateTimeIso(_) => cell.as_date().map(|date| date.format("%Y-%m-%d").to_string()).unwrap_or_else(|| cell.to_string()),
+        Data::String(value) | Data::DurationIso(value) => value.clone(),
         Data::Float(value) => value.to_string(),
         Data::Int(value) => value.to_string(),
         Data::Bool(value) => value.to_string(),
-        Data::DateTime(value) => value.to_string(),
         Data::Error(value) => value.to_string(),
     }
 }
