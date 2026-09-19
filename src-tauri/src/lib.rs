@@ -262,6 +262,7 @@ struct ScheduledTransaction {
     custom_interval_count: Option<u32>,
     custom_interval_unit: Option<String>,
     enabled: bool,
+    archived: bool,
 }
 
 #[derive(Deserialize)]
@@ -686,7 +687,7 @@ fn delete_import_profile(profile_id:String,state:State<DbState>)->Result<(),Stri
 }
 
 fn scheduled_transaction_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<ScheduledTransaction>{
-    Ok(ScheduledTransaction{id:row.get(0)?,kind:row.get(1)?,account_id:row.get(2)?,transfer_account_id:row.get(3)?,payee:row.get(4)?,category:row.get(5)?,amount_minor:row.get(6)?,status:row.get(7)?,memo:row.get(8)?,frequency:row.get(9)?,anchor_date:row.get(10)?,end_date:row.get(11)?,second_month_day:row.get(12)?,custom_interval_count:row.get(13)?,custom_interval_unit:row.get(14)?,enabled:row.get(15)?})
+    Ok(ScheduledTransaction{id:row.get(0)?,kind:row.get(1)?,account_id:row.get(2)?,transfer_account_id:row.get(3)?,payee:row.get(4)?,category:row.get(5)?,amount_minor:row.get(6)?,status:row.get(7)?,memo:row.get(8)?,frequency:row.get(9)?,anchor_date:row.get(10)?,end_date:row.get(11)?,second_month_day:row.get(12)?,custom_interval_count:row.get(13)?,custom_interval_unit:row.get(14)?,enabled:row.get(15)?,archived:row.get(16)?})
 }
 
 fn scheduled_occurrence_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<ScheduledOccurrence>{
@@ -728,7 +729,7 @@ fn clean_scheduled_transaction(connection:&Connection,request:ScheduledTransacti
         if destination.as_deref()!=Some(source_currency.as_str()){return Err("Scheduled transfer accounts must exist and use the same currency".into());}
         if request.amount_minor<=0{return Err("Scheduled transfer amount must be positive".into());}
     }
-    Ok(ScheduledTransaction{id,kind:request.kind,account_id,transfer_account_id,payee:clean_required(request.payee,"Payee",160)?,category:clean_required(request.category,"Category",120)?,amount_minor:request.amount_minor,status:request.status,memo:clean_optional(request.memo,500)?,frequency:request.frequency,anchor_date:request.anchor_date,end_date,second_month_day:request.second_month_day,custom_interval_count:request.custom_interval_count,custom_interval_unit:request.custom_interval_unit,enabled:request.enabled})
+    Ok(ScheduledTransaction{id,kind:request.kind,account_id,transfer_account_id,payee:clean_required(request.payee,"Payee",160)?,category:clean_required(request.category,"Category",120)?,amount_minor:request.amount_minor,status:request.status,memo:clean_optional(request.memo,500)?,frequency:request.frequency,anchor_date:request.anchor_date,end_date,second_month_day:request.second_month_day,custom_interval_count:request.custom_interval_count,custom_interval_unit:request.custom_interval_unit,enabled:request.enabled,archived:false})
 }
 
 fn clamped_month_date(anchor:NaiveDate,month_offset:i32)->Result<NaiveDate,String>{
@@ -824,7 +825,7 @@ fn parse_occurrence_query(request:&ScheduledOccurrenceQuery)->Result<(NaiveDate,
 #[tauri::command]
 fn list_scheduled_transactions(state:State<DbState>)->Result<Vec<ScheduledTransaction>,String>{
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
-    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled FROM scheduled_transactions WHERE archived_at IS NULL ORDER BY created_at,id").map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,archived_at IS NOT NULL FROM scheduled_transactions ORDER BY created_at,id").map_err(|e|e.to_string())?;
     let rows=statement.query_map([],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
@@ -867,7 +868,7 @@ fn delete_scheduled_transaction(scheduled_transaction_id:String,state:State<DbSt
 
 fn generate_scheduled_occurrences_inner(connection:&mut Connection,request:ScheduledOccurrenceQuery)->Result<usize,String>{
     let (from,to)=parse_occurrence_query(&request)?;
-    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled FROM scheduled_transactions WHERE archived_at IS NULL AND enabled=1 AND (?1 IS NULL OR id=?1) ORDER BY id").map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,archived_at IS NOT NULL FROM scheduled_transactions WHERE archived_at IS NULL AND enabled=1 AND (?1 IS NULL OR id=?1) ORDER BY id").map_err(|e|e.to_string())?;
     let rows=statement.query_map(params![request.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
     let templates=rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
     drop(statement);
@@ -902,7 +903,7 @@ fn load_expected_occurrence(connection:&Connection,id:&str)->Result<(ScheduledOc
     let occurrence:Option<ScheduledOccurrence>=connection.query_row("SELECT id,scheduled_transaction_id,due_date,status,transaction_id FROM scheduled_occurrences WHERE id=?1",params![id],scheduled_occurrence_from_row).optional().map_err(|e|e.to_string())?;
     let occurrence=occurrence.ok_or("Scheduled occurrence does not exist")?;
     if occurrence.status!="expected"{return Err("Only expected occurrences can be changed".into());}
-    let template=connection.query_row("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled FROM scheduled_transactions WHERE id=?1",params![occurrence.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
+    let template=connection.query_row("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,archived_at IS NOT NULL FROM scheduled_transactions WHERE id=?1",params![occurrence.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
     Ok((occurrence,template))
 }
 

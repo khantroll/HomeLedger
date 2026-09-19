@@ -92,9 +92,10 @@ export interface ScheduledTransaction {
   customIntervalCount?: number;
   customIntervalUnit?: CustomIntervalUnit;
   enabled: boolean;
+  archived?: boolean;
 }
 
-export type ScheduledTransactionInput = Omit<ScheduledTransaction, "id">;
+export type ScheduledTransactionInput = Omit<ScheduledTransaction, "id"|"archived">;
 
 export interface ScheduledOccurrence {
   id: string;

@@ -146,7 +146,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   async listImportProfiles():Promise<ImportProfile[]>{return structuredClone(this.importProfiles);}
   async saveImportProfile(input:ImportProfileInput):Promise<ImportProfile>{validateImportProfile(input,this.accounts);const existing=this.importProfiles.find(item=>item.name===input.name&&item.headerSignature===input.headerSignature);const profile={id:existing?.id??crypto.randomUUID(),...input};if(existing)this.importProfiles[this.importProfiles.indexOf(existing)]=profile;else this.importProfiles.unshift(profile);return structuredClone(profile);}
   async deleteImportProfile(id:string):Promise<void>{const index=this.importProfiles.findIndex(item=>item.id===id);if(index<0)throw new Error("Import profile does not exist");this.importProfiles.splice(index,1);}
-  async listScheduledTransactions():Promise<ScheduledTransaction[]>{return structuredClone(this.scheduledTransactions.filter(item=>!this.archivedScheduledIds.has(item.id)));}
+  async listScheduledTransactions():Promise<ScheduledTransaction[]>{return structuredClone(this.scheduledTransactions.map(item=>({...item,archived:this.archivedScheduledIds.has(item.id)})));}
   async createScheduledTransaction(input:ScheduledTransactionInput):Promise<ScheduledTransaction>{
     validateScheduledTransaction(input,this.accounts);
     const item={id:crypto.randomUUID(),...input};
