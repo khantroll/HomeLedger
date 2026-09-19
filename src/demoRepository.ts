@@ -1,5 +1,6 @@
-import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
+import { generateRecurrenceDates } from "./scheduledRecurrence";
 
 const initialAccounts: Account[] = [
   { id: "checking", name: "Household Checking", institution: "Sample Credit Union", type: "checking", currency: "USD", balanceMinor: 428640, ownerLabel: "Household" },
@@ -25,6 +26,9 @@ export class DemoFinanceRepository implements FinanceRepository {
   private reconciledTransactionIds = new Set<string>();
   private merchantRules: MerchantRule[] = [];
   private importProfiles: ImportProfile[] = [];
+  private scheduledTransactions: ScheduledTransaction[] = [];
+  private scheduledOccurrences: ScheduledOccurrence[] = [];
+  private archivedScheduledIds = new Set<string>();
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
@@ -97,6 +101,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     if(index<0)throw new Error("Transaction does not exist");
     const transaction=this.transactions[index];
     if(this.reconciledTransactionIds.has(id))throw new Error("Reconciled transactions cannot be deleted");
+    if(this.scheduledOccurrences.some(item=>item.transactionId===id))throw new Error("Transactions linked to scheduled occurrences cannot be deleted");
     if(transaction.importBatchId)throw new Error("Imported transactions must be removed by undoing their complete import batch");
     if(transaction.transferLinkId)throw new Error("Linked transfers must be removed through the transfer editor");
     this.transactions.splice(index,1);
@@ -141,6 +146,72 @@ export class DemoFinanceRepository implements FinanceRepository {
   async listImportProfiles():Promise<ImportProfile[]>{return structuredClone(this.importProfiles);}
   async saveImportProfile(input:ImportProfileInput):Promise<ImportProfile>{validateImportProfile(input,this.accounts);const existing=this.importProfiles.find(item=>item.name===input.name&&item.headerSignature===input.headerSignature);const profile={id:existing?.id??crypto.randomUUID(),...input};if(existing)this.importProfiles[this.importProfiles.indexOf(existing)]=profile;else this.importProfiles.unshift(profile);return structuredClone(profile);}
   async deleteImportProfile(id:string):Promise<void>{const index=this.importProfiles.findIndex(item=>item.id===id);if(index<0)throw new Error("Import profile does not exist");this.importProfiles.splice(index,1);}
+  async listScheduledTransactions():Promise<ScheduledTransaction[]>{return structuredClone(this.scheduledTransactions.filter(item=>!this.archivedScheduledIds.has(item.id)));}
+  async createScheduledTransaction(input:ScheduledTransactionInput):Promise<ScheduledTransaction>{
+    validateScheduledTransaction(input,this.accounts);
+    const item={id:crypto.randomUUID(),...input};
+    this.scheduledTransactions.push(item);
+    return structuredClone(item);
+  }
+  async updateScheduledTransaction(id:string,input:ScheduledTransactionInput):Promise<ScheduledTransaction>{
+    validateScheduledTransaction(input,this.accounts);
+    const index=this.scheduledTransactions.findIndex(item=>item.id===id);
+    if(index<0||this.archivedScheduledIds.has(id))throw new Error("Scheduled transaction does not exist");
+    const item={id,...input};
+    this.scheduledTransactions[index]=item;
+    this.scheduledOccurrences=this.scheduledOccurrences.filter(occurrence=>occurrence.scheduledTransactionId!==id||occurrence.status!=="expected");
+    return structuredClone(item);
+  }
+  async deleteScheduledTransaction(id:string):Promise<void>{
+    if(!this.scheduledTransactions.some(item=>item.id===id)||this.archivedScheduledIds.has(id))throw new Error("Scheduled transaction does not exist");
+    this.archivedScheduledIds.add(id);
+    this.scheduledOccurrences=this.scheduledOccurrences.filter(occurrence=>occurrence.scheduledTransactionId!==id||occurrence.status!=="expected");
+  }
+  async generateScheduledOccurrences(input:ScheduledOccurrenceQuery):Promise<number>{
+    validateOccurrenceQuery(input);
+    const templates=this.scheduledTransactions.filter(item=>!this.archivedScheduledIds.has(item.id)&&item.enabled&&(!input.scheduledTransactionId||item.id===input.scheduledTransactionId));
+    if(input.scheduledTransactionId&&!templates.length)throw new Error("Scheduled transaction does not exist or is disabled");
+    let created=0;
+    for(const template of templates)for(const dueDate of generateRecurrenceDates(template,input.fromDate,input.toDate)){
+      if(this.scheduledOccurrences.some(item=>item.scheduledTransactionId===template.id&&item.dueDate===dueDate))continue;
+      this.scheduledOccurrences.push({id:crypto.randomUUID(),scheduledTransactionId:template.id,dueDate,status:"expected"});
+      created++;
+    }
+    return created;
+  }
+  async listScheduledOccurrences(input:ScheduledOccurrenceQuery):Promise<ScheduledOccurrence[]>{
+    validateOccurrenceQuery(input);
+    return structuredClone(this.scheduledOccurrences.filter(item=>item.dueDate>=input.fromDate&&item.dueDate<=input.toDate&&(!input.scheduledTransactionId||item.scheduledTransactionId===input.scheduledTransactionId)).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)||a.id.localeCompare(b.id)));
+  }
+  async postScheduledOccurrence(id:string):Promise<Transaction>{
+    const occurrence=this.expectedOccurrence(id),template=this.scheduledTransactions.find(item=>item.id===occurrence.scheduledTransactionId)!;
+    if(template.kind==="transfer")throw new Error("Recurring transfer posting is not implemented yet");
+    const transaction=await this.createTransaction({accountId:template.accountId,postedDate:occurrence.dueDate,payee:template.payee,category:template.category,amountMinor:template.amountMinor,status:template.status,memo:template.memo});
+    occurrence.status="posted";occurrence.transactionId=transaction.id;
+    return transaction;
+  }
+  async skipScheduledOccurrence(id:string):Promise<ScheduledOccurrence>{
+    const occurrence=this.expectedOccurrence(id);
+    occurrence.status="skipped";
+    return structuredClone(occurrence);
+  }
+  async linkScheduledOccurrence(id:string,transactionId:string):Promise<ScheduledOccurrence>{
+    const occurrence=this.expectedOccurrence(id),template=this.scheduledTransactions.find(item=>item.id===occurrence.scheduledTransactionId)!;
+    if(template.kind==="transfer")throw new Error("Recurring transfer linking is not implemented yet");
+    if(this.scheduledOccurrences.some(item=>item.transactionId===transactionId))throw new Error("Transaction is already linked to a scheduled occurrence");
+    const transaction=this.transactions.find(item=>item.id===transactionId);
+    if(!transaction)throw new Error("Transaction does not exist");
+    if(transaction.transferLinkId)throw new Error("Linked transfers cannot be matched to a scheduled transaction");
+    if(transaction.accountId!==template.accountId||transaction.amountMinor!==template.amountMinor)throw new Error("Transaction account and amount must match the scheduled transaction");
+    occurrence.status="linked";occurrence.transactionId=transactionId;
+    return structuredClone(occurrence);
+  }
+  private expectedOccurrence(id:string):ScheduledOccurrence{
+    const occurrence=this.scheduledOccurrences.find(item=>item.id===id);
+    if(!occurrence)throw new Error("Scheduled occurrence does not exist");
+    if(occurrence.status!=="expected")throw new Error("Only expected occurrences can be changed");
+    return occurrence;
+  }
   async importTransactions(input: ImportTransactionsInput): Promise<ImportResult> {
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (!account) throw new Error("Account does not exist");
@@ -166,6 +237,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     if (batch.undoneAt) throw new Error("This import has already been undone");
     const ids = new Set(this.importedTransactionIds.get(batchId) ?? []);
     if([...ids].some(id=>this.reconciledTransactionIds.has(id)))throw new Error("This import contains reconciled transactions and cannot be undone");
+    if([...ids].some(id=>this.scheduledOccurrences.some(item=>item.transactionId===id)))throw new Error("This import contains transactions linked to scheduled occurrences and cannot be undone");
     const removed = this.transactions.filter(item => ids.has(item.id));
     this.transactions = this.transactions.filter(item => !ids.has(item.id));
     const account = this.accounts.find(item => item.id === batch.accountId);
@@ -206,4 +278,33 @@ function validateImportProfile(input:ImportProfileInput,accounts:Account[]){
   if(input.dateColumn<0||input.payeeColumn<0)throw new Error("Date and description columns are required");
   if(input.amountColumn<0&&input.debitColumn<0&&input.creditColumn<0)throw new Error("An amount or debit/credit column is required");
   if(!["mdy","dmy"].includes(input.dateOrder)||!["dot","comma"].includes(input.numberFormat))throw new Error("Import profile locale settings are invalid");
+}
+
+function validateScheduledTransaction(input:ScheduledTransactionInput,accounts:Account[]){
+  const account=accounts.find(item=>item.id===input.accountId);
+  if(!account)throw new Error("Scheduled transaction account does not exist");
+  if(!input.payee.trim())throw new Error("Payee is required");
+  if(!input.category.trim())throw new Error("Category is required");
+  if(!Number.isSafeInteger(input.amountMinor)||input.amountMinor===0)throw new Error("Scheduled amount must be a non-zero safe integer");
+  if(!["pending","cleared","review"].includes(input.status))throw new Error("Scheduled status is invalid");
+  if(input.kind==="transaction"&&input.transferAccountId)throw new Error("Ordinary scheduled transactions cannot have a transfer account");
+  if(input.kind==="transfer"){
+    const destination=accounts.find(item=>item.id===input.transferAccountId);
+    if(!destination||destination.id===account.id)throw new Error("Scheduled transfers require two different accounts");
+    if(destination.currency!==account.currency)throw new Error("Scheduled transfer accounts must use the same currency");
+    if(input.amountMinor<=0)throw new Error("Scheduled transfer amount must be positive");
+  }
+  if(input.frequency==="semimonthly"){
+    const anchorDay=Number(input.anchorDate.slice(-2));
+    if(!Number.isInteger(input.secondMonthDay)||!input.secondMonthDay||input.secondMonthDay<1||input.secondMonthDay>31||input.secondMonthDay===anchorDay)throw new Error("Semimonthly schedules require two different month days");
+  }else if(input.secondMonthDay!==undefined)throw new Error("Second month day is only valid for semimonthly schedules");
+  if(input.frequency==="custom"){
+    if(!Number.isInteger(input.customIntervalCount)||!input.customIntervalCount||input.customIntervalCount<1||!input.customIntervalUnit)throw new Error("Custom schedules require a positive interval and unit");
+  }else if(input.customIntervalCount!==undefined||input.customIntervalUnit!==undefined)throw new Error("Custom interval fields are only valid for custom schedules");
+  generateRecurrenceDates(input,input.anchorDate,input.anchorDate);
+  if(input.endDate&&input.endDate<input.anchorDate)throw new Error("Schedule end date cannot be before its anchor");
+}
+
+function validateOccurrenceQuery(input:ScheduledOccurrenceQuery){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(input.fromDate)||!/^\d{4}-\d{2}-\d{2}$/.test(input.toDate)||input.fromDate>input.toDate)throw new Error("Occurrence query dates are invalid");
 }

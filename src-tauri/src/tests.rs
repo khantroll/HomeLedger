@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, import_transactions_inner, restore_database_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, restore_database_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
 use rusqlite::Connection;
 
 #[test]
@@ -15,7 +15,8 @@ fn migration_creates_local_ledger_tables() {
     let reconciliation_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('reconciliations','reconciliation_items')", [], |row| row.get(0)).unwrap();
     let merchant_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='merchant_rules'", [], |row| row.get(0)).unwrap();
     let profile_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='import_profiles'", [], |row| row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables), (9, 2, 1, 1));
+    let scheduled_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('scheduled_transactions','scheduled_occurrences')", [], |row| row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables), (10, 2, 1, 1, 2));
 }
 
 #[test]
@@ -41,7 +42,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -174,6 +175,58 @@ fn linked_transfer_crud_is_atomic_and_balanced() {
     delete_transfer_inner(&mut connection, transfer.link_id).unwrap();
     let remaining: i64 = connection.query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0)).unwrap();
     assert_eq!(remaining, 0);
+}
+
+fn scheduled_request(kind:&str,account_id:&str,transfer_account_id:Option<&str>)->ScheduledTransactionRequest{
+    ScheduledTransactionRequest{
+        kind:kind.into(),account_id:account_id.into(),transfer_account_id:transfer_account_id.map(str::to_string),
+        payee:"Utility".into(),category:"Utilities".into(),amount_minor:if kind=="transfer"{2500}else{-2500},
+        status:"pending".into(),memo:None,frequency:"monthly".into(),anchor_date:"2026-01-31".into(),
+        end_date:None,second_month_day:None,custom_interval_count:None,custom_interval_unit:None,enabled:true,
+    }
+}
+
+#[test]
+fn scheduled_occurrences_are_idempotent_and_support_state_transitions() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',10000,'Household')",[]).unwrap();
+    let template=clean_scheduled_transaction(&connection,scheduled_request("transaction","a",None),"schedule".into()).unwrap();
+    insert_scheduled_transaction(&connection,&template).unwrap();
+    let query=|from:&str,to:&str|ScheduledOccurrenceQuery{from_date:from.into(),to_date:to.into(),scheduled_transaction_id:Some("schedule".into())};
+    assert_eq!(generate_scheduled_occurrences_inner(&mut connection,query("2026-01-01","2026-03-31")).unwrap(),3);
+    assert_eq!(generate_scheduled_occurrences_inner(&mut connection,query("2026-02-01","2026-04-30")).unwrap(),1);
+    let dates:Vec<String>={
+        let mut statement=connection.prepare("SELECT due_date FROM scheduled_occurrences ORDER BY due_date").unwrap();
+        statement.query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    };
+    assert_eq!(dates,vec!["2026-01-31","2026-02-28","2026-03-31","2026-04-30"]);
+    let ids:Vec<String>={
+        let mut statement=connection.prepare("SELECT id FROM scheduled_occurrences ORDER BY due_date").unwrap();
+        statement.query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    };
+    let posted=post_scheduled_occurrence_inner(&mut connection,ids[0].clone()).unwrap();
+    assert_eq!((posted.posted_date.as_str(),posted.amount_minor),("2026-01-31",-2500));
+    let skipped=skip_scheduled_occurrence_inner(&connection,ids[1].clone()).unwrap();
+    assert_eq!(skipped.status,"skipped");
+    let existing=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"a".into(),posted_date:"2026-03-30".into(),payee:"Utility".into(),category:"Utilities".into(),amount_minor:-2500,status:"cleared".into(),memo:None,splits:None}).unwrap();
+    let linked=link_scheduled_occurrence_inner(&mut connection,ids[2].clone(),existing.id.clone()).unwrap();
+    assert_eq!((linked.status.as_str(),linked.transaction_id.as_deref()),("linked",Some(existing.id.as_str())));
+    assert!(delete_transaction_inner(&connection,existing.id).is_err());
+    assert!(post_scheduled_occurrence_inner(&mut connection,ids[0].clone()).is_err());
+}
+
+#[test]
+fn scheduled_transfer_templates_preserve_both_accounts_but_defer_posting() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('from','Checking','checking','USD',10000,'Household'),('to','Savings','savings','USD',0,'Household')",[]).unwrap();
+    let template=clean_scheduled_transaction(&connection,scheduled_request("transfer","from",Some("to")),"transfer-schedule".into()).unwrap();
+    insert_scheduled_transaction(&connection,&template).unwrap();
+    assert_eq!(template.transfer_account_id.as_deref(),Some("to"));
+    generate_scheduled_occurrences_inner(&mut connection,ScheduledOccurrenceQuery{from_date:"2026-01-01".into(),to_date:"2026-01-31".into(),scheduled_transaction_id:Some(template.id)}).unwrap();
+    let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
+    assert!(post_scheduled_occurrence_inner(&mut connection,occurrence_id).is_err());
 }
 
 #[test]
