@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
 use rusqlite::Connection;
 
 #[test]
@@ -19,7 +19,8 @@ fn migration_creates_local_ledger_tables() {
     let budget_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_categories','budget_allocations')", [], |row| row.get(0)).unwrap();
     let auto_post_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('scheduled_transactions') WHERE name='auto_post'",[],|row|row.get(0)).unwrap();
     let debt_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('debt_plan_settings','debt_terms')",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables), (13, 2, 1, 1, 2, 2,1,2));
+    let savings_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='savings_goals'",[],|row|row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables), (14, 2, 1, 1, 2, 2,1,2,1));
 }
 
 #[test]
@@ -45,7 +46,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -329,6 +330,19 @@ fn debt_plans_are_currency_scoped_validated_and_replaced_atomically(){
 }
 
 #[test]
+fn savings_goals_require_unique_active_savings_accounts(){
+    let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('savings','Savings','savings','USD',250000,'Household'),('checking','Checking','checking','USD',10000,'Household')",[]).unwrap();
+    let request=||SavingsGoalRequest{name:" Emergency fund ".into(),account_id:"savings".into(),target_minor:1_000_000,target_date:"2027-09-19".into(),planned_monthly_minor:75_000};
+    let created=create_savings_goal_inner(&connection,request()).unwrap();assert_eq!((created.name.as_str(),created.account_id.as_str()),("Emergency fund","savings"));
+    assert!(create_savings_goal_inner(&connection,request()).is_err());
+    assert!(create_savings_goal_inner(&connection,SavingsGoalRequest{name:"Invalid".into(),account_id:"checking".into(),target_minor:1000,target_date:"2027-01-01".into(),planned_monthly_minor:0}).is_err());
+    let updated=update_savings_goal_inner(&connection,created.id.clone(),SavingsGoalRequest{name:"Six months".into(),account_id:"savings".into(),target_minor:1_200_000,target_date:"2028-01-01".into(),planned_monthly_minor:80_000}).unwrap();
+    assert_eq!((updated.target_minor,list_savings_goals_inner(&connection).unwrap().len()),(1_200_000,1));
+    delete_savings_goal_inner(&connection,created.id).unwrap();assert!(list_savings_goals_inner(&connection).unwrap().is_empty());
+}
+
+#[test]
 fn reconciliation_requires_an_exact_balance_and_protects_completed_items() {
     let mut connection = Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
@@ -387,6 +401,14 @@ fn invalid_restore_does_not_modify_the_ledger() {
 fn backup_validation_accepts_supported_pre_debt_schema() {
     let mut connection = Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
-    connection.execute_batch("DROP TABLE debt_terms; DROP TABLE debt_plan_settings; DELETE FROM schema_migrations WHERE version=13;").unwrap();
+    connection.execute_batch("DROP TABLE savings_goals; DROP TABLE debt_terms; DROP TABLE debt_plan_settings; DELETE FROM schema_migrations WHERE version>=13;").unwrap();
+    validate_backup_database(&connection).unwrap();
+}
+
+#[test]
+fn backup_validation_accepts_supported_pre_savings_schema() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute_batch("DROP TABLE savings_goals; DELETE FROM schema_migrations WHERE version=14;").unwrap();
     validate_backup_database(&connection).unwrap();
 }

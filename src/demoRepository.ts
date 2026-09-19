@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
@@ -33,6 +33,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   private archivedScheduledIds = new Set<string>();
   private budgetCategories:BudgetCategory[]=[];
   private budgetAllocations:BudgetAllocation[]=[];
+  private savingsGoals:SavingsGoal[]=[];
   private debtPlans=new Map<string,DebtPlan>();
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
@@ -255,6 +256,10 @@ export class DemoFinanceRepository implements FinanceRepository {
     if(index<0)this.budgetAllocations.push({...input});else this.budgetAllocations[index]={...input};
   }
   async getBudgetMonth(month:string):Promise<BudgetMonth>{return structuredClone(calculateBudgetMonth(month,this.budgetCategories,this.budgetAllocations,this.transactions));}
+  async listSavingsGoals():Promise<SavingsGoal[]>{return structuredClone([...this.savingsGoals].sort((a,b)=>a.targetDate.localeCompare(b.targetDate)||a.name.localeCompare(b.name)));}
+  async createSavingsGoal(input:SavingsGoalInput):Promise<SavingsGoal>{const item=validateSavingsGoal(input,this.accounts,this.savingsGoals,crypto.randomUUID());this.savingsGoals.push(item);return structuredClone(item);}
+  async updateSavingsGoal(id:string,input:SavingsGoalInput):Promise<SavingsGoal>{const index=this.savingsGoals.findIndex(item=>item.id===id);if(index<0)throw new Error("Savings goal does not exist");const item=validateSavingsGoal(input,this.accounts,this.savingsGoals,id);this.savingsGoals[index]=item;return structuredClone(item);}
+  async deleteSavingsGoal(id:string):Promise<void>{const index=this.savingsGoals.findIndex(item=>item.id===id);if(index<0)throw new Error("Savings goal does not exist");this.savingsGoals.splice(index,1);}
   async getDebtPlan(currency:string):Promise<DebtPlan>{const normalized=cleanCurrency(currency);return structuredClone(this.debtPlans.get(normalized)??{currency:normalized,strategy:"avalanche",extraPaymentMinor:0,terms:[]});}
   async saveDebtPlan(input:DebtPlanInput):Promise<DebtPlan>{const plan=validateDebtPlan(input,this.accounts);this.debtPlans.set(plan.currency,plan);return structuredClone(plan);}
   async importTransactions(input: ImportTransactionsInput): Promise<ImportResult> {
@@ -306,6 +311,13 @@ export class DemoFinanceRepository implements FinanceRepository {
 }
 
 function cleanBudgetCategory(value:string):string{const category=value.trim();if(!category)throw new Error("Budget category is required");if(category.length>120)throw new Error("Budget category is too long");return category;}
+function validateSavingsGoal(input:SavingsGoalInput,accounts:Account[],goals:SavingsGoal[],id:string):SavingsGoal{
+  const name=input.name.trim();if(!name)throw new Error("Savings goal name is required");if(name.length>120)throw new Error("Savings goal name is too long");
+  const account=accounts.find(item=>item.id===input.accountId&&item.type==="savings");if(!account)throw new Error("Savings goals require an active savings account");if(goals.some(item=>item.id!==id&&item.accountId===input.accountId))throw new Error("This savings account already has a goal");
+  if(!Number.isSafeInteger(input.targetMinor)||input.targetMinor<=0)throw new Error("Savings target must be greater than zero");if(!Number.isSafeInteger(input.plannedMonthlyMinor)||input.plannedMonthlyMinor<0)throw new Error("Planned monthly savings must be zero or greater");
+  const target=new Date(`${input.targetDate}T00:00:00Z`);if(!/^\d{4}-\d{2}-\d{2}$/.test(input.targetDate)||Number.isNaN(target.valueOf())||target.toISOString().slice(0,10)!==input.targetDate)throw new Error("Savings target date is invalid");
+  return{id,name,accountId:input.accountId,targetMinor:input.targetMinor,targetDate:input.targetDate,plannedMonthlyMinor:input.plannedMonthlyMinor};
+}
 function cleanCurrency(value:string):string{const currency=value.trim().toUpperCase();if(!/^[A-Z]{3}$/.test(currency))throw new Error("Currency must be a three-letter code");return currency;}
 function validateDebtPlan(input:DebtPlanInput,accounts:Account[]):DebtPlan{
   const currency=cleanCurrency(input.currency);if(!["snowball","avalanche","custom"].includes(input.strategy))throw new Error("Debt strategy is invalid");if(!Number.isSafeInteger(input.extraPaymentMinor)||input.extraPaymentMinor<0)throw new Error("Extra payment must be zero or greater");if(input.terms.length>1000)throw new Error("Debt plan has too many accounts");
