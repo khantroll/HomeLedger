@@ -60,6 +60,15 @@ jobs:
         with:
           components: clippy
 
+      - name: Refresh dependency lockfile
+        run: cargo update --manifest-path src-tauri/Cargo.toml
+
+      - name: Export dependency lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: src-tauri/Cargo.lock
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:

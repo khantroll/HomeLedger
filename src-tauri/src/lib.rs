@@ -1,7 +1,8 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use calamine::{open_workbook_auto_from_rs, Data, DataType, Reader};
 use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, path::Path, sync::Mutex, time::Duration};
+use std::{collections::HashSet, io::Cursor, path::Path, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -11,6 +12,64 @@ use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 mod tests;
 
 struct DbState(Mutex<Connection>);
+
+const MAX_WORKBOOK_BYTES: usize = 10 * 1024 * 1024;
+const MAX_WORKBOOK_SHEETS: usize = 50;
+const MAX_WORKBOOK_ROWS: usize = 50_000;
+const MAX_WORKBOOK_COLUMNS: usize = 256;
+const MAX_WORKBOOK_CELLS: usize = 500_000;
+const MAX_WORKBOOK_CELL_CHARS: usize = 20_000;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParsedWorkbook { sheets: Vec<WorkbookSheet> }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkbookSheet { name: String, first_row: usize, rows: Vec<Vec<String>> }
+
+fn workbook_cell_text(cell: &Data) -> String {
+    if let Some(date) = cell.as_date() { return date.format("%Y-%m-%d").to_string(); }
+    match cell {
+        Data::Empty => String::new(),
+        Data::String(value) | Data::DateTimeIso(value) | Data::DurationIso(value) => value.clone(),
+        Data::Float(value) => value.to_string(),
+        Data::Int(value) => value.to_string(),
+        Data::Bool(value) => value.to_string(),
+        Data::DateTime(value) => value.to_string(),
+        Data::Error(value) => value.to_string(),
+    }
+}
+
+#[tauri::command]
+fn parse_workbook(contents_base64: String, file_name: String) -> Result<ParsedWorkbook, String> {
+    let lower_name = file_name.to_lowercase();
+    if !lower_name.ends_with(".xls") && !lower_name.ends_with(".xlsx") { return Err("Only XLS and XLSX workbooks are supported".into()); }
+    let bytes = BASE64.decode(contents_base64).map_err(|_| "The workbook data is not valid base64".to_string())?;
+    if bytes.is_empty() { return Err("The workbook is empty".into()); }
+    if bytes.len() > MAX_WORKBOOK_BYTES { return Err("Workbook files are limited to 10 MB".into()); }
+    let mut workbook = open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|error| format!("Could not open workbook: {error}"))?;
+    let mut sheets = Vec::new();
+    let mut total_cells = 0usize;
+    for name in workbook.sheet_names().into_iter().take(MAX_WORKBOOK_SHEETS) {
+        let range = workbook.worksheet_range(&name).map_err(|error| format!("Could not read worksheet “{name}”: {error}"))?;
+        if range.is_empty() { continue; }
+        let first_row = range.start().map(|(row, _)| row as usize + 1).unwrap_or(1);
+        let mut rows = Vec::new();
+        for source_row in range.rows().take(MAX_WORKBOOK_ROWS) {
+            let width = source_row.len().min(MAX_WORKBOOK_COLUMNS);
+            total_cells = total_cells.checked_add(width).ok_or_else(|| "Workbook is too large to import safely".to_string())?;
+            if total_cells > MAX_WORKBOOK_CELLS { return Err("Workbook is too large to import safely (500,000-cell limit)".into()); }
+            let mut row = source_row[..width].iter().map(workbook_cell_text).map(|mut value| { if value.chars().count() > MAX_WORKBOOK_CELL_CHARS { value = value.chars().take(MAX_WORKBOOK_CELL_CHARS).collect(); } value }).collect::<Vec<_>>();
+            while row.last().is_some_and(|value| value.is_empty()) { row.pop(); }
+            rows.push(row);
+        }
+        while rows.last().is_some_and(|row| row.is_empty()) { rows.pop(); }
+        if rows.iter().any(|row| !row.is_empty()) { sheets.push(WorkbookSheet { name, first_row, rows }); }
+    }
+    if sheets.is_empty() { return Err("The workbook does not contain a readable worksheet".into()); }
+    Ok(ParsedWorkbook { sheets })
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1848,7 +1907,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

@@ -1,7 +1,7 @@
 import { parseMoney, type ImportTransactionRow, type Transaction } from "./domain";
 import { classifyDuplicates, type DuplicateMatch } from "./duplicateDetection";
 
-export interface ParsedTable { headers: string[]; rows: string[][]; delimiter: "," | "\t" | ";"; }
+export interface ParsedTable { headers: string[]; rows: string[][]; delimiter: "," | "\t" | ";"; sourceRowOffset?: number; }
 export interface ColumnMapping { date: number; payee: number; amount: number; debit: number; credit: number; }
 export type StatementDateOrder="mdy"|"dmy";
 export type StatementNumberFormat="dot"|"comma";
@@ -100,6 +100,7 @@ export function parseStatementMoney(value: string,numberFormat:StatementNumberFo
 
 export function buildPreview(table: ParsedTable, mapping: ColumnMapping, existing: Transaction[],options:DelimitedParsingOptions={dateOrder:"mdy",numberFormat:"dot"}): PreviewRow[] {
   const rows=table.rows.map((row, index):PreviewRow => {
+    const sourceRow=index+2+(table.sourceRowOffset??0);
     try {
       if (mapping.date < 0 || mapping.payee < 0) throw new Error("Map the date and description columns");
       if (mapping.amount < 0 && mapping.debit < 0 && mapping.credit < 0) throw new Error("Map an amount column or debit/credit columns");
@@ -115,9 +116,9 @@ export function buildPreview(table: ParsedTable, mapping: ColumnMapping, existin
         if (!debit && !credit) throw new Error("Missing debit/credit amount");
         amountMinor = debit ? -Math.abs(parseStatementMoney(debit,options.numberFormat)) : Math.abs(parseStatementMoney(credit,options.numberFormat));
       }
-      return { sourceRow: index + 2, postedDate, payee, amountMinor };
+      return { sourceRow, postedDate, payee, amountMinor };
     } catch (reason) {
-      return { sourceRow: index + 2, postedDate: "", payee: row[mapping.payee] ?? "", amountMinor: 0, error: reason instanceof Error ? reason.message : String(reason) };
+      return { sourceRow, postedDate: "", payee: row[mapping.payee] ?? "", amountMinor: 0, error: reason instanceof Error ? reason.message : String(reason) };
     }
   });
   return classifyDuplicates(rows,existing);
