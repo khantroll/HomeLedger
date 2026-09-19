@@ -1,9 +1,12 @@
 {
   "name": "homeledger",
   "private": true,
-  "version": "0.25.0",
+  "version": "0.26.0",
   "type": "module",
   "scripts": {
+    "prepare:ocr": "node scripts/prepare-ocr-assets.mjs",
+    "predev": "npm run prepare:ocr",
+    "prebuild": "npm run prepare:ocr",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
@@ -12,9 +15,11 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
+    "@tesseract.js-data/eng": "^1.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",
