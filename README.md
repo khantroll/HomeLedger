@@ -1,5 +1,7 @@
 # HomeLedger
 
+[![CI](https://github.com/khantroll/HomeLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/khantroll/HomeLedger/actions/workflows/ci.yml)
+
 HomeLedger is a privacy-first, local household finance desktop application inspired by the workflows of classic desktop finance software.
 
 ## Current status
@@ -22,6 +24,8 @@ Native desktop development also requires the Tauri 2 prerequisites, Rust, and pl
 ```sh
 npm run tauri dev
 ```
+
+Every push to a development branch and every pull request runs the browser tests and production web build on Linux. CI also treats Rust Clippy warnings as errors, runs the native tests, and compiles the Windows desktop application without creating an installer bundle.
 
 ## Privacy posture
 
