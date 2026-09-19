@@ -205,4 +205,5 @@ function validateImportProfile(input:ImportProfileInput,accounts:Account[]){
   if(input.accountId&&!accounts.some(account=>account.id===input.accountId))throw new Error("Profile account does not exist");
   if(input.dateColumn<0||input.payeeColumn<0)throw new Error("Date and description columns are required");
   if(input.amountColumn<0&&input.debitColumn<0&&input.creditColumn<0)throw new Error("An amount or debit/credit column is required");
+  if(!["mdy","dmy"].includes(input.dateOrder)||!["dot","comma"].includes(input.numberFormat))throw new Error("Import profile locale settings are invalid");
 }

@@ -206,6 +206,8 @@ export interface ImportProfile {
   amountColumn: number;
   debitColumn: number;
   creditColumn: number;
+  dateOrder: "mdy"|"dmy";
+  numberFormat: "dot"|"comma";
 }
 
 export type ImportProfileInput = Omit<ImportProfile,"id">;
