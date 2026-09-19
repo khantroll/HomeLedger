@@ -1,4 +1,5 @@
-import { normalizeDate, parseStatementMoney, transactionDuplicateKey, type PreviewRow } from "./csvImport";
+import { normalizeDate, parseStatementMoney, type PreviewRow } from "./csvImport";
+import { classifyDuplicates } from "./duplicateDetection";
 import type { ImportTransactionRow, ImportTransactionSplit, Transaction } from "./domain";
 
 export interface QifStatement {
@@ -58,14 +59,7 @@ export function parseQif(text: string): QifStatement {
 }
 
 export function buildQifPreview(statement: QifStatement, existing: Transaction[]): PreviewRow[] {
-  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.originalPayee??item.payee, item.amountMinor)));
-  const seen = new Set<string>();
-  return statement.rows.map((row, index) => {
-    const key = transactionDuplicateKey(row.postedDate, row.payee, row.amountMinor);
-    const duplicate = existingKeys.has(key) || seen.has(key);
-    seen.add(key);
-    return { ...row, sourceRow: index + 1, duplicate };
-  });
+  return classifyDuplicates(statement.rows.map((row,index)=>({...row,sourceRow:index+1})),existing);
 }
 
 function parseTransaction(lines: string[], transactionNumber: number): ImportTransactionRow {

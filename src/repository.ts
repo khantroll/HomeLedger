@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupRepository, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, FinanceRepository, ImportBatch, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, Transaction, TransferResult, UndoImportResult } from "./domain";
+import type { Account, BackupRepository, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, Transaction, TransferResult, UndoImportResult } from "./domain";
 
 class TauriFinanceRepository implements FinanceRepository {
   listAccounts(): Promise<Account[]> { return invoke("list_accounts"); }
@@ -19,6 +19,9 @@ class TauriFinanceRepository implements FinanceRepository {
   createMerchantRule(input: MerchantRuleInput): Promise<MerchantRule> { return invoke("create_merchant_rule", { request: input }); }
   updateMerchantRule(id: string, input: MerchantRuleInput): Promise<MerchantRule> { return invoke("update_merchant_rule", { ruleId: id, request: input }); }
   deleteMerchantRule(id: string): Promise<void> { return invoke("delete_merchant_rule", { ruleId: id }); }
+  listImportProfiles(): Promise<ImportProfile[]> { return invoke("list_import_profiles"); }
+  saveImportProfile(input: ImportProfileInput): Promise<ImportProfile> { return invoke("save_import_profile", { request: input }); }
+  deleteImportProfile(id: string): Promise<void> { return invoke("delete_import_profile", { profileId: id }); }
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult> { return invoke("import_transactions", { request: input }); }
   listImportBatches(): Promise<ImportBatch[]> { return invoke("list_import_batches"); }
   undoImportBatch(batchId: string): Promise<UndoImportResult> { return invoke("undo_import_batch", { batchId }); }

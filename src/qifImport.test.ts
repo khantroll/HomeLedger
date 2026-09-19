@@ -31,6 +31,7 @@ describe("QIF statement parser", () => {
   it("marks duplicate transactions during preview", () => {
     const statement = parseQif("!Type:Bank\nD9/18/2026\nT-1.00\nPStore\n^\nD9/18/2026\nT-1.00\nPStore\n^");
     const preview = buildQifPreview(statement, []);
-    expect(preview.map(row => row.duplicate)).toEqual([false, true]);
+    expect(preview[0].duplicate).toBeUndefined();
+    expect(preview[1].duplicate).toMatchObject({confidence:"exact"});
   });
 });

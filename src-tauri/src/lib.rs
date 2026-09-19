@@ -133,6 +133,33 @@ struct MerchantRuleRequest {
     enabled: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportProfile {
+    id: String,
+    name: String,
+    account_id: Option<String>,
+    header_signature: String,
+    date_column: i64,
+    payee_column: i64,
+    amount_column: i64,
+    debit_column: i64,
+    credit_column: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportProfileRequest {
+    name: String,
+    account_id: Option<String>,
+    header_signature: String,
+    date_column: i64,
+    payee_column: i64,
+    amount_column: i64,
+    debit_column: i64,
+    credit_column: i64,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportTransactionSplit {
@@ -219,7 +246,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 7;
+const CURRENT_SCHEMA_VERSION: i64 = 8;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -281,6 +308,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/007_merchant_rules.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(7, 'deterministic merchant rules')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 8 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/008_import_profiles.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(8, 'reusable delimited import profiles')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -535,6 +568,44 @@ fn delete_merchant_rule(rule_id:String,state:State<DbState>)->Result<(),String>{
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
     let removed=connection.execute("DELETE FROM merchant_rules WHERE id=?1",params![rule_id]).map_err(|e|e.to_string())?;
     if removed!=1{return Err("Merchant rule does not exist".into());}
+    Ok(())
+}
+
+fn clean_import_profile(request:ImportProfileRequest,id:String)->Result<ImportProfile,String>{
+    let header_signature=clean_required(request.header_signature,"Header signature",2000)?;
+    if request.date_column<0||request.payee_column<0{return Err("Date and description columns are required".into());}
+    if request.amount_column<0&&request.debit_column<0&&request.credit_column<0{return Err("An amount or debit/credit column is required".into());}
+    for column in [request.date_column,request.payee_column,request.amount_column,request.debit_column,request.credit_column]{if column>1000{return Err("Import profile column is out of range".into());}}
+    Ok(ImportProfile{id,name:clean_required(request.name,"Profile name",80)?,account_id:clean_optional(request.account_id,80)?,header_signature,date_column:request.date_column,payee_column:request.payee_column,amount_column:request.amount_column,debit_column:request.debit_column,credit_column:request.credit_column})
+}
+
+#[tauri::command]
+fn list_import_profiles(state:State<DbState>)->Result<Vec<ImportProfile>,String>{
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let mut statement=connection.prepare("SELECT id,name,account_id,header_signature,date_column,payee_column,amount_column,debit_column,credit_column FROM import_profiles ORDER BY modified_at DESC,name").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],|row|Ok(ImportProfile{id:row.get(0)?,name:row.get(1)?,account_id:row.get(2)?,header_signature:row.get(3)?,date_column:row.get(4)?,payee_column:row.get(5)?,amount_column:row.get(6)?,debit_column:row.get(7)?,credit_column:row.get(8)?})).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+fn save_import_profile(request:ImportProfileRequest,state:State<DbState>)->Result<ImportProfile,String>{
+    let profile=clean_import_profile(request,Uuid::new_v4().to_string())?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    if let Some(account_id)=&profile.account_id{
+        let exists:Option<i64>=connection.query_row("SELECT 1 FROM accounts WHERE id=?1 AND archived_at IS NULL",params![account_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+        if exists.is_none(){return Err("Profile account does not exist".into());}
+    }
+    let existing_id:Option<String>=connection.query_row("SELECT id FROM import_profiles WHERE name=?1 AND header_signature=?2",params![profile.name,profile.header_signature],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    let id=existing_id.unwrap_or_else(||profile.id.clone());
+    connection.execute("INSERT INTO import_profiles(id,name,account_id,header_signature,date_column,payee_column,amount_column,debit_column,credit_column) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(name,header_signature) DO UPDATE SET account_id=excluded.account_id,date_column=excluded.date_column,payee_column=excluded.payee_column,amount_column=excluded.amount_column,debit_column=excluded.debit_column,credit_column=excluded.credit_column,modified_at=CURRENT_TIMESTAMP",params![id,profile.name,profile.account_id,profile.header_signature,profile.date_column,profile.payee_column,profile.amount_column,profile.debit_column,profile.credit_column]).map_err(|e|e.to_string())?;
+    Ok(ImportProfile{id,..profile})
+}
+
+#[tauri::command]
+fn delete_import_profile(profile_id:String,state:State<DbState>)->Result<(),String>{
+    let profile_id=clean_required(profile_id,"Import profile",80)?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    if connection.execute("DELETE FROM import_profiles WHERE id=?1",params![profile_id]).map_err(|e|e.to_string())?!=1{return Err("Import profile does not exist".into());}
     Ok(())
 }
 
@@ -838,6 +909,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let merchant_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='merchant_rules'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if merchant_tables!=1{return Err("The backup is missing merchant rules".into());}
     }
+    if version >= 8 {
+        let profile_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='import_profiles'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if profile_tables!=1{return Err("The backup is missing import profiles".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -921,7 +996,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

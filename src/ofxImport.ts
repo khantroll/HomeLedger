@@ -1,4 +1,5 @@
-import { parseStatementMoney, transactionDuplicateKey, type PreviewRow } from "./csvImport";
+import { parseStatementMoney, type PreviewRow } from "./csvImport";
+import { classifyDuplicates } from "./duplicateDetection";
 import type { ImportTransactionRow, Transaction } from "./domain";
 
 export interface OfxStatement {
@@ -50,18 +51,7 @@ export function parseOfx(text: string): OfxStatement {
 }
 
 export function buildOfxPreview(statement: OfxStatement, existing: Transaction[]): PreviewRow[] {
-  const existingIds = new Set(existing.map(item => item.externalId).filter(Boolean));
-  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.originalPayee??item.payee, item.amountMinor)));
-  const seenIds = new Set<string>();
-  const seenKeys = new Set<string>();
-  return statement.rows.map((row, index) => {
-    const key = transactionDuplicateKey(row.postedDate, row.payee, row.amountMinor);
-    const idDuplicate = Boolean(row.externalId && (existingIds.has(row.externalId) || seenIds.has(row.externalId)));
-    const fallbackDuplicate = existingKeys.has(key) || seenKeys.has(key);
-    if (row.externalId) seenIds.add(row.externalId);
-    seenKeys.add(key);
-    return { ...row, sourceRow: index + 1, duplicate: idDuplicate || fallbackDuplicate };
-  });
+  return classifyDuplicates(statement.rows.map((row,index)=>({...row,sourceRow:index+1})),existing);
 }
 
 function field(content: string, tag: string): string | undefined {

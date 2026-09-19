@@ -5,3 +5,15 @@
 .undo-body { padding: 18px 20px; color: #43545c; font-size: 13px; line-height: 1.55; }
 .undo-body p { margin: 0 0 13px; }
 .danger-action { background: #a43d37 !important; border-color: #a43d37 !important; color: #fff; }
+.profile-controls { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(170px, 1fr) auto auto; gap: 10px; align-items: end; padding: 12px; margin-bottom: 12px; border: 1px solid #dbe4e6; border-radius: 7px; background: #f7faf9; }
+.profile-controls label { display: grid; gap: 5px; color: #53636b; font-size: 11px; font-weight: 700; }
+.profile-controls input, .profile-controls select { min-width: 0; }
+.profile-controls button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.duplicate-reason { display: block; margin-top: 4px; max-width: 220px; color: var(--muted); }
+.import-status.duplicate.exact { background: #f7dfdc; color: #8c302b; }
+.import-status.duplicate.probable { background: #fff0ce; color: #79540c; }
+.import-status.duplicate.possible { background: #e8eef5; color: #445d78; }
+.include-duplicate { white-space: nowrap; }
+.include-duplicate.active { border-color: #0b817b; color: #086963; background: #e8f6f3; }
+.exact-skip { color: #8c302b; font-size: 11px; font-weight: 700; }
+@media (max-width: 800px) { .profile-controls { grid-template-columns: 1fr 1fr; } }

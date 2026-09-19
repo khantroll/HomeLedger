@@ -17,7 +17,7 @@ describe("OFX/QFX parser", () => {
   it("uses FITID to identify a repeated bank transaction", () => {
     const statement = parseOfx(sgml);
     const existing = [{ id:"t", accountId:"a", postedDate:"2026-09-18", payee:"Renamed merchant", category:"Food", amountMinor:-1234, status:"cleared" as const, externalId:"abc-1" }];
-    expect(buildOfxPreview(statement, existing)[0].duplicate).toBe(true);
+    expect(buildOfxPreview(statement, existing)[0].duplicate).toMatchObject({confidence:"exact",reason:"Same provider transaction ID"});
   });
   it("rejects investment-account OFX explicitly", () => expect(() => parseOfx("<OFX><INVSTMTRS><INVTRANLIST></INVTRANLIST></INVSTMTRS></OFX>")).toThrow(/Investment-account/));
 });
