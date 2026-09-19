@@ -55,7 +55,7 @@ export function TransferDialog({accounts,transaction,onClose,onSaved}:{accounts:
     {!canTransfer&&<p className="form-error">Add another active account in {currency} before creating this transfer. Cross-currency transfers are not supported yet.</p>}
     <div className="form-row"><label>Date<input name="date" type="date" defaultValue={transaction?.postedDate??new Date().toISOString().slice(0,10)} required/></label><label>Amount ({currency})<input name="amount" inputMode="decimal" defaultValue={transaction?(Math.abs(transaction.amountMinor)/100).toFixed(2):""} placeholder="0.00" required/></label></div>
     <label>Description / payee<input name="payee" defaultValue={transaction?.payee??"Account transfer"} required maxLength={160} autoFocus/></label>
-    <label>Status<select name="status" defaultValue={transaction?.status??"cleared"}><option value="pending">Pending</option><option value="cleared">Cleared</option><option value="reconciled">Reconciled</option><option value="review">Needs review</option></select></label>
+    <label>Status<select name="status" defaultValue={transaction?.status??"cleared"}><option value="pending">Pending</option><option value="cleared">Cleared</option>{transaction?.status==="reconciled"&&<option value="reconciled" disabled>Reconciled by statement</option>}<option value="review">Needs review</option></select></label>
     <label>Memo<textarea name="memo" defaultValue={transaction?.memo} maxLength={500}/></label>
     {transaction&&<p className="transfer-balance-note">Both sides will be updated together. Current transfer amount: <strong>{formatMoney(Math.abs(transaction.amountMinor),currency)}</strong>.</p>}
     {error&&<p className="form-error" role="alert">{error}</p>}

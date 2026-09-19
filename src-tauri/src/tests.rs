@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, import_transactions_inner, restore_database_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, import_transactions_inner, restore_database_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, TransferRequest};
 use rusqlite::Connection;
 
 #[test]
@@ -91,7 +91,7 @@ fn manual_transaction_crud_preserves_balanced_splits() {
 
     let updated = update_transaction_inner(&mut connection, transaction.id.clone(), CreateTransactionRequest {
         account_id: "a".into(), posted_date: "2026-09-19".into(), payee: "Market".into(), category: "Food".into(),
-        amount_minor: -2500, status: "reconciled".into(), memo: Some("Updated".into()), splits: None
+        amount_minor: -2500, status: "cleared".into(), memo: Some("Updated".into()), splits: None
     }).unwrap();
     assert_eq!(updated.category, "Food");
     let remaining_splits: i64 = connection.query_row("SELECT COUNT(*) FROM transaction_splits WHERE transaction_id=?1", [&transaction.id], |row| row.get(0)).unwrap();
@@ -124,6 +124,31 @@ fn linked_transfer_crud_is_atomic_and_balanced() {
     delete_transfer_inner(&mut connection, transfer.link_id).unwrap();
     let remaining: i64 = connection.query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0)).unwrap();
     assert_eq!(remaining, 0);
+}
+
+#[test]
+fn reconciliation_requires_an_exact_balance_and_protects_completed_items() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 10000, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, source) VALUES('deposit', 'a', '2026-09-01', 'Deposit', 'Income', 5000, 'cleared', 'manual'), ('purchase', 'a', '2026-09-02', 'Store', 'Food', -1250, 'review', 'manual')", []).unwrap();
+    let request = |closing_balance_minor| CompleteReconciliationRequest {
+        account_id: "a".into(),
+        statement_end_date: "2026-09-30".into(),
+        opening_balance_minor: 10000,
+        closing_balance_minor,
+        transaction_ids: vec!["deposit".into(), "purchase".into()],
+    };
+    assert!(complete_reconciliation_inner(&mut connection, request(14000)).is_err());
+    let reconciliation = complete_reconciliation_inner(&mut connection, request(13750)).unwrap();
+    assert_eq!((reconciliation.transaction_count, reconciliation.adjustment_total_minor), (2, 3750));
+    let reconciled_count: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE status = 'reconciled'", [], |row| row.get(0)).unwrap();
+    assert_eq!(reconciled_count, 2);
+    assert!(update_transaction_inner(&mut connection, "purchase".into(), CreateTransactionRequest {
+        account_id: "a".into(), posted_date: "2026-09-02".into(), payee: "Store".into(), category: "Food".into(),
+        amount_minor: -1250, status: "cleared".into(), memo: None, splits: None,
+    }).is_err());
+    assert!(delete_transaction_inner(&connection, "purchase".into()).is_err());
 }
 
 #[test]

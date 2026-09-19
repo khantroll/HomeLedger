@@ -39,6 +39,9 @@ export interface Transaction {
 export interface FinanceRepository {
   listAccounts(): Promise<Account[]>;
   listTransactions(accountId?: string): Promise<Transaction[]>;
+  listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]>;
+  listReconciliations(accountId: string): Promise<Reconciliation[]>;
+  completeReconciliation(input: CompleteReconciliationInput): Promise<Reconciliation>;
   createAccount(input: CreateAccountInput): Promise<Account>;
   createTransaction(input: CreateTransactionInput): Promise<Transaction>;
   updateTransaction(id: string, input: CreateTransactionInput): Promise<Transaction>;
@@ -49,6 +52,25 @@ export interface FinanceRepository {
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
+}
+
+export interface Reconciliation {
+  id: string;
+  accountId: string;
+  statementEndDate: string;
+  openingBalanceMinor: number;
+  closingBalanceMinor: number;
+  reconciledAt: string;
+  transactionCount: number;
+  adjustmentTotalMinor: number;
+}
+
+export interface CompleteReconciliationInput {
+  accountId: string;
+  statementEndDate: string;
+  openingBalanceMinor: number;
+  closingBalanceMinor: number;
+  transactionIds: string[];
 }
 
 export interface ImportTransactionRow {
@@ -179,4 +201,12 @@ export function validateSplits(transaction: Pick<Transaction, "amountMinor" | "s
 export function runningBalances(openingMinor: number, transactions: readonly Transaction[]): number[] {
   let running = openingMinor;
   return transactions.map((transaction) => (running = sumMoney([running, transaction.amountMinor])));
+}
+
+export function reconciliationBalance(openingMinor: number, transactions: readonly Pick<Transaction, "amountMinor">[]): number {
+  return sumMoney([openingMinor, ...transactions.map((transaction) => transaction.amountMinor)]);
+}
+
+export function reconciliationDifference(openingMinor: number, closingMinor: number, transactions: readonly Pick<Transaction, "amountMinor">[]): number {
+  return sumMoney([closingMinor, -reconciliationBalance(openingMinor, transactions)]);
 }
