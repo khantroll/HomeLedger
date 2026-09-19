@@ -343,12 +343,58 @@ struct ScheduledOccurrence {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct BudgetCategory {
+    id: String,
+    category: String,
+    rollover_enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetCategoryRequest {
+    category: String,
+    rollover_enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetAllocationRequest {
+    budget_category_id: String,
+    month: String,
+    planned_minor: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetMonthLine {
+    id: String,
+    category: String,
+    rollover_enabled: bool,
+    planned_minor: i64,
+    spent_minor: i64,
+    carry_in_minor: i64,
+    available_minor: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetMonth {
+    month: String,
+    planned_minor: i64,
+    spent_minor: i64,
+    carry_in_minor: i64,
+    available_minor: i64,
+    lines: Vec<BudgetMonthLine>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RestoreResult {
     account_count: i64,
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 10;
+const CURRENT_SCHEMA_VERSION: i64 = 11;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -428,6 +474,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/010_scheduled_transactions.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(10, 'scheduled transaction templates and occurrences')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 11 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/011_budgets.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(11, 'monthly category budgets')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1070,6 +1122,107 @@ fn find_scheduled_occurrence_matches(request:ScheduledImportMatchRequest,state:S
     request.rows.into_iter().map(|item|Ok(ScheduledImportMatch{source_row:item.source_row,candidates:scheduled_candidates(&connection,&account_id,&item.row,item.row.payee.as_str())?})).collect()
 }
 
+fn clean_budget_month(value:String)->Result<String,String>{
+    let value=clean_required(value,"Budget month",7)?;
+    NaiveDate::parse_from_str(&format!("{value}-01"),"%Y-%m-%d").map_err(|_|"Budget month must use YYYY-MM".to_string())?;
+    Ok(value)
+}
+
+fn budget_category_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<BudgetCategory>{Ok(BudgetCategory{id:row.get(0)?,category:row.get(1)?,rollover_enabled:row.get(2)?})}
+
+fn clean_budget_category(request:BudgetCategoryRequest,id:String)->Result<BudgetCategory,String>{
+    Ok(BudgetCategory{id,category:clean_required(request.category,"Budget category",120)?,rollover_enabled:request.rollover_enabled})
+}
+
+#[tauri::command]
+fn list_budget_categories(state:State<DbState>)->Result<Vec<BudgetCategory>,String>{
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let mut statement=connection.prepare("SELECT id,category,rollover_enabled FROM budget_categories ORDER BY category COLLATE NOCASE,id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],budget_category_from_row).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+fn budget_category_name_available(connection:&Connection,id:&str,category:&str)->Result<bool,String>{
+    let exists:Option<i64>=connection.query_row("SELECT 1 FROM budget_categories WHERE id<>?1 AND category=?2 COLLATE NOCASE",params![id,category],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    Ok(exists.is_none())
+}
+
+#[tauri::command]
+fn create_budget_category(request:BudgetCategoryRequest,state:State<DbState>)->Result<BudgetCategory,String>{
+    let item=clean_budget_category(request,Uuid::new_v4().to_string())?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    if !budget_category_name_available(&connection,&item.id,&item.category)?{return Err("Budget category already exists".into());}
+    connection.execute("INSERT INTO budget_categories(id,category,rollover_enabled) VALUES(?1,?2,?3)",params![item.id,item.category,item.rollover_enabled]).map_err(|e|e.to_string())?;
+    Ok(item)
+}
+
+#[tauri::command]
+fn update_budget_category(budget_category_id:String,request:BudgetCategoryRequest,state:State<DbState>)->Result<BudgetCategory,String>{
+    let item=clean_budget_category(request,clean_required(budget_category_id,"Budget category",80)?)?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    if !budget_category_name_available(&connection,&item.id,&item.category)?{return Err("Budget category already exists".into());}
+    let changed=connection.execute("UPDATE budget_categories SET category=?2,rollover_enabled=?3,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![item.id,item.category,item.rollover_enabled]).map_err(|e|e.to_string())?;
+    if changed!=1{return Err("Budget category does not exist".into());}
+    Ok(item)
+}
+
+#[tauri::command]
+fn delete_budget_category(budget_category_id:String,state:State<DbState>)->Result<(),String>{
+    let id=clean_required(budget_category_id,"Budget category",80)?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    if connection.execute("DELETE FROM budget_categories WHERE id=?1",params![id]).map_err(|e|e.to_string())?!=1{return Err("Budget category does not exist".into());}
+    Ok(())
+}
+
+#[tauri::command]
+fn set_budget_allocation(request:BudgetAllocationRequest,state:State<DbState>)->Result<(),String>{
+    let category_id=clean_required(request.budget_category_id,"Budget category",80)?;
+    let month=clean_budget_month(request.month)?;
+    if request.planned_minor<0{return Err("Budget amount must be zero or greater".into());}
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let exists:Option<i64>=connection.query_row("SELECT 1 FROM budget_categories WHERE id=?1",params![category_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    if exists.is_none(){return Err("Budget category does not exist".into());}
+    connection.execute("INSERT INTO budget_allocations(id,budget_category_id,month,planned_minor) VALUES(?1,?2,?3,?4) ON CONFLICT(budget_category_id,month) DO UPDATE SET planned_minor=excluded.planned_minor,modified_at=CURRENT_TIMESTAMP",params![Uuid::new_v4().to_string(),category_id,month,request.planned_minor]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+fn budget_spending(connection:&Connection,category:&str,from_date:&str,to_date:&str)->Result<i64,String>{
+    connection.query_row("SELECT COALESCE(SUM(-amount_minor),0) FROM (SELECT txn.amount_minor FROM transactions txn WHERE txn.posted_date>=?1 AND txn.posted_date<?2 AND txn.amount_minor<0 AND txn.source<>'transfer' AND txn.category=?3 COLLATE NOCASE AND NOT EXISTS(SELECT 1 FROM transaction_splits split WHERE split.transaction_id=txn.id) UNION ALL SELECT split.amount_minor FROM transaction_splits split JOIN transactions txn ON txn.id=split.transaction_id WHERE txn.posted_date>=?1 AND txn.posted_date<?2 AND split.amount_minor<0 AND txn.source<>'transfer' AND split.category=?3 COLLATE NOCASE)",params![from_date,to_date,category],|row|row.get(0)).map_err(|e|e.to_string())
+}
+
+fn get_budget_month_inner(connection:&Connection,month:String)->Result<BudgetMonth,String>{
+    let month=clean_budget_month(month)?;
+    let start=NaiveDate::parse_from_str(&format!("{month}-01"),"%Y-%m-%d").map_err(|_|"Budget month must use YYYY-MM")?;
+    let next=if start.month()==12{NaiveDate::from_ymd_opt(start.year()+1,1,1)}else{NaiveDate::from_ymd_opt(start.year(),start.month()+1,1)}.ok_or("Budget month is out of range")?;
+    let from_date=start.format("%Y-%m-%d").to_string();
+    let to_date=next.format("%Y-%m-%d").to_string();
+    let mut statement=connection.prepare("SELECT category.id,category.category,category.rollover_enabled,COALESCE(allocation.planned_minor,0),(SELECT MIN(first.month) FROM budget_allocations first WHERE first.budget_category_id=category.id) FROM budget_categories category LEFT JOIN budget_allocations allocation ON allocation.budget_category_id=category.id AND allocation.month=?1 ORDER BY category.category COLLATE NOCASE,category.id").map_err(|e|e.to_string())?;
+    let values=statement.query_map(params![month],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).map_err(|e|e.to_string())?;
+    let mut lines=Vec::new();
+    for value in values{
+        let (id,category,rollover_enabled,planned_minor,earliest):(String,String,bool,i64,Option<String>)=value.map_err(|e|e.to_string())?;
+        let spent_minor=budget_spending(connection,&category,&from_date,&to_date)?;
+        let carry_in_minor=if rollover_enabled&&earliest.as_deref().is_some_and(|value|value<month.as_str()){
+            let earliest=earliest.unwrap();
+            let prior_planned:i64=connection.query_row("SELECT COALESCE(SUM(planned_minor),0) FROM budget_allocations WHERE budget_category_id=?1 AND month<?2",params![id,month],|row|row.get(0)).map_err(|e|e.to_string())?;
+            prior_planned.checked_sub(budget_spending(connection,&category,&format!("{earliest}-01"),&from_date)?).ok_or("Budget carryover is too large")?
+        }else{0};
+        let available_minor=planned_minor.checked_add(carry_in_minor).and_then(|value|value.checked_sub(spent_minor)).ok_or("Budget total is too large")?;
+        lines.push(BudgetMonthLine{id,category,rollover_enabled,planned_minor,spent_minor,carry_in_minor,available_minor});
+    }
+    let planned_minor=lines.iter().try_fold(0_i64,|total,item|total.checked_add(item.planned_minor).ok_or("Budget total is too large"))?;
+    let spent_minor=lines.iter().try_fold(0_i64,|total,item|total.checked_add(item.spent_minor).ok_or("Budget total is too large"))?;
+    let carry_in_minor=lines.iter().try_fold(0_i64,|total,item|total.checked_add(item.carry_in_minor).ok_or("Budget total is too large"))?;
+    let available_minor=lines.iter().try_fold(0_i64,|total,item|total.checked_add(item.available_minor).ok_or("Budget total is too large"))?;
+    Ok(BudgetMonth{month,planned_minor,spent_minor,carry_in_minor,available_minor,lines})
+}
+
+#[tauri::command]
+fn get_budget_month(month:String,state:State<DbState>)->Result<BudgetMonth,String>{
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    get_budget_month_inner(&connection,month)
+}
+
 #[tauri::command]
 fn create_transaction(request: CreateTransactionRequest, state: State<DbState>) -> Result<LedgerTransaction, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
@@ -1386,6 +1539,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let scheduled_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('scheduled_transactions','scheduled_occurrences')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if scheduled_tables!=2{return Err("The backup is missing scheduled transaction tables".into());}
     }
+    if version >= 11 {
+        let budget_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_categories','budget_allocations')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if budget_tables!=2{return Err("The backup is missing budget tables".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -1469,7 +1626,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

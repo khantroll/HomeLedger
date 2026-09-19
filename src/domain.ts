@@ -71,6 +71,12 @@ export interface FinanceRepository {
   skipScheduledOccurrence(id: string): Promise<ScheduledOccurrence>;
   linkScheduledOccurrence(id: string, transactionId: string): Promise<ScheduledOccurrence>;
   findScheduledOccurrenceMatches(input: ScheduledImportMatchInput): Promise<ScheduledImportMatch[]>;
+  listBudgetCategories(): Promise<BudgetCategory[]>;
+  createBudgetCategory(input: BudgetCategoryInput): Promise<BudgetCategory>;
+  updateBudgetCategory(id: string, input: BudgetCategoryInput): Promise<BudgetCategory>;
+  deleteBudgetCategory(id: string): Promise<void>;
+  setBudgetAllocation(input: BudgetAllocationInput): Promise<void>;
+  getBudgetMonth(month: string): Promise<BudgetMonth>;
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
@@ -110,6 +116,38 @@ export interface ScheduledOccurrenceQuery {
   fromDate: string;
   toDate: string;
   scheduledTransactionId?: string;
+}
+
+export interface BudgetCategory {
+  id: string;
+  category: string;
+  rolloverEnabled: boolean;
+}
+
+export type BudgetCategoryInput = Omit<BudgetCategory,"id">;
+
+export interface BudgetAllocation {
+  budgetCategoryId: string;
+  month: string;
+  plannedMinor: number;
+}
+
+export type BudgetAllocationInput = BudgetAllocation;
+
+export interface BudgetMonthLine extends BudgetCategory {
+  plannedMinor: number;
+  spentMinor: number;
+  carryInMinor: number;
+  availableMinor: number;
+}
+
+export interface BudgetMonth {
+  month: string;
+  plannedMinor: number;
+  spentMinor: number;
+  carryInMinor: number;
+  availableMinor: number;
+  lines: BudgetMonthLine[];
 }
 
 export interface Reconciliation {

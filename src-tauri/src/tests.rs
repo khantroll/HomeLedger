@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, restore_database_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, restore_database_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
 use rusqlite::Connection;
 
 #[test]
@@ -16,7 +16,8 @@ fn migration_creates_local_ledger_tables() {
     let merchant_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='merchant_rules'", [], |row| row.get(0)).unwrap();
     let profile_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='import_profiles'", [], |row| row.get(0)).unwrap();
     let scheduled_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('scheduled_transactions','scheduled_occurrences')", [], |row| row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables), (10, 2, 1, 1, 2));
+    let budget_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_categories','budget_allocations')", [], |row| row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables), (11, 2, 1, 1, 2, 2));
 }
 
 #[test]
@@ -42,7 +43,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -270,6 +271,21 @@ fn statement_import_rolls_back_when_selected_occurrence_is_ineligible() {
     assert!(result.is_err());
     let counts:(i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions),(SELECT COUNT(*) FROM import_batches)",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
     assert_eq!(counts,(0,0));
+}
+
+#[test]
+fn monthly_budget_counts_splits_excludes_transfers_and_rolls_sinking_funds() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',0,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO budget_categories(id,category,rollover_enabled) VALUES('food','Food',0),('repairs','Home: Repairs',1)",[]).unwrap();
+    connection.execute("INSERT INTO budget_allocations(id,budget_category_id,month,planned_minor) VALUES('f1','food','2026-08',30000),('f2','food','2026-09',30000),('r1','repairs','2026-08',10000),('r2','repairs','2026-09',10000)",[]).unwrap();
+    connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,source) VALUES('aug','a','2026-08-10','Hardware','Home: Repairs',-2500,'cleared','manual'),('split','a','2026-09-05','Store','Split transaction',-6000,'cleared','manual'),('transfer','a','2026-09-06','Transfer','Home: Repairs',-5000,'cleared','transfer')",[]).unwrap();
+    connection.execute("INSERT INTO transaction_splits(id,transaction_id,category,amount_minor,sort_order) VALUES('s1','split','Food',-4000,0),('s2','split','Home: Repairs',-2000,1)",[]).unwrap();
+    let budget=get_budget_month_inner(&connection,"2026-09".into()).unwrap();
+    assert_eq!((budget.planned_minor,budget.spent_minor,budget.carry_in_minor,budget.available_minor),(40000,6000,7500,41500));
+    let repairs=budget.lines.iter().find(|item|item.id=="repairs").unwrap();
+    assert_eq!((repairs.spent_minor,repairs.carry_in_minor,repairs.available_minor),(2000,7500,15500));
 }
 
 #[test]
