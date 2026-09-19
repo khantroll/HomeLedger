@@ -15,7 +15,7 @@ fn migration_creates_local_ledger_tables() {
     let reconciliation_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('reconciliations','reconciliation_items')", [], |row| row.get(0)).unwrap();
     let merchant_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='merchant_rules'", [], |row| row.get(0)).unwrap();
     let profile_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='import_profiles'", [], |row| row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables), (8, 2, 1, 1));
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables), (9, 2, 1, 1));
 }
 
 #[test]

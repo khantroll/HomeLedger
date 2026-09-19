@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { FileSpreadsheet, History, RotateCcw, Save, Trash2, Undo2, Upload, X } from "lucide-react";
-import { buildPreview, headerSignature, parseDelimited, suggestMapping, type ColumnMapping, type ParsedTable } from "./csvImport";
+import { buildPreview, headerSignature, parseDelimited, suggestMapping, suggestParsingOptions, type ColumnMapping, type DelimitedParsingOptions, type ParsedTable } from "./csvImport";
 import { buildOfxPreview, parseOfx, type OfxStatement } from "./ofxImport";
 import { buildQifPreview, parseQif, type QifStatement } from "./qifImport";
 import { financeRepository } from "./repository";
 import { formatMoney, type Account, type ImportBatch, type ImportProfile, type Transaction } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import type { MerchantRule } from "./domain";
+import { decodeStatement, encodingLabel, type StatementEncoding } from "./statementDecoding";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -17,6 +18,8 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [fileName,setFileName]=useState("");
   const [accountId,setAccountId]=useState(accounts[0]?.id??"");
   const [mapping,setMapping]=useState<ColumnMapping>({date:-1,payee:-1,amount:-1,debit:-1,credit:-1});
+  const [parsingOptions,setParsingOptions]=useState<DelimitedParsingOptions>({dateOrder:"mdy",numberFormat:"dot"});
+  const [fileEncoding,setFileEncoding]=useState<StatementEncoding>("utf-8");
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
   const [saving,setSaving]=useState(false);
@@ -34,7 +37,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   useEffect(()=>{void loadHistory();void financeRepository.listMerchantRules().then(setRules).catch(showError);void financeRepository.listImportProfiles().then(setProfiles).catch(showError);},[]);
 
   const accountTransactions=useMemo(()=>transactions.filter(item=>item.accountId===accountId),[transactions,accountId]);
-  const rawPreview=useMemo(()=>qif?buildQifPreview(qif,accountTransactions):ofx?buildOfxPreview(ofx,accountTransactions):table?buildPreview(table,mapping,accountTransactions):[],[qif,ofx,table,mapping,accountTransactions]);
+  const rawPreview=useMemo(()=>qif?buildQifPreview(qif,accountTransactions):ofx?buildOfxPreview(ofx,accountTransactions):table?buildPreview(table,mapping,accountTransactions,parsingOptions):[],[qif,ofx,table,mapping,parsingOptions,accountTransactions]);
   const applications=useMemo(()=>applyMerchantRules(rawPreview,rules),[rawPreview,rules]);
   const preview=useMemo(()=>applications.map(item=>item.row),[applications]);
   const matchedRules=useMemo(()=>new Map(applications.filter(item=>item.rule).map(item=>[item.row.sourceRow,item.rule!])),[applications]);
@@ -49,15 +52,15 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     const file=event.target.files?.[0]; if(!file)return;
     setError("");setMessage("");
     if(file.size>10*1024*1024){setError("Statement files are limited to 10 MB in this milestone.");return;}
-    try{const text=await file.text();setIncludedDuplicates(new Set());if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));if(profile){applyProfile(profile);setProfileName(profile.name);}else{setMapping(suggestMapping(parsed.headers));setSelectedProfileId("");setProfileName("");}}setFileName(file.name);}
+    try{const decoded=decodeStatement(await file.arrayBuffer()),text=decoded.text;setFileEncoding(decoded.encoding);setIncludedDuplicates(new Set());if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}setFileName(file.name);}
     catch(reason){setTable(null);setOfx(null);setQif(null);setError(reason instanceof Error?reason.message:String(reason));}
     finally{event.target.value="";}
   }
 
-  function applyProfile(profile:ImportProfile){setMapping({date:profile.dateColumn,payee:profile.payeeColumn,amount:profile.amountColumn,debit:profile.debitColumn,credit:profile.creditColumn});setIncludedDuplicates(new Set());if(profile.accountId&&accounts.some(account=>account.id===profile.accountId))setAccountId(profile.accountId);setSelectedProfileId(profile.id);}
-  async function saveProfile(){if(!table)return;setError("");try{const saved=await financeRepository.saveImportProfile({name:profileName.trim(),accountId,headerSignature:headerSignature(table.headers),dateColumn:mapping.date,payeeColumn:mapping.payee,amountColumn:mapping.amount,debitColumn:mapping.debit,creditColumn:mapping.credit});const next=await financeRepository.listImportProfiles();setProfiles(next);setSelectedProfileId(saved.id);setMessage(`Saved import profile “${saved.name}”.`);}catch(reason){showError(reason);}}
+  function applyProfile(profile:ImportProfile){setMapping({date:profile.dateColumn,payee:profile.payeeColumn,amount:profile.amountColumn,debit:profile.debitColumn,credit:profile.creditColumn});setParsingOptions({dateOrder:profile.dateOrder,numberFormat:profile.numberFormat});setIncludedDuplicates(new Set());if(profile.accountId&&accounts.some(account=>account.id===profile.accountId))setAccountId(profile.accountId);setSelectedProfileId(profile.id);}
+  async function saveProfile(){if(!table)return;setError("");try{const saved=await financeRepository.saveImportProfile({name:profileName.trim(),accountId,headerSignature:headerSignature(table.headers),dateColumn:mapping.date,payeeColumn:mapping.payee,amountColumn:mapping.amount,debitColumn:mapping.debit,creditColumn:mapping.credit,...parsingOptions});const next=await financeRepository.listImportProfiles();setProfiles(next);setSelectedProfileId(saved.id);setMessage(`Saved import profile “${saved.name}”.`);}catch(reason){showError(reason);}}
   async function deleteProfile(){if(!selectedProfileId)return;setError("");try{await financeRepository.deleteImportProfile(selectedProfileId);setProfiles(await financeRepository.listImportProfiles());setSelectedProfileId("");setProfileName("");setMessage("Deleted the saved import profile.");}catch(reason){showError(reason);}}
-  function chooseProfile(id:string){setSelectedProfileId(id);const profile=profiles.find(item=>item.id===id);if(profile){applyProfile(profile);setProfileName(profile.name);}else{setMapping(table?suggestMapping(table.headers):mapping);setProfileName("");}}
+  function chooseProfile(id:string){setSelectedProfileId(id);const profile=profiles.find(item=>item.id===id);if(profile){applyProfile(profile);setProfileName(profile.name);}else if(table){const suggested=suggestMapping(table.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(table,suggested));setProfileName("");}}
   function toggleDuplicate(sourceRow:number){setIncludedDuplicates(current=>{const next=new Set(current);if(next.has(sourceRow))next.delete(sourceRow);else next.add(sourceRow);return next;});}
 
   async function commit(){
@@ -71,7 +74,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     finally{setSaving(false);}
   }
 
-  function reset(){setTable(null);setOfx(null);setQif(null);setFileName("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());}
+  function reset(){setTable(null);setOfx(null);setQif(null);setFileName("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setFileEncoding("utf-8");}
   async function loadHistory(){try{setBatches(await financeRepository.listImportBatches());}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}}
   async function undo(){if(!pendingUndo)return;setUndoing(true);setError("");try{const result=await financeRepository.undoImportBatch(pendingUndo.id);setMessage(`Removed ${result.removedCount} transactions from ${pendingUndo.sourceName}.`);setPendingUndo(null);await onImported();await loadHistory();}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setUndoing(false);}}
   if(!accounts.length)return <section className="panel import-empty"><FileSpreadsheet/><h2>Create an account first</h2><p>Statement transactions must be assigned to a local account.</p></section>;
@@ -80,7 +83,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     <section className="panel import-controls">
       <div className="panel-heading"><div><h2>Import a statement</h2><p>CSV, TSV, OFX, QFX, and QIF parsing happens locally; the original file is not retained.</p></div>{(table||ofx||qif)&&<button onClick={reset}><RotateCcw size={14}/> Start over</button>}</div>
       <div className="import-body">
-        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>CSV, TSV, OFX, QFX, or QIF, up to 10 MB</small></span><input type="file" accept=".csv,.tsv,.txt,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,application/x-ofx,application/qif" onChange={chooseFile}/></label>
+        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>{fileName?`${encodingLabel(fileEncoding)} detected locally`:"CSV, TSV, OFX, QFX, or QIF, up to 10 MB"}</small></span><input type="file" accept=".csv,.tsv,.txt,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,application/x-ofx,application/qif" onChange={chooseFile}/></label>
         {error&&<div className="error-banner" role="alert">{error}</div>}{message&&<div className="success-banner" role="status">{message}</div>}
         {table&&<>
           <div className="profile-controls">
@@ -96,6 +99,8 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
             <MappingSelect label="Signed amount" value={mapping.amount} headers={table.headers} onChange={amount=>{setMapping({...mapping,amount});setIncludedDuplicates(new Set());}}/>
             <MappingSelect label="Debit (optional)" value={mapping.debit} headers={table.headers} onChange={debit=>{setMapping({...mapping,debit});setIncludedDuplicates(new Set());}}/>
             <MappingSelect label="Credit (optional)" value={mapping.credit} headers={table.headers} onChange={credit=>{setMapping({...mapping,credit});setIncludedDuplicates(new Set());}}/>
+            <label>Date order<select value={parsingOptions.dateOrder} onChange={event=>{setParsingOptions({...parsingOptions,dateOrder:event.target.value as DelimitedParsingOptions["dateOrder"]});setIncludedDuplicates(new Set());}}><option value="mdy">Month / day / year</option><option value="dmy">Day / month / year</option></select></label>
+            <label>Number format<select value={parsingOptions.numberFormat} onChange={event=>{setParsingOptions({...parsingOptions,numberFormat:event.target.value as DelimitedParsingOptions["numberFormat"]});setIncludedDuplicates(new Set());}}><option value="dot">1,234.56</option><option value="comma">1.234,56</option></select></label>
           </div>
           <p className="mapping-help">Use either one signed amount column, or separate debit and credit columns. A mapped signed amount takes precedence.</p>
         </>}
