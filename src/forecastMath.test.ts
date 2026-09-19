@@ -27,6 +27,14 @@ describe("cash-flow forecasting",()=>{
   it("does not double-count scheduled expenses already covered by the matching budget category",()=>expect(run().budgetReserveMinor).toBe(20000));
   it("creates conservative and optimistic ranges from documented factors",()=>{expect(run("conservative").endingBalanceMinor).toBe(170000);expect(run("optimistic").endingBalanceMinor).toBe(216000);});
   it("excludes posted occurrences, liabilities, and other currencies",()=>expect(run().days.reduce((total,item)=>total+item.scheduledCount,0)).toBe(2));
+  it("treats transfers inside the selected cash scope as neutral and external payments as outflows",()=>{
+    const savings:Account={id:"savings",name:"Savings",type:"savings",currency:"USD",balanceMinor:50000,ownerLabel:"Household"};
+    const internal:ScheduledTransaction={...templates[0],id:"internal",kind:"transfer",accountId:"checking",transferAccountId:"savings",amountMinor:25000};
+    const payment:ScheduledTransaction={...internal,id:"payment",transferAccountId:"loan",amountMinor:30000};
+    const transfers:ScheduledOccurrence[]=[{id:"i",scheduledTransactionId:"internal",dueDate:"2026-09-05",status:"expected"},{id:"p",scheduledTransactionId:"payment",dueDate:"2026-09-06",status:"expected"}];
+    const result=calculateCashFlowForecast({today:"2026-09-01",horizonDays:30,currency:"USD",scenario:"expected",accounts:[...accounts,savings],templates:[internal,payment],occurrences:transfers,budgets:[]});
+    expect(result).toMatchObject({startBalanceMinor:150000,totalInflowsMinor:0,totalOutflowsMinor:30000,endingBalanceMinor:120000});
+  });
   it("returns every intersecting budget month",()=>expect(forecastMonths("2026-09-19",90)).toEqual(["2026-09","2026-10","2026-11","2026-12"]));
   it("prorates a final partial month's plan to the days inside the horizon",()=>{
     const october:BudgetMonth={month:"2026-10",plannedMinor:31000,spentMinor:0,carryInMinor:0,availableMinor:31000,lines:[{id:"food",category:"Food",rolloverEnabled:false,plannedMinor:31000,spentMinor:0,carryInMinor:0,availableMinor:31000}]};

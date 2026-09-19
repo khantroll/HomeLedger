@@ -49,7 +49,7 @@ export function calculateCashFlowForecast(input:ForecastInput):CashFlowForecast{
   const accountIds=new Set(cashAccounts.map(item=>item.id));
   const startBalanceMinor=sum(cashAccounts.map(item=>item.balanceMinor));
   const endDate=addDaysIso(input.today,input.horizonDays-1);
-  const templates=new Map(input.templates.filter(item=>item.kind==="transaction"&&item.enabled&&!item.archived&&accountIds.has(item.accountId)).map(item=>[item.id,item]));
+  const templates=new Map(input.templates.filter(item=>item.enabled&&!item.archived&&(accountIds.has(item.accountId)||(item.kind==="transfer"&&item.transferAccountId&&accountIds.has(item.transferAccountId)))).map(item=>[item.id,item]));
   const factors=scenarioFactors[input.scenario];
   const daily=new Map<string,{inflowMinor:number;outflowMinor:number;scheduledCount:number}>();
   for(let offset=0;offset<input.horizonDays;offset++)daily.set(addDaysIso(input.today,offset),{inflowMinor:0,outflowMinor:0,scheduledCount:0});
@@ -57,7 +57,8 @@ export function calculateCashFlowForecast(input:ForecastInput):CashFlowForecast{
   const expected=input.occurrences.filter(item=>item.status==="expected"&&item.dueDate>=input.today&&item.dueDate<=endDate&&templates.has(item.scheduledTransactionId));
   for(const occurrence of expected){
     const template=templates.get(occurrence.scheduledTransactionId)!;
-    const amount=scenarioAmount(template.amountMinor,factors.incomePercent,factors.expensePercent);
+    const amount=template.kind==="transfer"?transferCashAmount(template,accountIds):scenarioAmount(template.amountMinor,factors.incomePercent,factors.expensePercent);
+    if(amount===0)continue;
     const value=daily.get(occurrence.dueDate)!;
     if(amount>=0)value.inflowMinor=add(value.inflowMinor,amount);else value.outflowMinor=add(value.outflowMinor,-amount);
     value.scheduledCount++;
@@ -74,7 +75,7 @@ export function calculateCashFlowForecast(input:ForecastInput):CashFlowForecast{
     for(const line of budget.lines){
       const scheduledExpense=expected.reduce((total,occurrence)=>{
         const template=templates.get(occurrence.scheduledTransactionId);
-        return occurrence.dueDate.startsWith(`${budget.month}-`)&&template?.category.toLocaleLowerCase()===line.category.toLocaleLowerCase()&&template.amountMinor<0?add(total,-template.amountMinor):total;
+        return occurrence.dueDate.startsWith(`${budget.month}-`)&&template?.kind==="transaction"&&template.category.toLocaleLowerCase()===line.category.toLocaleLowerCase()&&template.amountMinor<0?add(total,-template.amountMinor):total;
       },0);
       const unspentPlan=Math.max(0,add(line.plannedMinor,-line.spentMinor));
       const activePlan=proratedPrefix(unspentPlan,planningDayCount,activeDates.length);
@@ -103,6 +104,7 @@ export function forecastMonths(today:string,horizonDays:number):string[]{
 }
 
 function scenarioAmount(amount:number,incomePercent:number,expensePercent:number):number{return amount>=0?scaleMinor(amount,incomePercent,"floor"):-scaleMinor(-amount,expensePercent,"ceil");}
+function transferCashAmount(template:ScheduledTransaction,accountIds:Set<string>):number{const from=accountIds.has(template.accountId),to=Boolean(template.transferAccountId&&accountIds.has(template.transferAccountId));return from===to?0:from?-template.amountMinor:template.amountMinor;}
 function scaleMinor(amount:number,percent:number,round:"floor"|"ceil"):number{
   const product=BigInt(amount)*BigInt(percent),whole=product/100n,remainder=product%100n,result=whole+(round==="ceil"&&remainder?1n:0n),value=Number(result);
   if(!Number.isSafeInteger(value))throw new Error("Forecast total is too large");

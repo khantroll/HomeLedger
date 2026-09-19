@@ -300,6 +300,7 @@ struct ScheduledTransaction {
     custom_interval_count: Option<u32>,
     custom_interval_unit: Option<String>,
     enabled: bool,
+    auto_post: bool,
     archived: bool,
 }
 
@@ -321,6 +322,21 @@ struct ScheduledTransactionRequest {
     custom_interval_count: Option<u32>,
     custom_interval_unit: Option<String>,
     enabled: bool,
+    #[serde(default)]
+    auto_post: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledAutoPostRequest {
+    occurrence_ids: Vec<String>,
+    as_of_date: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledPostResult {
+    posted_count: usize,
 }
 
 #[derive(Deserialize)]
@@ -394,7 +410,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 11;
+const CURRENT_SCHEMA_VERSION: i64 = 12;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -480,6 +496,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/011_budgets.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(11, 'monthly category budgets')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 12 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/012_scheduled_auto_post.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(12, 'reviewed scheduled auto-post')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -777,7 +799,7 @@ fn delete_import_profile(profile_id:String,state:State<DbState>)->Result<(),Stri
 }
 
 fn scheduled_transaction_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<ScheduledTransaction>{
-    Ok(ScheduledTransaction{id:row.get(0)?,kind:row.get(1)?,account_id:row.get(2)?,transfer_account_id:row.get(3)?,payee:row.get(4)?,category:row.get(5)?,amount_minor:row.get(6)?,status:row.get(7)?,memo:row.get(8)?,frequency:row.get(9)?,anchor_date:row.get(10)?,end_date:row.get(11)?,second_month_day:row.get(12)?,custom_interval_count:row.get(13)?,custom_interval_unit:row.get(14)?,enabled:row.get(15)?,archived:row.get(16)?})
+    Ok(ScheduledTransaction{id:row.get(0)?,kind:row.get(1)?,account_id:row.get(2)?,transfer_account_id:row.get(3)?,payee:row.get(4)?,category:row.get(5)?,amount_minor:row.get(6)?,status:row.get(7)?,memo:row.get(8)?,frequency:row.get(9)?,anchor_date:row.get(10)?,end_date:row.get(11)?,second_month_day:row.get(12)?,custom_interval_count:row.get(13)?,custom_interval_unit:row.get(14)?,enabled:row.get(15)?,auto_post:row.get(16)?,archived:row.get(17)?})
 }
 
 fn scheduled_occurrence_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<ScheduledOccurrence>{
@@ -819,7 +841,7 @@ fn clean_scheduled_transaction(connection:&Connection,request:ScheduledTransacti
         if destination.as_deref()!=Some(source_currency.as_str()){return Err("Scheduled transfer accounts must exist and use the same currency".into());}
         if request.amount_minor<=0{return Err("Scheduled transfer amount must be positive".into());}
     }
-    Ok(ScheduledTransaction{id,kind:request.kind,account_id,transfer_account_id,payee:clean_required(request.payee,"Payee",160)?,category:clean_required(request.category,"Category",120)?,amount_minor:request.amount_minor,status:request.status,memo:clean_optional(request.memo,500)?,frequency:request.frequency,anchor_date:request.anchor_date,end_date,second_month_day:request.second_month_day,custom_interval_count:request.custom_interval_count,custom_interval_unit:request.custom_interval_unit,enabled:request.enabled,archived:false})
+    Ok(ScheduledTransaction{id,kind:request.kind,account_id,transfer_account_id,payee:clean_required(request.payee,"Payee",160)?,category:clean_required(request.category,"Category",120)?,amount_minor:request.amount_minor,status:request.status,memo:clean_optional(request.memo,500)?,frequency:request.frequency,anchor_date:request.anchor_date,end_date,second_month_day:request.second_month_day,custom_interval_count:request.custom_interval_count,custom_interval_unit:request.custom_interval_unit,enabled:request.enabled,auto_post:request.auto_post,archived:false})
 }
 
 fn clamped_month_date(anchor:NaiveDate,month_offset:i32)->Result<NaiveDate,String>{
@@ -915,13 +937,13 @@ fn parse_occurrence_query(request:&ScheduledOccurrenceQuery)->Result<(NaiveDate,
 #[tauri::command]
 fn list_scheduled_transactions(state:State<DbState>)->Result<Vec<ScheduledTransaction>,String>{
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
-    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,archived_at IS NOT NULL FROM scheduled_transactions ORDER BY created_at,id").map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,auto_post,archived_at IS NOT NULL FROM scheduled_transactions ORDER BY created_at,id").map_err(|e|e.to_string())?;
     let rows=statement.query_map([],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
 fn insert_scheduled_transaction(connection:&Connection,item:&ScheduledTransaction)->Result<(),String>{
-    connection.execute("INSERT INTO scheduled_transactions(id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",params![item.id,item.kind,item.account_id,item.transfer_account_id,item.payee,item.category,item.amount_minor,item.status,item.memo,item.frequency,item.anchor_date,item.end_date,item.second_month_day,item.custom_interval_count,item.custom_interval_unit,item.enabled]).map_err(|e|e.to_string())?;
+    connection.execute("INSERT INTO scheduled_transactions(id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,auto_post) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",params![item.id,item.kind,item.account_id,item.transfer_account_id,item.payee,item.category,item.amount_minor,item.status,item.memo,item.frequency,item.anchor_date,item.end_date,item.second_month_day,item.custom_interval_count,item.custom_interval_unit,item.enabled,item.auto_post]).map_err(|e|e.to_string())?;
     Ok(())
 }
 
@@ -939,7 +961,7 @@ fn update_scheduled_transaction(scheduled_transaction_id:String,request:Schedule
     let id=clean_required(scheduled_transaction_id,"Scheduled transaction",80)?;
     let item=clean_scheduled_transaction(&connection,request,id)?;
     let tx=connection.transaction().map_err(|e|e.to_string())?;
-    let changed=tx.execute("UPDATE scheduled_transactions SET kind=?2,account_id=?3,transfer_account_id=?4,payee=?5,category=?6,amount_minor=?7,status=?8,memo=?9,frequency=?10,anchor_date=?11,end_date=?12,second_month_day=?13,custom_interval_count=?14,custom_interval_unit=?15,enabled=?16,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND archived_at IS NULL",params![item.id,item.kind,item.account_id,item.transfer_account_id,item.payee,item.category,item.amount_minor,item.status,item.memo,item.frequency,item.anchor_date,item.end_date,item.second_month_day,item.custom_interval_count,item.custom_interval_unit,item.enabled]).map_err(|e|e.to_string())?;
+    let changed=tx.execute("UPDATE scheduled_transactions SET kind=?2,account_id=?3,transfer_account_id=?4,payee=?5,category=?6,amount_minor=?7,status=?8,memo=?9,frequency=?10,anchor_date=?11,end_date=?12,second_month_day=?13,custom_interval_count=?14,custom_interval_unit=?15,enabled=?16,auto_post=?17,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND archived_at IS NULL",params![item.id,item.kind,item.account_id,item.transfer_account_id,item.payee,item.category,item.amount_minor,item.status,item.memo,item.frequency,item.anchor_date,item.end_date,item.second_month_day,item.custom_interval_count,item.custom_interval_unit,item.enabled,item.auto_post]).map_err(|e|e.to_string())?;
     if changed!=1{return Err("Scheduled transaction does not exist".into());}
     tx.execute("DELETE FROM scheduled_occurrences WHERE scheduled_transaction_id=?1 AND status='expected'",params![item.id]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;
@@ -958,7 +980,7 @@ fn delete_scheduled_transaction(scheduled_transaction_id:String,state:State<DbSt
 
 fn generate_scheduled_occurrences_inner(connection:&mut Connection,request:ScheduledOccurrenceQuery)->Result<usize,String>{
     let (from,to)=parse_occurrence_query(&request)?;
-    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,archived_at IS NOT NULL FROM scheduled_transactions WHERE archived_at IS NULL AND enabled=1 AND (?1 IS NULL OR id=?1) ORDER BY id").map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,auto_post,archived_at IS NOT NULL FROM scheduled_transactions WHERE archived_at IS NULL AND enabled=1 AND (?1 IS NULL OR id=?1) ORDER BY id").map_err(|e|e.to_string())?;
     let rows=statement.query_map(params![request.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
     let templates=rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
     drop(statement);
@@ -993,26 +1015,67 @@ fn load_expected_occurrence(connection:&Connection,id:&str)->Result<(ScheduledOc
     let occurrence:Option<ScheduledOccurrence>=connection.query_row("SELECT id,scheduled_transaction_id,due_date,status,transaction_id FROM scheduled_occurrences WHERE id=?1",params![id],scheduled_occurrence_from_row).optional().map_err(|e|e.to_string())?;
     let occurrence=occurrence.ok_or("Scheduled occurrence does not exist")?;
     if occurrence.status!="expected"{return Err("Only expected occurrences can be changed".into());}
-    let template=connection.query_row("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,archived_at IS NOT NULL FROM scheduled_transactions WHERE id=?1",params![occurrence.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
+    let template=connection.query_row("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled,auto_post,archived_at IS NOT NULL FROM scheduled_transactions WHERE id=?1",params![occurrence.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
     Ok((occurrence,template))
+}
+
+fn insert_scheduled_post(connection:&Connection,occurrence:&ScheduledOccurrence,template:&ScheduledTransaction)->Result<LedgerTransaction,String>{
+    if template.kind=="transfer"{
+        let destination_id=template.transfer_account_id.as_ref().ok_or("Scheduled transfer has no destination account")?;
+        let (from_name,to_name)=transfer_accounts(connection,&template.account_id,destination_id)?;
+        let link_id=Uuid::new_v4().to_string();
+        let from_transaction_id=Uuid::new_v4().to_string();
+        let to_transaction_id=Uuid::new_v4().to_string();
+        connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![from_transaction_id,template.account_id,occurrence.due_date,template.payee,format!("Transfer: {to_name}"),-template.amount_minor,template.status,template.memo]).map_err(|e|e.to_string())?;
+        connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![to_transaction_id,destination_id,occurrence.due_date,template.payee,format!("Transfer: {from_name}"),template.amount_minor,template.status,template.memo]).map_err(|e|e.to_string())?;
+        connection.execute("INSERT INTO transfer_links(id,from_transaction_id,to_transaction_id) VALUES(?1,?2,?3)",params![link_id,from_transaction_id,to_transaction_id]).map_err(|e|e.to_string())?;
+        return Ok(LedgerTransaction{id:from_transaction_id,account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),original_payee:None,category:format!("Transfer: {to_name}"),amount_minor:-template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),external_id:None,source:"transfer".into(),import_batch_id:None,splits:vec![],transfer_link_id:Some(link_id),transfer_account_id:Some(destination_id.clone())});
+    }
+    let item=clean_transaction_request(CreateTransactionRequest{account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),category:template.category.clone(),amount_minor:template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),splits:None})?;
+    connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'manual')",params![item.id,item.account_id,item.posted_date,item.payee,item.category,item.amount_minor,item.status,item.memo]).map_err(|e|e.to_string())?;
+    Ok(item)
 }
 
 fn post_scheduled_occurrence_inner(connection:&mut Connection,occurrence_id:String)->Result<LedgerTransaction,String>{
     let id=clean_required(occurrence_id,"Scheduled occurrence",80)?;
     let tx=connection.transaction().map_err(|e|e.to_string())?;
     let (occurrence,template)=load_expected_occurrence(&tx,&id)?;
-    if template.kind=="transfer"{return Err("Recurring transfer posting is not implemented yet".into());}
-    let item=clean_transaction_request(CreateTransactionRequest{account_id:template.account_id,posted_date:occurrence.due_date,payee:template.payee,category:template.category,amount_minor:template.amount_minor,status:template.status,memo:template.memo,splits:None})?;
-    tx.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'manual')",params![item.id,item.account_id,item.posted_date,item.payee,item.category,item.amount_minor,item.status,item.memo]).map_err(|e|e.to_string())?;
+    if !template.enabled||template.archived{return Err("Scheduled transaction is disabled or archived".into());}
+    let item=insert_scheduled_post(&tx,&occurrence,&template)?;
     if tx.execute("UPDATE scheduled_occurrences SET status='posted',transaction_id=?2,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='expected'",params![id,item.id]).map_err(|e|e.to_string())?!=1{return Err("Scheduled occurrence changed before it could be posted".into());}
     tx.commit().map_err(|e|e.to_string())?;
     Ok(item)
+}
+
+fn process_scheduled_auto_post_inner(connection:&mut Connection,request:ScheduledAutoPostRequest)->Result<ScheduledPostResult,String>{
+    let as_of=NaiveDate::parse_from_str(&request.as_of_date,"%Y-%m-%d").map_err(|_|"Auto-post date must be a valid YYYY-MM-DD date")?;
+    if request.occurrence_ids.is_empty(){return Err("Select at least one scheduled occurrence".into());}
+    if request.occurrence_ids.len()>1000{return Err("No more than 1,000 occurrences can be posted at once".into());}
+    let mut selected=HashSet::new();
+    let ids=request.occurrence_ids.into_iter().map(|id|clean_required(id,"Scheduled occurrence",80)).collect::<Result<Vec<_>,_>>()?;
+    if ids.iter().any(|id|!selected.insert(id.clone())){return Err("A scheduled occurrence was selected more than once".into());}
+    let tx=connection.transaction().map_err(|e|e.to_string())?;
+    for id in &ids{
+        let (occurrence,template)=load_expected_occurrence(&tx,id)?;
+        let due=NaiveDate::parse_from_str(&occurrence.due_date,"%Y-%m-%d").map_err(|_|"Stored occurrence has an invalid due date")?;
+        if !template.auto_post||!template.enabled||template.archived||due>as_of{return Err("A selected occurrence is not eligible for auto-post".into());}
+        let item=insert_scheduled_post(&tx,&occurrence,&template)?;
+        if tx.execute("UPDATE scheduled_occurrences SET status='posted',transaction_id=?2,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='expected'",params![id,item.id]).map_err(|e|e.to_string())?!=1{return Err("A scheduled occurrence changed before the batch could be posted".into());}
+    }
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(ScheduledPostResult{posted_count:ids.len()})
 }
 
 #[tauri::command]
 fn post_scheduled_occurrence(occurrence_id:String,state:State<DbState>)->Result<LedgerTransaction,String>{
     let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
     post_scheduled_occurrence_inner(&mut connection,occurrence_id)
+}
+
+#[tauri::command]
+fn process_scheduled_auto_post(request:ScheduledAutoPostRequest,state:State<DbState>)->Result<ScheduledPostResult,String>{
+    let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    process_scheduled_auto_post_inner(&mut connection,request)
 }
 
 fn skip_scheduled_occurrence_inner(connection:&Connection,occurrence_id:String)->Result<ScheduledOccurrence,String>{
@@ -1626,7 +1689,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

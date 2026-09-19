@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
@@ -189,10 +189,21 @@ export class DemoFinanceRepository implements FinanceRepository {
   }
   async postScheduledOccurrence(id:string):Promise<Transaction>{
     const occurrence=this.expectedOccurrence(id),template=this.scheduledTransactions.find(item=>item.id===occurrence.scheduledTransactionId)!;
-    if(template.kind==="transfer")throw new Error("Recurring transfer posting is not implemented yet");
-    const transaction=await this.createTransaction({accountId:template.accountId,postedDate:occurrence.dueDate,payee:template.payee,category:template.category,amountMinor:template.amountMinor,status:template.status,memo:template.memo});
-    occurrence.status="posted";occurrence.transactionId=transaction.id;
-    return transaction;
+    let transaction:Transaction;
+    if(template.kind==="transfer"){
+      const result=await this.createTransfer({fromAccountId:template.accountId,toAccountId:template.transferAccountId!,postedDate:occurrence.dueDate,payee:template.payee,amountMinor:template.amountMinor,status:template.status,memo:template.memo});
+      transaction=this.transactions.find(item=>item.id===result.fromTransactionId)!;
+    }else transaction=await this.createTransaction({accountId:template.accountId,postedDate:occurrence.dueDate,payee:template.payee,category:template.category,amountMinor:template.amountMinor,status:template.status,memo:template.memo});
+    occurrence.status="posted";occurrence.transactionId=transaction.id;return structuredClone(transaction);
+  }
+  async processScheduledAutoPost(input:ScheduledAutoPostInput):Promise<ScheduledPostResult>{
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(input.asOfDate))throw new Error("Auto-post date must use YYYY-MM-DD");
+    if(!input.occurrenceIds.length)throw new Error("Select at least one scheduled occurrence");
+    if(input.occurrenceIds.length>1000)throw new Error("No more than 1,000 occurrences can be posted at once");
+    if(new Set(input.occurrenceIds).size!==input.occurrenceIds.length)throw new Error("A scheduled occurrence was selected more than once");
+    const snapshot={accounts:structuredClone(this.accounts),transactions:structuredClone(this.transactions),occurrences:structuredClone(this.scheduledOccurrences)};
+    try{for(const id of input.occurrenceIds){const occurrence=this.expectedOccurrence(id),template=this.scheduledTransactions.find(item=>item.id===occurrence.scheduledTransactionId)!;if(!template.autoPost||!template.enabled||this.archivedScheduledIds.has(template.id)||occurrence.dueDate>input.asOfDate)throw new Error("A selected occurrence is not eligible for auto-post");await this.postScheduledOccurrence(id);}return{postedCount:input.occurrenceIds.length};}
+    catch(reason){this.accounts=snapshot.accounts;this.transactions=snapshot.transactions;this.scheduledOccurrences=snapshot.occurrences;throw reason;}
   }
   async skipScheduledOccurrence(id:string):Promise<ScheduledOccurrence>{
     const occurrence=this.expectedOccurrence(id);

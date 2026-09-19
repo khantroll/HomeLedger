@@ -68,6 +68,7 @@ export interface FinanceRepository {
   generateScheduledOccurrences(input: ScheduledOccurrenceQuery): Promise<number>;
   listScheduledOccurrences(input: ScheduledOccurrenceQuery): Promise<ScheduledOccurrence[]>;
   postScheduledOccurrence(id: string): Promise<Transaction>;
+  processScheduledAutoPost(input: ScheduledAutoPostInput): Promise<ScheduledPostResult>;
   skipScheduledOccurrence(id: string): Promise<ScheduledOccurrence>;
   linkScheduledOccurrence(id: string, transactionId: string): Promise<ScheduledOccurrence>;
   findScheduledOccurrenceMatches(input: ScheduledImportMatchInput): Promise<ScheduledImportMatch[]>;
@@ -99,6 +100,7 @@ export interface ScheduledTransaction {
   customIntervalCount?: number;
   customIntervalUnit?: CustomIntervalUnit;
   enabled: boolean;
+  autoPost?: boolean;
   archived?: boolean;
 }
 
@@ -116,6 +118,15 @@ export interface ScheduledOccurrenceQuery {
   fromDate: string;
   toDate: string;
   scheduledTransactionId?: string;
+}
+
+export interface ScheduledAutoPostInput {
+  occurrenceIds: string[];
+  asOfDate: string;
+}
+
+export interface ScheduledPostResult {
+  postedCount: number;
 }
 
 export interface BudgetCategory {
