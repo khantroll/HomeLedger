@@ -117,4 +117,42 @@ describe("finance repository contract", () => {
     await repository.deleteImportProfile(saved.id);
     expect(await repository.listImportProfiles()).toHaveLength(0);
   });
+
+  it("creates templates and generates idempotent occurrences across overlapping windows", async () => {
+    const repository = new DemoFinanceRepository();
+    const account = await repository.createAccount({ name: "Bills", type: "checking", currency: "USD", openingBalanceMinor: 0, ownerLabel: "Household" });
+    const template = await repository.createScheduledTransaction({ kind:"transaction", accountId:account.id, payee:"Rent", category:"Housing", amountMinor:-100000, status:"pending", frequency:"monthly", anchorDate:"2026-01-31", enabled:true });
+    expect(await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31"})).toBe(3);
+    expect(await repository.generateScheduledOccurrences({fromDate:"2026-02-01",toDate:"2026-04-30"})).toBe(1);
+    const occurrences=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-04-30",scheduledTransactionId:template.id});
+    expect(occurrences.map(item=>item.dueDate)).toEqual(["2026-01-31","2026-02-28","2026-03-31","2026-04-30"]);
+    expect(new Set(occurrences.map(item=>`${item.scheduledTransactionId}:${item.dueDate}`)).size).toBe(4);
+  });
+
+  it("posts, skips, and links expected scheduled occurrences", async () => {
+    const repository = new DemoFinanceRepository();
+    const account = await repository.createAccount({ name:"Checking", type:"checking", currency:"USD", openingBalanceMinor:10000, ownerLabel:"Household" });
+    const template = await repository.createScheduledTransaction({ kind:"transaction", accountId:account.id, payee:"Utility", category:"Utilities", amountMinor:-2500, status:"pending", frequency:"monthly", anchorDate:"2026-01-15", enabled:true });
+    await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31",scheduledTransactionId:template.id});
+    const occurrences=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31",scheduledTransactionId:template.id});
+    const posted=await repository.postScheduledOccurrence(occurrences[0].id);
+    expect(posted).toMatchObject({postedDate:"2026-01-15",amountMinor:-2500});
+    expect((await repository.listAccounts()).find(item=>item.id===account.id)?.balanceMinor).toBe(7500);
+    expect(await repository.skipScheduledOccurrence(occurrences[1].id)).toMatchObject({status:"skipped"});
+    const existing=await repository.createTransaction({accountId:account.id,postedDate:"2026-03-16",payee:"Utility payment",category:"Utilities",amountMinor:-2500,status:"cleared"});
+    expect(await repository.linkScheduledOccurrence(occurrences[2].id,existing.id)).toMatchObject({status:"linked",transactionId:existing.id});
+    await expect(repository.deleteTransaction(existing.id)).rejects.toThrow("scheduled occurrences");
+    await expect(repository.postScheduledOccurrence(occurrences[0].id)).rejects.toThrow("expected");
+  });
+
+  it("stores the account relationship for future recurring transfers without posting them", async () => {
+    const repository = new DemoFinanceRepository();
+    const from=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const to=await repository.createAccount({name:"Savings",type:"savings",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const template=await repository.createScheduledTransaction({kind:"transfer",accountId:from.id,transferAccountId:to.id,payee:"Monthly savings",category:"Transfer",amountMinor:5000,status:"pending",frequency:"monthly",anchorDate:"2026-01-01",enabled:true});
+    expect(template).toMatchObject({kind:"transfer",accountId:from.id,transferAccountId:to.id});
+    await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-01-31",scheduledTransactionId:template.id});
+    const [occurrence]=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-01-31",scheduledTransactionId:template.id});
+    await expect(repository.postScheduledOccurrence(occurrence.id)).rejects.toThrow("not implemented");
+  });
 });

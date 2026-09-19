@@ -1,5 +1,9 @@
 export type AccountType = "checking" | "savings" | "credit" | "cash" | "loan" | "asset";
 export type TransactionStatus = "pending" | "cleared" | "reconciled" | "review";
+export type ScheduledTemplateKind = "transaction" | "transfer";
+export type RecurrenceFrequency = "weekly" | "biweekly" | "semimonthly" | "monthly" | "annual" | "custom";
+export type CustomIntervalUnit = "days" | "weeks" | "months" | "years";
+export type ScheduledOccurrenceStatus = "expected" | "posted" | "skipped" | "linked";
 
 export interface Account {
   id: string;
@@ -57,9 +61,53 @@ export interface FinanceRepository {
   listImportProfiles(): Promise<ImportProfile[]>;
   saveImportProfile(input: ImportProfileInput): Promise<ImportProfile>;
   deleteImportProfile(id: string): Promise<void>;
+  listScheduledTransactions(): Promise<ScheduledTransaction[]>;
+  createScheduledTransaction(input: ScheduledTransactionInput): Promise<ScheduledTransaction>;
+  updateScheduledTransaction(id: string, input: ScheduledTransactionInput): Promise<ScheduledTransaction>;
+  deleteScheduledTransaction(id: string): Promise<void>;
+  generateScheduledOccurrences(input: ScheduledOccurrenceQuery): Promise<number>;
+  listScheduledOccurrences(input: ScheduledOccurrenceQuery): Promise<ScheduledOccurrence[]>;
+  postScheduledOccurrence(id: string): Promise<Transaction>;
+  skipScheduledOccurrence(id: string): Promise<ScheduledOccurrence>;
+  linkScheduledOccurrence(id: string, transactionId: string): Promise<ScheduledOccurrence>;
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
+}
+
+export interface ScheduledTransaction {
+  id: string;
+  kind: ScheduledTemplateKind;
+  accountId: string;
+  transferAccountId?: string;
+  payee: string;
+  category: string;
+  amountMinor: number;
+  status: Exclude<TransactionStatus, "reconciled">;
+  memo?: string;
+  frequency: RecurrenceFrequency;
+  anchorDate: string;
+  endDate?: string;
+  secondMonthDay?: number;
+  customIntervalCount?: number;
+  customIntervalUnit?: CustomIntervalUnit;
+  enabled: boolean;
+}
+
+export type ScheduledTransactionInput = Omit<ScheduledTransaction, "id">;
+
+export interface ScheduledOccurrence {
+  id: string;
+  scheduledTransactionId: string;
+  dueDate: string;
+  status: ScheduledOccurrenceStatus;
+  transactionId?: string;
+}
+
+export interface ScheduledOccurrenceQuery {
+  fromDate: string;
+  toDate: string;
+  scheduledTransactionId?: string;
 }
 
 export interface Reconciliation {

@@ -5,7 +5,7 @@ use std::{collections::HashSet, path::Path, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
-use chrono::NaiveDate;
+use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 
 #[cfg(test)]
 mod tests;
@@ -243,6 +243,65 @@ struct Reconciliation {
     adjustment_total_minor: i64,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledTransaction {
+    id: String,
+    kind: String,
+    account_id: String,
+    transfer_account_id: Option<String>,
+    payee: String,
+    category: String,
+    amount_minor: i64,
+    status: String,
+    memo: Option<String>,
+    frequency: String,
+    anchor_date: String,
+    end_date: Option<String>,
+    second_month_day: Option<u32>,
+    custom_interval_count: Option<u32>,
+    custom_interval_unit: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledTransactionRequest {
+    kind: String,
+    account_id: String,
+    transfer_account_id: Option<String>,
+    payee: String,
+    category: String,
+    amount_minor: i64,
+    status: String,
+    memo: Option<String>,
+    frequency: String,
+    anchor_date: String,
+    end_date: Option<String>,
+    second_month_day: Option<u32>,
+    custom_interval_count: Option<u32>,
+    custom_interval_unit: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledOccurrenceQuery {
+    from_date: String,
+    to_date: String,
+    scheduled_transaction_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledOccurrence {
+    id: String,
+    scheduled_transaction_id: String,
+    due_date: String,
+    status: String,
+    transaction_id: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RestoreResult {
@@ -250,7 +309,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 9;
+const CURRENT_SCHEMA_VERSION: i64 = 10;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -324,6 +383,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/009_import_profile_locales.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(9, 'import profile locale settings')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 10 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/010_scheduled_transactions.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(10, 'scheduled transaction templates and occurrences')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -620,6 +685,276 @@ fn delete_import_profile(profile_id:String,state:State<DbState>)->Result<(),Stri
     Ok(())
 }
 
+fn scheduled_transaction_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<ScheduledTransaction>{
+    Ok(ScheduledTransaction{id:row.get(0)?,kind:row.get(1)?,account_id:row.get(2)?,transfer_account_id:row.get(3)?,payee:row.get(4)?,category:row.get(5)?,amount_minor:row.get(6)?,status:row.get(7)?,memo:row.get(8)?,frequency:row.get(9)?,anchor_date:row.get(10)?,end_date:row.get(11)?,second_month_day:row.get(12)?,custom_interval_count:row.get(13)?,custom_interval_unit:row.get(14)?,enabled:row.get(15)?})
+}
+
+fn scheduled_occurrence_from_row(row:&rusqlite::Row<'_>)->rusqlite::Result<ScheduledOccurrence>{
+    Ok(ScheduledOccurrence{id:row.get(0)?,scheduled_transaction_id:row.get(1)?,due_date:row.get(2)?,status:row.get(3)?,transaction_id:row.get(4)?})
+}
+
+fn clean_scheduled_transaction(connection:&Connection,request:ScheduledTransactionRequest,id:String)->Result<ScheduledTransaction,String>{
+    if !["transaction","transfer"].contains(&request.kind.as_str()){return Err("Unsupported scheduled transaction kind".into());}
+    if !["pending","cleared","review"].contains(&request.status.as_str()){return Err("Unsupported scheduled transaction status".into());}
+    if !["weekly","biweekly","semimonthly","monthly","annual","custom"].contains(&request.frequency.as_str()){return Err("Unsupported recurrence frequency".into());}
+    if request.amount_minor==0{return Err("Scheduled amount cannot be zero".into());}
+    let anchor=NaiveDate::parse_from_str(&request.anchor_date,"%Y-%m-%d").map_err(|_|"Anchor date must be a valid YYYY-MM-DD date")?;
+    let end_date=match clean_optional(request.end_date,10)?{
+        Some(value)=>{
+            let end=NaiveDate::parse_from_str(&value,"%Y-%m-%d").map_err(|_|"End date must be a valid YYYY-MM-DD date")?;
+            if end<anchor{return Err("Schedule end date cannot be before its anchor".into());}
+            Some(value)
+        },
+        None=>None
+    };
+    if request.frequency=="semimonthly"{
+        let second=request.second_month_day.ok_or("Semimonthly schedules require a second month day")?;
+        if !(1..=31).contains(&second)||second==anchor.day(){return Err("Semimonthly schedules require two different month days".into());}
+    }else if request.second_month_day.is_some(){return Err("Second month day is only valid for semimonthly schedules".into());}
+    if request.frequency=="custom"{
+        let count=request.custom_interval_count.ok_or("Custom schedules require an interval")?;
+        if count==0||count>10_000{return Err("Custom interval must be between 1 and 10,000".into());}
+        if !["days","weeks","months","years"].contains(&request.custom_interval_unit.as_deref().unwrap_or("")){return Err("Custom recurrence unit is invalid".into());}
+    }else if request.custom_interval_count.is_some()||request.custom_interval_unit.is_some(){return Err("Custom interval fields are only valid for custom schedules".into());}
+    let account_id=clean_required(request.account_id,"Account",80)?;
+    let source:Option<String>=connection.query_row("SELECT currency FROM accounts WHERE id=?1 AND archived_at IS NULL",params![account_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    let source_currency=source.ok_or("Scheduled transaction account does not exist")?;
+    let transfer_account_id=clean_optional(request.transfer_account_id,80)?;
+    if request.kind=="transaction"&&transfer_account_id.is_some(){return Err("Ordinary scheduled transactions cannot have a transfer account".into());}
+    if request.kind=="transfer"{
+        let destination_id=transfer_account_id.as_ref().ok_or("Scheduled transfers require a destination account")?;
+        if destination_id==&account_id{return Err("Scheduled transfers require two different accounts".into());}
+        let destination:Option<String>=connection.query_row("SELECT currency FROM accounts WHERE id=?1 AND archived_at IS NULL",params![destination_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+        if destination.as_deref()!=Some(source_currency.as_str()){return Err("Scheduled transfer accounts must exist and use the same currency".into());}
+        if request.amount_minor<=0{return Err("Scheduled transfer amount must be positive".into());}
+    }
+    Ok(ScheduledTransaction{id,kind:request.kind,account_id,transfer_account_id,payee:clean_required(request.payee,"Payee",160)?,category:clean_required(request.category,"Category",120)?,amount_minor:request.amount_minor,status:request.status,memo:clean_optional(request.memo,500)?,frequency:request.frequency,anchor_date:request.anchor_date,end_date,second_month_day:request.second_month_day,custom_interval_count:request.custom_interval_count,custom_interval_unit:request.custom_interval_unit,enabled:request.enabled})
+}
+
+fn clamped_month_date(anchor:NaiveDate,month_offset:i32)->Result<NaiveDate,String>{
+    let total=anchor.year().checked_mul(12).and_then(|value|value.checked_add(anchor.month0() as i32)).and_then(|value|value.checked_add(month_offset)).ok_or("Recurrence date is out of range")?;
+    let year=total.div_euclid(12);
+    let month0=total.rem_euclid(12) as u32;
+    let next=if month0==11{NaiveDate::from_ymd_opt(year+1,1,1)}else{NaiveDate::from_ymd_opt(year,month0+2,1)}.ok_or("Recurrence date is out of range")?;
+    let last=(next-ChronoDuration::days(1)).day();
+    NaiveDate::from_ymd_opt(year,month0+1,anchor.day().min(last)).ok_or("Recurrence date is out of range".into())
+}
+
+fn generate_scheduled_dates(template:&ScheduledTransaction,from:NaiveDate,requested_end:NaiveDate)->Result<Vec<NaiveDate>,String>{
+    let anchor=NaiveDate::parse_from_str(&template.anchor_date,"%Y-%m-%d").map_err(|_|"Stored schedule has an invalid anchor date")?;
+    let configured_end=template.end_date.as_deref().map(|value|NaiveDate::parse_from_str(value,"%Y-%m-%d").map_err(|_|"Stored schedule has an invalid end date")).transpose()?;
+    let end=configured_end.map_or(requested_end,|value|value.min(requested_end));
+    if from>end||anchor>end{return Ok(vec![]);}
+    let mut dates=Vec::new();
+    match template.frequency.as_str(){
+        "weekly"|"biweekly"=>{
+            let step=if template.frequency=="biweekly"{14}else{7};
+            let elapsed=(from-anchor).num_days();
+            let mut occurrence=anchor+ChronoDuration::days(if elapsed<=0{0}else{(elapsed+step-1)/step*step});
+            while occurrence<=end{dates.push(occurrence);occurrence+=ChronoDuration::days(step);}
+        },
+        "monthly"|"annual"=>{
+            let interval=if template.frequency=="annual"{12}else{1};
+            let month_difference=(from.year()-anchor.year())*12+from.month0() as i32-anchor.month0() as i32;
+            let mut step=(month_difference.div_euclid(interval)-1).max(0);
+            loop{
+                let occurrence=clamped_month_date(anchor,step*interval)?;
+                if occurrence>end{break;}
+                if occurrence>=anchor&&occurrence>=from{dates.push(occurrence);}
+                step+=1;
+            }
+        },
+        "semimonthly"=>{
+            let second=template.second_month_day.ok_or("Stored semimonthly schedule is incomplete")?;
+            let month_difference=(from.year()-anchor.year())*12+from.month0() as i32-anchor.month0() as i32;
+            let mut offset=(month_difference-1).max(0);
+            loop{
+                let first=clamped_month_date(anchor,offset)?;
+                if NaiveDate::from_ymd_opt(first.year(),first.month(),1).ok_or("Recurrence date is out of range")?>end{break;}
+                for day in [anchor.day(),second]{
+                    let month_anchor=NaiveDate::from_ymd_opt(first.year(),first.month(),day.min(28)).ok_or("Recurrence date is out of range")?;
+                    let occurrence=clamped_month_date(month_anchor,0)?;
+                    let desired=if day<=28{occurrence}else{
+                        let next=if first.month()==12{NaiveDate::from_ymd_opt(first.year()+1,1,1)}else{NaiveDate::from_ymd_opt(first.year(),first.month()+1,1)}.ok_or("Recurrence date is out of range")?;
+                        NaiveDate::from_ymd_opt(first.year(),first.month(),day.min((next-ChronoDuration::days(1)).day())).ok_or("Recurrence date is out of range")?
+                    };
+                    if desired>=anchor&&desired>=from&&desired<=end{dates.push(desired);}
+                }
+                offset+=1;
+            }
+        },
+        "custom"=>{
+            let count=template.custom_interval_count.ok_or("Stored custom schedule is incomplete")? as i64;
+            match template.custom_interval_unit.as_deref(){
+                Some("days")|Some("weeks")=>{
+                    let step=count*if template.custom_interval_unit.as_deref()==Some("weeks"){7}else{1};
+                    let elapsed=(from-anchor).num_days();
+                    let mut occurrence=anchor+ChronoDuration::days(if elapsed<=0{0}else{(elapsed+step-1)/step*step});
+                    while occurrence<=end{dates.push(occurrence);occurrence+=ChronoDuration::days(step);}
+                },
+                Some("months")|Some("years")=>{
+                    let interval=(count as i32)*if template.custom_interval_unit.as_deref()==Some("years"){12}else{1};
+                    let month_difference=(from.year()-anchor.year())*12+from.month0() as i32-anchor.month0() as i32;
+                    let mut step=(month_difference.div_euclid(interval)-1).max(0);
+                    loop{let occurrence=clamped_month_date(anchor,step*interval)?;if occurrence>end{break;}if occurrence>=anchor&&occurrence>=from{dates.push(occurrence);}step+=1;}
+                },
+                _=>return Err("Stored custom schedule has an invalid unit".into())
+            }
+        },
+        _=>return Err("Stored schedule has an invalid frequency".into())
+    }
+    dates.sort_unstable();
+    dates.dedup();
+    if dates.len()>10_000{return Err("A recurrence window cannot exceed 10,000 occurrences".into());}
+    Ok(dates)
+}
+
+fn parse_occurrence_query(request:&ScheduledOccurrenceQuery)->Result<(NaiveDate,NaiveDate),String>{
+    let from=NaiveDate::parse_from_str(&request.from_date,"%Y-%m-%d").map_err(|_|"From date must be a valid YYYY-MM-DD date")?;
+    let to=NaiveDate::parse_from_str(&request.to_date,"%Y-%m-%d").map_err(|_|"To date must be a valid YYYY-MM-DD date")?;
+    if from>to{return Err("Occurrence date range is invalid".into());}
+    Ok((from,to))
+}
+
+#[tauri::command]
+fn list_scheduled_transactions(state:State<DbState>)->Result<Vec<ScheduledTransaction>,String>{
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled FROM scheduled_transactions WHERE archived_at IS NULL ORDER BY created_at,id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+fn insert_scheduled_transaction(connection:&Connection,item:&ScheduledTransaction)->Result<(),String>{
+    connection.execute("INSERT INTO scheduled_transactions(id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",params![item.id,item.kind,item.account_id,item.transfer_account_id,item.payee,item.category,item.amount_minor,item.status,item.memo,item.frequency,item.anchor_date,item.end_date,item.second_month_day,item.custom_interval_count,item.custom_interval_unit,item.enabled]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn create_scheduled_transaction(request:ScheduledTransactionRequest,state:State<DbState>)->Result<ScheduledTransaction,String>{
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let item=clean_scheduled_transaction(&connection,request,Uuid::new_v4().to_string())?;
+    insert_scheduled_transaction(&connection,&item)?;
+    Ok(item)
+}
+
+#[tauri::command]
+fn update_scheduled_transaction(scheduled_transaction_id:String,request:ScheduledTransactionRequest,state:State<DbState>)->Result<ScheduledTransaction,String>{
+    let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let id=clean_required(scheduled_transaction_id,"Scheduled transaction",80)?;
+    let item=clean_scheduled_transaction(&connection,request,id)?;
+    let tx=connection.transaction().map_err(|e|e.to_string())?;
+    let changed=tx.execute("UPDATE scheduled_transactions SET kind=?2,account_id=?3,transfer_account_id=?4,payee=?5,category=?6,amount_minor=?7,status=?8,memo=?9,frequency=?10,anchor_date=?11,end_date=?12,second_month_day=?13,custom_interval_count=?14,custom_interval_unit=?15,enabled=?16,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND archived_at IS NULL",params![item.id,item.kind,item.account_id,item.transfer_account_id,item.payee,item.category,item.amount_minor,item.status,item.memo,item.frequency,item.anchor_date,item.end_date,item.second_month_day,item.custom_interval_count,item.custom_interval_unit,item.enabled]).map_err(|e|e.to_string())?;
+    if changed!=1{return Err("Scheduled transaction does not exist".into());}
+    tx.execute("DELETE FROM scheduled_occurrences WHERE scheduled_transaction_id=?1 AND status='expected'",params![item.id]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(item)
+}
+
+#[tauri::command]
+fn delete_scheduled_transaction(scheduled_transaction_id:String,state:State<DbState>)->Result<(),String>{
+    let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let id=clean_required(scheduled_transaction_id,"Scheduled transaction",80)?;
+    let tx=connection.transaction().map_err(|e|e.to_string())?;
+    if tx.execute("UPDATE scheduled_transactions SET archived_at=CURRENT_TIMESTAMP,enabled=0,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND archived_at IS NULL",params![id]).map_err(|e|e.to_string())?!=1{return Err("Scheduled transaction does not exist".into());}
+    tx.execute("DELETE FROM scheduled_occurrences WHERE scheduled_transaction_id=?1 AND status='expected'",params![id]).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())
+}
+
+fn generate_scheduled_occurrences_inner(connection:&mut Connection,request:ScheduledOccurrenceQuery)->Result<usize,String>{
+    let (from,to)=parse_occurrence_query(&request)?;
+    let mut statement=connection.prepare("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled FROM scheduled_transactions WHERE archived_at IS NULL AND enabled=1 AND (?1 IS NULL OR id=?1) ORDER BY id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map(params![request.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
+    let templates=rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    drop(statement);
+    if request.scheduled_transaction_id.is_some()&&templates.is_empty(){return Err("Scheduled transaction does not exist or is disabled".into());}
+    let tx=connection.transaction().map_err(|e|e.to_string())?;
+    let mut created=0;
+    for template in templates{
+        for due in generate_scheduled_dates(&template,from,to)?{
+            created+=tx.execute("INSERT OR IGNORE INTO scheduled_occurrences(id,scheduled_transaction_id,due_date,status) VALUES(?1,?2,?3,'expected')",params![Uuid::new_v4().to_string(),template.id,due.format("%Y-%m-%d").to_string()]).map_err(|e|e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(created)
+}
+
+#[tauri::command]
+fn generate_scheduled_occurrences(request:ScheduledOccurrenceQuery,state:State<DbState>)->Result<usize,String>{
+    let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    generate_scheduled_occurrences_inner(&mut connection,request)
+}
+
+#[tauri::command]
+fn list_scheduled_occurrences(request:ScheduledOccurrenceQuery,state:State<DbState>)->Result<Vec<ScheduledOccurrence>,String>{
+    parse_occurrence_query(&request)?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let mut statement=connection.prepare("SELECT id,scheduled_transaction_id,due_date,status,transaction_id FROM scheduled_occurrences WHERE due_date BETWEEN ?1 AND ?2 AND (?3 IS NULL OR scheduled_transaction_id=?3) ORDER BY due_date,id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map(params![request.from_date,request.to_date,request.scheduled_transaction_id],scheduled_occurrence_from_row).map_err(|e|e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+
+fn load_expected_occurrence(connection:&Connection,id:&str)->Result<(ScheduledOccurrence,ScheduledTransaction),String>{
+    let occurrence:Option<ScheduledOccurrence>=connection.query_row("SELECT id,scheduled_transaction_id,due_date,status,transaction_id FROM scheduled_occurrences WHERE id=?1",params![id],scheduled_occurrence_from_row).optional().map_err(|e|e.to_string())?;
+    let occurrence=occurrence.ok_or("Scheduled occurrence does not exist")?;
+    if occurrence.status!="expected"{return Err("Only expected occurrences can be changed".into());}
+    let template=connection.query_row("SELECT id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,memo,frequency,anchor_date,end_date,second_month_day,custom_interval_count,custom_interval_unit,enabled FROM scheduled_transactions WHERE id=?1",params![occurrence.scheduled_transaction_id],scheduled_transaction_from_row).map_err(|e|e.to_string())?;
+    Ok((occurrence,template))
+}
+
+fn post_scheduled_occurrence_inner(connection:&mut Connection,occurrence_id:String)->Result<LedgerTransaction,String>{
+    let id=clean_required(occurrence_id,"Scheduled occurrence",80)?;
+    let tx=connection.transaction().map_err(|e|e.to_string())?;
+    let (occurrence,template)=load_expected_occurrence(&tx,&id)?;
+    if template.kind=="transfer"{return Err("Recurring transfer posting is not implemented yet".into());}
+    let item=clean_transaction_request(CreateTransactionRequest{account_id:template.account_id,posted_date:occurrence.due_date,payee:template.payee,category:template.category,amount_minor:template.amount_minor,status:template.status,memo:template.memo,splits:None})?;
+    tx.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'manual')",params![item.id,item.account_id,item.posted_date,item.payee,item.category,item.amount_minor,item.status,item.memo]).map_err(|e|e.to_string())?;
+    if tx.execute("UPDATE scheduled_occurrences SET status='posted',transaction_id=?2,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='expected'",params![id,item.id]).map_err(|e|e.to_string())?!=1{return Err("Scheduled occurrence changed before it could be posted".into());}
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(item)
+}
+
+#[tauri::command]
+fn post_scheduled_occurrence(occurrence_id:String,state:State<DbState>)->Result<LedgerTransaction,String>{
+    let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    post_scheduled_occurrence_inner(&mut connection,occurrence_id)
+}
+
+fn skip_scheduled_occurrence_inner(connection:&Connection,occurrence_id:String)->Result<ScheduledOccurrence,String>{
+    let id=clean_required(occurrence_id,"Scheduled occurrence",80)?;
+    load_expected_occurrence(connection,&id)?;
+    connection.execute("UPDATE scheduled_occurrences SET status='skipped',modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='expected'",params![id]).map_err(|e|e.to_string())?;
+    connection.query_row("SELECT id,scheduled_transaction_id,due_date,status,transaction_id FROM scheduled_occurrences WHERE id=?1",params![id],scheduled_occurrence_from_row).map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+fn skip_scheduled_occurrence(occurrence_id:String,state:State<DbState>)->Result<ScheduledOccurrence,String>{
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    skip_scheduled_occurrence_inner(&connection,occurrence_id)
+}
+
+fn link_scheduled_occurrence_inner(connection:&mut Connection,occurrence_id:String,transaction_id:String)->Result<ScheduledOccurrence,String>{
+    let occurrence_id=clean_required(occurrence_id,"Scheduled occurrence",80)?;
+    let transaction_id=clean_required(transaction_id,"Transaction",80)?;
+    let tx=connection.transaction().map_err(|e|e.to_string())?;
+    let (_,template)=load_expected_occurrence(&tx,&occurrence_id)?;
+    if template.kind=="transfer"{return Err("Recurring transfer linking is not implemented yet".into());}
+    let transaction:Option<(String,i64)>=tx.query_row("SELECT account_id,amount_minor FROM transactions WHERE id=?1",params![transaction_id],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|e.to_string())?;
+    let (account_id,amount_minor)=transaction.ok_or("Transaction does not exist")?;
+    if account_id!=template.account_id||amount_minor!=template.amount_minor{return Err("Transaction account and amount must match the scheduled transaction".into());}
+    let transfer:Option<i64>=tx.query_row("SELECT 1 FROM transfer_links WHERE from_transaction_id=?1 OR to_transaction_id=?1",params![transaction_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    if transfer.is_some(){return Err("Linked transfers cannot be matched to a scheduled transaction".into());}
+    tx.execute("UPDATE scheduled_occurrences SET status='linked',transaction_id=?2,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='expected'",params![occurrence_id,transaction_id]).map_err(|e|e.to_string())?;
+    let result=tx.query_row("SELECT id,scheduled_transaction_id,due_date,status,transaction_id FROM scheduled_occurrences WHERE id=?1",params![occurrence_id],scheduled_occurrence_from_row).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn link_scheduled_occurrence(occurrence_id:String,transaction_id:String,state:State<DbState>)->Result<ScheduledOccurrence,String>{
+    let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    link_scheduled_occurrence_inner(&mut connection,occurrence_id,transaction_id)
+}
+
 fn matching_merchant_rule<'a>(rules:&'a [MerchantRule],payee:&str,amount_minor:i64)->Option<&'a MerchantRule>{
     let normalized=normalize_merchant(payee);
     rules.iter().find(|rule|{
@@ -643,6 +978,8 @@ fn update_transaction_inner(connection: &mut Connection, transaction_id: String,
     let tx = connection.transaction().map_err(|e| e.to_string())?;
     let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if reconciled.is_some() { return Err("Reconciled transactions cannot be edited".into()); }
+    let scheduled: Option<i64> = tx.query_row("SELECT 1 FROM scheduled_occurrences WHERE transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if scheduled.is_some() { return Err("Transactions linked to scheduled occurrences cannot be edited".into()); }
     let linked: Option<i64> = tx.query_row("SELECT 1 FROM transfer_links WHERE from_transaction_id = ?1 OR to_transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if linked.is_some() { return Err("Linked transfers must be edited through the transfer editor".into()); }
     let existing: Option<(Option<String>, String, Option<String>, String)> = tx.query_row("SELECT external_id, source, import_batch_id, account_id FROM transactions WHERE id = ?1", params![transaction_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(|e| e.to_string())?;
@@ -671,6 +1008,8 @@ fn delete_transaction_inner(connection: &Connection, transaction_id: String) -> 
     let transaction_id = clean_required(transaction_id, "Transaction", 80)?;
     let reconciled: Option<i64> = connection.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if reconciled.is_some() { return Err("Reconciled transactions cannot be deleted".into()); }
+    let scheduled: Option<i64> = connection.query_row("SELECT 1 FROM scheduled_occurrences WHERE transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if scheduled.is_some() { return Err("Transactions linked to scheduled occurrences cannot be deleted".into()); }
     let imported: Option<Option<String>> = connection.query_row("SELECT import_batch_id FROM transactions WHERE id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     let import_batch_id = imported.ok_or("Transaction does not exist")?;
     if import_batch_id.is_some() { return Err("Imported transactions must be removed by undoing their complete import batch".into()); }
@@ -771,6 +1110,8 @@ fn undo_import_batch_inner(connection: &mut Connection, batch_id: &str) -> Resul
     if undone_at.is_some() { return Err("This import has already been undone".into()); }
     let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items item JOIN transactions txn ON txn.id = item.transaction_id WHERE txn.import_batch_id = ?1 LIMIT 1", params![batch_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if reconciled.is_some() { return Err("This import contains reconciled transactions and cannot be undone".into()); }
+    let scheduled: Option<i64> = tx.query_row("SELECT 1 FROM scheduled_occurrences occurrence JOIN transactions txn ON txn.id=occurrence.transaction_id WHERE txn.import_batch_id=?1 LIMIT 1",params![batch_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+    if scheduled.is_some(){return Err("This import contains transactions linked to scheduled occurrences and cannot be undone".into());}
     let removed_count = tx.execute("DELETE FROM transactions WHERE import_batch_id = ?1", params![batch_id]).map_err(|e| e.to_string())?;
     if removed_count as i64 != expected_count { return Err("Import batch no longer matches its original transaction count; nothing was removed".into()); }
     tx.execute("UPDATE import_batches SET undone_at = CURRENT_TIMESTAMP WHERE id = ?1 AND undone_at IS NULL", params![batch_id]).map_err(|e| e.to_string())?;
@@ -924,6 +1265,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let profile_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='import_profiles'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if profile_tables!=1{return Err("The backup is missing import profiles".into());}
     }
+    if version >= 10 {
+        let scheduled_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('scheduled_transactions','scheduled_occurrences')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if scheduled_tables!=2{return Err("The backup is missing scheduled transaction tables".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -1007,7 +1352,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, skip_scheduled_occurrence, link_scheduled_occurrence, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupRepository, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, Transaction, TransferResult, UndoImportResult } from "./domain";
+import type { Account, BackupRepository, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransferResult, UndoImportResult } from "./domain";
 
 class TauriFinanceRepository implements FinanceRepository {
   listAccounts(): Promise<Account[]> { return invoke("list_accounts"); }
@@ -22,6 +22,15 @@ class TauriFinanceRepository implements FinanceRepository {
   listImportProfiles(): Promise<ImportProfile[]> { return invoke("list_import_profiles"); }
   saveImportProfile(input: ImportProfileInput): Promise<ImportProfile> { return invoke("save_import_profile", { request: input }); }
   deleteImportProfile(id: string): Promise<void> { return invoke("delete_import_profile", { profileId: id }); }
+  listScheduledTransactions(): Promise<ScheduledTransaction[]> { return invoke("list_scheduled_transactions"); }
+  createScheduledTransaction(input: ScheduledTransactionInput): Promise<ScheduledTransaction> { return invoke("create_scheduled_transaction", { request: input }); }
+  updateScheduledTransaction(id: string, input: ScheduledTransactionInput): Promise<ScheduledTransaction> { return invoke("update_scheduled_transaction", { scheduledTransactionId: id, request: input }); }
+  deleteScheduledTransaction(id: string): Promise<void> { return invoke("delete_scheduled_transaction", { scheduledTransactionId: id }); }
+  generateScheduledOccurrences(input: ScheduledOccurrenceQuery): Promise<number> { return invoke("generate_scheduled_occurrences", { request: input }); }
+  listScheduledOccurrences(input: ScheduledOccurrenceQuery): Promise<ScheduledOccurrence[]> { return invoke("list_scheduled_occurrences", { request: input }); }
+  postScheduledOccurrence(id: string): Promise<Transaction> { return invoke("post_scheduled_occurrence", { occurrenceId: id }); }
+  skipScheduledOccurrence(id: string): Promise<ScheduledOccurrence> { return invoke("skip_scheduled_occurrence", { occurrenceId: id }); }
+  linkScheduledOccurrence(id: string, transactionId: string): Promise<ScheduledOccurrence> { return invoke("link_scheduled_occurrence", { occurrenceId: id, transactionId }); }
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult> { return invoke("import_transactions", { request: input }); }
   listImportBatches(): Promise<ImportBatch[]> { return invoke("list_import_batches"); }
   undoImportBatch(batchId: string): Promise<UndoImportResult> { return invoke("undo_import_batch", { batchId }); }
