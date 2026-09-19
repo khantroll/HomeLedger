@@ -25,7 +25,7 @@ Native desktop development also requires the Tauri 2 prerequisites, Rust, and pl
 npm run tauri dev
 ```
 
-Every push to a development branch and every pull request runs the browser tests and production web build on Linux. CI also checks Rust formatting, treats Clippy warnings as errors, runs the native tests, and compiles the Windows desktop application without creating an installer bundle.
+Every push to a development branch and every pull request runs the browser tests and production web build on Linux. CI also treats Rust Clippy warnings as errors, runs the native tests, and compiles the Windows desktop application without creating an installer bundle.
 
 ## Privacy posture
 
