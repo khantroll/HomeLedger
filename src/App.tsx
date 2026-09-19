@@ -34,7 +34,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     try {
       const [nextAccounts,nextTransactions,nextTemplates]=await Promise.all([repository.listAccounts(),repository.listTransactions(),repository.listScheduledTransactions()]);
-      const fromDate=todayIso(),toDate=addDaysIso(fromDate,90);
+      const today=todayIso(),fromDate=addDaysIso(today,-90),toDate=addDaysIso(today,90);
       await repository.generateScheduledOccurrences({fromDate,toDate});
       const nextOccurrences=await repository.listScheduledOccurrences({fromDate,toDate});
       setAccounts(nextAccounts);setTransactions(nextTransactions);setScheduledTemplates(nextTemplates);setScheduledOccurrences(nextOccurrences);setError("");

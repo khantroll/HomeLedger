@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, restore_database_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
 use rusqlite::Connection;
 
 #[test]
@@ -17,7 +17,8 @@ fn migration_creates_local_ledger_tables() {
     let profile_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='import_profiles'", [], |row| row.get(0)).unwrap();
     let scheduled_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('scheduled_transactions','scheduled_occurrences')", [], |row| row.get(0)).unwrap();
     let budget_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_categories','budget_allocations')", [], |row| row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables), (11, 2, 1, 1, 2, 2));
+    let auto_post_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('scheduled_transactions') WHERE name='auto_post'",[],|row|row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns), (12, 2, 1, 1, 2, 2,1));
 }
 
 #[test]
@@ -43,7 +44,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -186,7 +187,7 @@ fn scheduled_request(kind:&str,account_id:&str,transfer_account_id:Option<&str>)
         kind:kind.into(),account_id:account_id.into(),transfer_account_id:transfer_account_id.map(str::to_string),
         payee:"Utility".into(),category:"Utilities".into(),amount_minor:if kind=="transfer"{2500}else{-2500},
         status:"pending".into(),memo:None,frequency:"monthly".into(),anchor_date:"2026-01-31".into(),
-        end_date:None,second_month_day:None,custom_interval_count:None,custom_interval_unit:None,enabled:true,
+        end_date:None,second_month_day:None,custom_interval_count:None,custom_interval_unit:None,enabled:true,auto_post:false,
     }
 }
 
@@ -221,16 +222,41 @@ fn scheduled_occurrences_are_idempotent_and_support_state_transitions() {
 }
 
 #[test]
-fn scheduled_transfer_templates_preserve_both_accounts_but_defer_posting() {
+fn scheduled_transfer_posting_creates_a_balanced_linked_pair() {
     let mut connection=Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('from','Checking','checking','USD',10000,'Household'),('to','Savings','savings','USD',0,'Household')",[]).unwrap();
-    let template=clean_scheduled_transaction(&connection,scheduled_request("transfer","from",Some("to")),"transfer-schedule".into()).unwrap();
+    let mut request=scheduled_request("transfer","from",Some("to"));request.auto_post=true;request.anchor_date="2026-01-01".into();
+    let template=clean_scheduled_transaction(&connection,request,"transfer-schedule".into()).unwrap();
     insert_scheduled_transaction(&connection,&template).unwrap();
     assert_eq!(template.transfer_account_id.as_deref(),Some("to"));
-    generate_scheduled_occurrences_inner(&mut connection,ScheduledOccurrenceQuery{from_date:"2026-01-01".into(),to_date:"2026-01-31".into(),scheduled_transaction_id:Some(template.id)}).unwrap();
-    let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
-    assert!(post_scheduled_occurrence_inner(&mut connection,occurrence_id).is_err());
+    generate_scheduled_occurrences_inner(&mut connection,ScheduledOccurrenceQuery{from_date:"2026-01-01".into(),to_date:"2026-02-28".into(),scheduled_transaction_id:Some(template.id)}).unwrap();
+    let ids:Vec<String>={let mut statement=connection.prepare("SELECT id FROM scheduled_occurrences ORDER BY due_date").unwrap();statement.query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()};
+    let posted=post_scheduled_occurrence_inner(&mut connection,ids[0].clone()).unwrap();
+    assert_eq!((posted.amount_minor,posted.transfer_account_id.as_deref()),(-2500,Some("to")));
+    let auto_posted=process_scheduled_auto_post_inner(&mut connection,ScheduledAutoPostRequest{occurrence_ids:vec![ids[1].clone()],as_of_date:"2026-02-01".into()}).unwrap();
+    assert_eq!(auto_posted.posted_count,1);
+    let pair:(i64,i64)=connection.query_row("SELECT COUNT(*),SUM(amount_minor) FROM transactions WHERE source='transfer'",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
+    assert_eq!(pair,(4,0));
+    let links:i64=connection.query_row("SELECT COUNT(*) FROM transfer_links",[],|row|row.get(0)).unwrap();
+    assert_eq!(links,2);
+}
+
+#[test]
+fn reviewed_auto_post_is_atomic_and_revalidates_due_items() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',10000,'Household')",[]).unwrap();
+    let mut request=scheduled_request("transaction","a",None);request.auto_post=true;request.anchor_date="2026-01-10".into();
+    let template=clean_scheduled_transaction(&connection,request,"schedule".into()).unwrap();insert_scheduled_transaction(&connection,&template).unwrap();
+    generate_scheduled_occurrences_inner(&mut connection,ScheduledOccurrenceQuery{from_date:"2026-01-01".into(),to_date:"2026-02-28".into(),scheduled_transaction_id:Some(template.id)}).unwrap();
+    let ids:Vec<String>={let mut statement=connection.prepare("SELECT id FROM scheduled_occurrences ORDER BY due_date").unwrap();statement.query_map([],|row|row.get(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()};
+    assert!(process_scheduled_auto_post_inner(&mut connection,ScheduledAutoPostRequest{occurrence_ids:ids.clone(),as_of_date:"2026-01-31".into()}).is_err());
+    let unchanged:(i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions),(SELECT COUNT(*) FROM scheduled_occurrences WHERE status='expected')",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
+    assert_eq!(unchanged,(0,2));
+    assert!(process_scheduled_auto_post_inner(&mut connection,ScheduledAutoPostRequest{occurrence_ids:vec![ids[0].clone(),ids[0].clone()],as_of_date:"2026-01-31".into()}).is_err());
+    let result=process_scheduled_auto_post_inner(&mut connection,ScheduledAutoPostRequest{occurrence_ids:vec![ids[0].clone()],as_of_date:"2026-01-31".into()}).unwrap();
+    assert_eq!(result.posted_count,1);
 }
 
 #[test]

@@ -189,15 +189,34 @@ describe("finance repository contract", () => {
     expect((await repository.getBudgetMonth("2026-09")).lines).toHaveLength(0);
   });
 
-  it("stores the account relationship for future recurring transfers without posting them", async () => {
+  it("posts recurring transfers as a balanced linked pair", async () => {
     const repository = new DemoFinanceRepository();
     const from=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
     const to=await repository.createAccount({name:"Savings",type:"savings",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
-    const template=await repository.createScheduledTransaction({kind:"transfer",accountId:from.id,transferAccountId:to.id,payee:"Monthly savings",category:"Transfer",amountMinor:5000,status:"pending",frequency:"monthly",anchorDate:"2026-01-01",enabled:true});
+    const template=await repository.createScheduledTransaction({kind:"transfer",accountId:from.id,transferAccountId:to.id,payee:"Monthly savings",category:"Transfer",amountMinor:5000,status:"pending",frequency:"monthly",anchorDate:"2026-01-01",enabled:true,autoPost:true});
     expect(template).toMatchObject({kind:"transfer",accountId:from.id,transferAccountId:to.id});
-    await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-01-31",scheduledTransactionId:template.id});
-    const [occurrence]=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-01-31",scheduledTransactionId:template.id});
-    await expect(repository.postScheduledOccurrence(occurrence.id)).rejects.toThrow("not implemented");
+    await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-02-28",scheduledTransactionId:template.id});
+    const [occurrence,nextOccurrence]=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-02-28",scheduledTransactionId:template.id});
+    const outgoing=await repository.postScheduledOccurrence(occurrence.id);
+    const pair=(await repository.listTransactions()).filter(item=>item.transferLinkId===outgoing.transferLinkId);
+    expect(pair).toHaveLength(2);expect(pair.reduce((total,item)=>total+item.amountMinor,0)).toBe(0);
+    await expect(repository.processScheduledAutoPost({occurrenceIds:[nextOccurrence.id],asOfDate:"2026-02-01"})).resolves.toEqual({postedCount:1});
+    expect((await repository.listTransactions()).filter(item=>item.source==="transfer")).toHaveLength(4);
+    expect((await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-02-28"})).every(item=>item.status==="posted")).toBe(true);
+  });
+
+  it("reviews auto-post selections atomically and rejects future or stale items",async()=>{
+    const repository=new DemoFinanceRepository();
+    const account=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:10000,ownerLabel:"Household"});
+    const template=await repository.createScheduledTransaction({kind:"transaction",accountId:account.id,payee:"Membership",category:"Subscriptions",amountMinor:-1000,status:"pending",frequency:"monthly",anchorDate:"2026-01-10",enabled:true,autoPost:true});
+    await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-02-28",scheduledTransactionId:template.id});
+    const rows=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-02-28"});
+    const before=(await repository.listTransactions()).length;
+    await expect(repository.processScheduledAutoPost({occurrenceIds:rows.map(item=>item.id),asOfDate:"2026-01-31"})).rejects.toThrow("eligible");
+    expect(await repository.listTransactions()).toHaveLength(before);
+    expect((await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-02-28"})).every(item=>item.status==="expected")).toBe(true);
+    await expect(repository.processScheduledAutoPost({occurrenceIds:[rows[0].id,rows[0].id],asOfDate:"2026-01-31"})).rejects.toThrow("more than once");
+    await expect(repository.processScheduledAutoPost({occurrenceIds:[rows[0].id],asOfDate:"2026-01-31"})).resolves.toEqual({postedCount:1});
   });
 
   it("pauses, resumes, and archives schedules without losing terminal occurrence history",async()=>{
