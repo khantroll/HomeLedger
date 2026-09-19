@@ -70,6 +70,7 @@ export interface FinanceRepository {
   postScheduledOccurrence(id: string): Promise<Transaction>;
   skipScheduledOccurrence(id: string): Promise<ScheduledOccurrence>;
   linkScheduledOccurrence(id: string, transactionId: string): Promise<ScheduledOccurrence>;
+  findScheduledOccurrenceMatches(input: ScheduledImportMatchInput): Promise<ScheduledImportMatch[]>;
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
@@ -139,6 +140,32 @@ export interface ImportTransactionRow {
   externalId?: string;
   category?: string;
   splits?: ImportTransactionSplit[];
+  scheduledOccurrenceId?: string;
+}
+
+export type ScheduledMatchConfidence = "exact" | "probable" | "possible";
+
+export interface ScheduledMatchCandidate {
+  occurrenceId: string;
+  scheduledTransactionId: string;
+  payee: string;
+  dueDate: string;
+  amountMinor: number;
+  confidence: ScheduledMatchConfidence;
+  score: number;
+  reasons: string[];
+  dateDifferenceDays: number;
+  amountDifferenceMinor: number;
+}
+
+export interface ScheduledImportMatch {
+  sourceRow: number;
+  candidates: ScheduledMatchCandidate[];
+}
+
+export interface ScheduledImportMatchInput {
+  accountId: string;
+  rows: Array<ImportTransactionRow & {sourceRow:number}>;
 }
 
 export interface ImportTransactionSplit {

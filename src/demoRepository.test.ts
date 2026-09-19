@@ -145,6 +145,35 @@ describe("finance repository contract", () => {
     await expect(repository.postScheduledOccurrence(occurrences[0].id)).rejects.toThrow("expected");
   });
 
+  it("offers scheduled matches and links an explicitly selected import atomically", async()=>{
+    const repository=new DemoFinanceRepository();
+    const account=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const template=await repository.createScheduledTransaction({kind:"transaction",accountId:account.id,payee:"Electric Utility",category:"Utilities",amountMinor:-10000,status:"pending",frequency:"monthly",anchorDate:"2026-09-15",enabled:true});
+    await repository.generateScheduledOccurrences({fromDate:"2026-09-01",toDate:"2026-09-30",scheduledTransactionId:template.id});
+    const [match]=await repository.findScheduledOccurrenceMatches({accountId:account.id,rows:[{sourceRow:2,postedDate:"2026-09-16",payee:"ELECTRIC UTILITY PAYMENT",amountMinor:-10300}]});
+    expect(match.candidates[0]).toMatchObject({scheduledTransactionId:template.id,confidence:"probable",dateDifferenceDays:1,amountDifferenceMinor:300});
+    const occurrenceId=match.candidates[0].occurrenceId;
+    await repository.importTransactions({accountId:account.id,sourceName:"statement.csv",rows:[{postedDate:"2026-09-16",payee:"ELECTRIC UTILITY PAYMENT",amountMinor:-10300,scheduledOccurrenceId:occurrenceId}]});
+    const [occurrence]=await repository.listScheduledOccurrences({fromDate:"2026-09-01",toDate:"2026-09-30",scheduledTransactionId:template.id});
+    expect(occurrence).toMatchObject({status:"linked"});
+    expect(occurrence.transactionId).toBeTruthy();
+    await expect(repository.undoImportBatch((await repository.listImportBatches())[0].id)).rejects.toThrow("scheduled occurrences");
+  });
+
+  it("rejects a stale or reused scheduled occurrence before changing the demo ledger",async()=>{
+    const repository=new DemoFinanceRepository();
+    const account=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const template=await repository.createScheduledTransaction({kind:"transaction",accountId:account.id,payee:"Rent",category:"Housing",amountMinor:-100000,status:"pending",frequency:"monthly",anchorDate:"2026-09-01",enabled:true});
+    await repository.generateScheduledOccurrences({fromDate:"2026-09-01",toDate:"2026-09-30",scheduledTransactionId:template.id});
+    const [occurrence]=await repository.listScheduledOccurrences({fromDate:"2026-09-01",toDate:"2026-09-30",scheduledTransactionId:template.id});
+    await expect(repository.importTransactions({accountId:account.id,sourceName:"bad.csv",rows:[
+      {postedDate:"2026-09-01",payee:"Rent",amountMinor:-100000,scheduledOccurrenceId:occurrence.id},
+      {postedDate:"2026-09-02",payee:"Rent",amountMinor:-100000,scheduledOccurrenceId:occurrence.id},
+    ]})).rejects.toThrow("more than once");
+    expect(await repository.listImportBatches()).toHaveLength(0);
+    expect((await repository.listScheduledOccurrences({fromDate:"2026-09-01",toDate:"2026-09-30"}))[0].status).toBe("expected");
+  });
+
   it("stores the account relationship for future recurring transfers without posting them", async () => {
     const repository = new DemoFinanceRepository();
     const from=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
