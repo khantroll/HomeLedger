@@ -189,6 +189,15 @@ describe("finance repository contract", () => {
     expect((await repository.getBudgetMonth("2026-09")).lines).toHaveLength(0);
   });
 
+  it("persists validated debt plans by currency",async()=>{
+    const repository=new DemoFinanceRepository();
+    const card=await repository.createAccount({name:"Card",type:"credit",currency:"USD",openingBalanceMinor:-100000,ownerLabel:"Household"});
+    await expect(repository.saveDebtPlan({currency:"usd",strategy:"avalanche",extraPaymentMinor:10000,terms:[{accountId:card.id,annualRateBps:1999,minimumPaymentMinor:5000,customPriority:1,enabled:true}]})).resolves.toMatchObject({currency:"USD",strategy:"avalanche",extraPaymentMinor:10000});
+    expect((await repository.getDebtPlan("USD")).terms[0]).toMatchObject({accountId:card.id,annualRateBps:1999});
+    await expect(repository.saveDebtPlan({currency:"USD",strategy:"snowball",extraPaymentMinor:0,terms:[{accountId:"missing",annualRateBps:100,minimumPaymentMinor:100,customPriority:1,enabled:true}]})).rejects.toThrow("credit or loan");
+    await expect(repository.getDebtPlan("CAD")).resolves.toEqual({currency:"CAD",strategy:"avalanche",extraPaymentMinor:0,terms:[]});
+  });
+
   it("posts recurring transfers as a balanced linked pair", async () => {
     const repository = new DemoFinanceRepository();
     const from=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
