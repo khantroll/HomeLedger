@@ -3,13 +3,13 @@ import { FileSpreadsheet, History, RotateCcw, Save, Trash2, Undo2, Upload, X } f
 import { buildPreview, headerSignature, parseDelimited, suggestMapping, suggestParsingOptions, type ColumnMapping, type DelimitedParsingOptions, type ParsedTable } from "./csvImport";
 import { buildOfxPreview, parseOfx, type OfxStatement } from "./ofxImport";
 import { buildQifPreview, parseQif, type QifStatement } from "./qifImport";
-import { financeRepository } from "./repository";
+import { financeRepository, pdfRepository, workbookRepository } from "./repository";
 import { formatMoney, type Account, type ImportBatch, type ImportProfile, type ScheduledImportMatch, type Transaction } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import type { MerchantRule } from "./domain";
 import { decodeStatement, encodingLabel, type StatementEncoding } from "./statementDecoding";
 import { bytesToBase64, suggestWorkbookHeaderRow, suggestWorkbookSelection, workbookHeaderChoices, workbookSheetToTable, type ParsedWorkbook } from "./workbookImport";
-import { workbookRepository } from "./repository";
+import { pdfTextToTable, type PdfParseResult } from "./pdfImport";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -20,6 +20,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [workbook,setWorkbook]=useState<ParsedWorkbook|null>(null);
   const [workbookSheetIndex,setWorkbookSheetIndex]=useState(0);
   const [workbookHeaderRow,setWorkbookHeaderRow]=useState(0);
+  const [pdf,setPdf]=useState<PdfParseResult|null>(null);
   const [fileName,setFileName]=useState("");
   const [accountId,setAccountId]=useState(accounts[0]?.id??"");
   const [mapping,setMapping]=useState<ColumnMapping>({date:-1,payee:-1,amount:-1,debit:-1,credit:-1});
@@ -72,7 +73,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     if(!sheet)throw new Error("Choose a readable worksheet");
     const selectedHeader=headerRow??suggestWorkbookHeaderRow(sheet);
     const parsed=workbookSheetToTable(sheet,selectedHeader);
-    setWorkbook(parsedWorkbook);setWorkbookSheetIndex(sheetIndex);setWorkbookHeaderRow(selectedHeader);setTable(parsed);setOfx(null);setQif(null);
+    setWorkbook(parsedWorkbook);setWorkbookSheetIndex(sheetIndex);setWorkbookHeaderRow(selectedHeader);setTable(parsed);setOfx(null);setQif(null);setPdf(null);
     const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));
     if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}
     setIncludedDuplicates(new Set());
@@ -82,8 +83,8 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     const file=event.target.files?.[0]; if(!file)return;
     setError("");setMessage("");
     if(file.size>10*1024*1024){setError("Statement files are limited to 10 MB in this milestone.");return;}
-    try{const buffer=await file.arrayBuffer();setIncludedDuplicates(new Set());if(/\.(xlsx|xls)$/i.test(file.name)){const parsed=await workbookRepository.parseWorkbook(bytesToBase64(buffer),file.name),selection=suggestWorkbookSelection(parsed);configureWorkbook(parsed,selection.sheetIndex,selection.headerRow);setFileEncoding("utf-8");}else{const decoded=decodeStatement(buffer),text=decoded.text;setFileEncoding(decoded.encoding);setWorkbook(null);if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}}setFileName(file.name);}
-    catch(reason){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setError(reason instanceof Error?reason.message:String(reason));}
+    try{const buffer=await file.arrayBuffer();setIncludedDuplicates(new Set());if(/\.(xlsx|xls)$/i.test(file.name)){const parsed=await workbookRepository.parseWorkbook(bytesToBase64(buffer),file.name),selection=suggestWorkbookSelection(parsed);configureWorkbook(parsed,selection.sheetIndex,selection.headerRow);setFileEncoding("utf-8");}else if(/\.pdf$/i.test(file.name)){const extraction=await pdfRepository.extractText(bytesToBase64(buffer),file.name),parsed=pdfTextToTable(extraction.text),suggested=suggestMapping(parsed.table.headers);setPdf(parsed);setTable(parsed.table);setOfx(null);setQif(null);setWorkbook(null);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed.table,suggested));setSelectedProfileId("");setProfileName("");setFileEncoding("utf-8");}else{const decoded=decodeStatement(buffer),text=decoded.text;setFileEncoding(decoded.encoding);setWorkbook(null);setPdf(null);if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}}setFileName(file.name);}
+    catch(reason){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setError(reason instanceof Error?reason.message:String(reason));}
     finally{event.target.value="";}
   }
 
@@ -99,23 +100,24 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     if(currencyMismatch){setError(`The statement uses ${ofx?.currency}, but the selected account uses ${selectedAccount?.currency}.`);return;}
     if(!valid.length){setError("There are no new valid transactions to import.");return;}
     setSaving(true);setError("");
-    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setWorkbook(null);setFileName("");setSelectedScheduledMatches(new Map());await onImported();await loadHistory();}
+    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setFileName("");setSelectedScheduledMatches(new Map());await onImported();await loadHistory();}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
     finally{setSaving(false);}
   }
 
-  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setFileName("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
+  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setFileName("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
   async function loadHistory(){try{setBatches(await financeRepository.listImportBatches());}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}}
   async function undo(){if(!pendingUndo)return;setUndoing(true);setError("");try{const result=await financeRepository.undoImportBatch(pendingUndo.id);setMessage(`Removed ${result.removedCount} transactions from ${pendingUndo.sourceName}.`);setPendingUndo(null);await onImported();await loadHistory();}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setUndoing(false);}}
   if(!accounts.length)return <section className="panel import-empty"><FileSpreadsheet/><h2>Create an account first</h2><p>Statement transactions must be assigned to a local account.</p></section>;
 
   return <div className="import-page">
     <section className="panel import-controls">
-      <div className="panel-heading"><div><h2>Import a statement</h2><p>CSV, TSV, Excel, OFX, QFX, and QIF parsing happens locally; the original file is not retained.</p></div>{(table||ofx||qif)&&<button onClick={reset}><RotateCcw size={14}/> Start over</button>}</div>
+      <div className="panel-heading"><div><h2>Import a statement</h2><p>CSV, TSV, Excel, searchable PDF, OFX, QFX, and QIF parsing happens locally; the original file is not retained.</p></div>{(table||ofx||qif)&&<button onClick={reset}><RotateCcw size={14}/> Start over</button>}</div>
       <div className="import-body">
-        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>{fileName?(workbook?"Excel workbook parsed locally":`${encodingLabel(fileEncoding)} detected locally`):"CSV, TSV, XLS, XLSX, OFX, QFX, or QIF, up to 10 MB"}</small></span><input type="file" accept=".csv,.tsv,.txt,.xls,.xlsx,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/qif" onChange={chooseFile}/></label>
+        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>{fileName?(workbook?"Excel workbook parsed locally":pdf?"Searchable PDF parsed locally":`${encodingLabel(fileEncoding)} detected locally`):"CSV, TSV, XLS, XLSX, PDF, OFX, QFX, or QIF, up to 10 MB"}</small></span><input type="file" accept=".csv,.tsv,.txt,.xls,.xlsx,.pdf,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/qif" onChange={chooseFile}/></label>
         {error&&<div className="error-banner" role="alert">{error}</div>}{message&&<div className="success-banner" role="status">{message}</div>}
         {table&&<>
+          {pdf&&<div className="ofx-summary"><div><span>Document type</span><strong>Searchable PDF</strong></div><div><span>Extracted lines</span><strong>{pdf.extractedLineCount}</strong></div><div><span>Recognized rows</span><strong>{pdf.matchedRowCount}</strong></div><div><span>Recognition rule</span><strong>Full date + signed amount</strong></div></div>}
           {workbook&&<div className="profile-controls workbook-controls">
             <label>Worksheet<select value={workbookSheetIndex} onChange={event=>{try{setError("");configureWorkbook(workbook,Number(event.target.value));}catch(reason){showError(reason);}}}>{workbook.sheets.map((sheet,index)=><option key={`${sheet.name}-${index}`} value={index}>{sheet.name}</option>)}</select></label>
             <label>Header row<select value={workbookHeaderRow} onChange={event=>{try{setError("");configureWorkbook(workbook,workbookSheetIndex,Number(event.target.value));}catch(reason){showError(reason);}}}>{workbookHeaderChoices(workbook.sheets[workbookSheetIndex]).map(index=><option key={index} value={index}>Row {workbook.sheets[workbookSheetIndex].firstRow+index}: {workbook.sheets[workbookSheetIndex].rows[index].filter(Boolean).slice(0,3).join(" · ")}</option>)}</select></label>
@@ -136,7 +138,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
             <label>Date order<select value={parsingOptions.dateOrder} onChange={event=>{setParsingOptions({...parsingOptions,dateOrder:event.target.value as DelimitedParsingOptions["dateOrder"]});setIncludedDuplicates(new Set());}}><option value="mdy">Month / day / year</option><option value="dmy">Day / month / year</option></select></label>
             <label>Number format<select value={parsingOptions.numberFormat} onChange={event=>{setParsingOptions({...parsingOptions,numberFormat:event.target.value as DelimitedParsingOptions["numberFormat"]});setIncludedDuplicates(new Set());}}><option value="dot">1,234.56</option><option value="comma">1.234,56</option></select></label>
           </div>
-          <p className="mapping-help">Use either one signed amount column, or separate debit and credit columns. A mapped signed amount takes precedence.</p>
+          <p className="mapping-help">{pdf?"Only one-line rows with a full date and an explicit +, −, parentheses, CR, or DR amount are included. Compare every recognized row with the original statement before importing.":"Use either one signed amount column, or separate debit and credit columns. A mapped signed amount takes precedence."}</p>
         </>}
         {ofx&&<><div className="ofx-summary"><div><span>Statement type</span><strong>{ofx.accountType==="credit-card"?"Credit card":"Bank account"}</strong></div><div><span>Statement account</span><strong>{ofx.accountIdMasked}</strong></div><div><span>Currency</span><strong>{ofx.currency}</strong></div><div><span>Date range</span><strong>{ofx.dateStart&&ofx.dateEnd?`${ofx.dateStart} – ${ofx.dateEnd}`:"Not supplied"}</strong></div><div><span>Ledger balance</span><strong>{ofx.ledgerBalanceMinor===undefined?"Not supplied":formatMoney(ofx.ledgerBalanceMinor,ofx.currency)}</strong></div></div><label className="ofx-account">Import to account<select value={accountId} onChange={e=>setAccountId(e.target.value)}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label>{currencyMismatch&&<div className="error-banner">Currency mismatch: statement is {ofx.currency}; selected account is {selectedAccount?.currency}.</div>}</>}
         {qif&&<><div className="ofx-summary"><div><span>Statement type</span><strong>{qif.accountType==="credit-card"?"Credit card":qif.accountType==="cash"?"Cash":"Bank account"}</strong></div><div><span>Statement account</span><strong>{qif.accountName||"Not supplied"}</strong></div><div><span>Transactions</span><strong>{qif.rows.length}</strong></div><div><span>Split transactions</span><strong>{qif.rows.filter(row=>row.splits?.length).length}</strong></div></div><label className="ofx-account">Import to account<select value={accountId} onChange={e=>setAccountId(e.target.value)}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label><p className="mapping-help">QIF does not specify currency. Amounts will use the selected account’s {selectedAccount?.currency} currency.</p></>}

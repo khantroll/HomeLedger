@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
 import type { Account, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransferResult, UndoImportResult } from "./domain";
 import type { ParsedWorkbook, WorkbookRepository } from "./workbookImport";
+import type { PdfExtraction, PdfRepository } from "./pdfImport";
 
 class TauriFinanceRepository implements FinanceRepository {
   listAccounts(): Promise<Account[]> { return invoke("list_accounts"); }
@@ -80,3 +81,13 @@ class UnavailableWorkbookRepository implements WorkbookRepository {
 }
 
 export const workbookRepository:WorkbookRepository=isNativeApp?new TauriWorkbookRepository():new UnavailableWorkbookRepository();
+
+class TauriPdfRepository implements PdfRepository {
+  extractText(contentsBase64:string,fileName:string):Promise<PdfExtraction>{return invoke("extract_pdf_text",{contentsBase64,fileName});}
+}
+
+class UnavailablePdfRepository implements PdfRepository {
+  extractText():Promise<PdfExtraction>{return Promise.reject(new Error("PDF statement import is available in the native desktop app"));}
+}
+
+export const pdfRepository:PdfRepository=isNativeApp?new TauriPdfRepository():new UnavailablePdfRepository();
