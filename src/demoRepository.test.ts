@@ -155,4 +155,24 @@ describe("finance repository contract", () => {
     const [occurrence]=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-01-31",scheduledTransactionId:template.id});
     await expect(repository.postScheduledOccurrence(occurrence.id)).rejects.toThrow("not implemented");
   });
+
+  it("pauses, resumes, and archives schedules without losing terminal occurrence history",async()=>{
+    const repository=new DemoFinanceRepository();
+    const account=await repository.createAccount({name:"Checking",type:"checking",currency:"USD",openingBalanceMinor:10000,ownerLabel:"Household"});
+    const template=await repository.createScheduledTransaction({kind:"transaction",accountId:account.id,payee:"Membership",category:"Subscriptions",amountMinor:-1000,status:"pending",frequency:"monthly",anchorDate:"2026-01-10",enabled:true});
+    await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31",scheduledTransactionId:template.id});
+    let occurrences=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31",scheduledTransactionId:template.id});
+    await repository.postScheduledOccurrence(occurrences[0].id);
+    await repository.skipScheduledOccurrence(occurrences[1].id);
+    const{id,archived:_archived,...input}=template;
+    await repository.updateScheduledTransaction(id,{...input,enabled:false});
+    occurrences=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31",scheduledTransactionId:id});
+    expect(occurrences.map(item=>item.status)).toEqual(["posted","skipped"]);
+    await repository.updateScheduledTransaction(id,{...input,enabled:true});
+    expect(await repository.generateScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31",scheduledTransactionId:id})).toBe(1);
+    await repository.deleteScheduledTransaction(id);
+    occurrences=await repository.listScheduledOccurrences({fromDate:"2026-01-01",toDate:"2026-03-31",scheduledTransactionId:id});
+    expect(occurrences.map(item=>item.status)).toEqual(["posted","skipped"]);
+    expect((await repository.listScheduledTransactions()).find(item=>item.id===id)?.archived).toBe(true);
+  });
 });
