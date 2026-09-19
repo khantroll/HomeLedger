@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 
 const initialAccounts: Account[] = [
@@ -24,6 +24,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   private reconciliations: Reconciliation[] = [];
   private reconciledTransactionIds = new Set<string>();
   private merchantRules: MerchantRule[] = [];
+  private importProfiles: ImportProfile[] = [];
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
@@ -137,6 +138,9 @@ export class DemoFinanceRepository implements FinanceRepository {
   async createMerchantRule(input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const rule={id:crypto.randomUUID(),...input};this.merchantRules.push(rule);return structuredClone(rule);}
   async updateMerchantRule(id:string,input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");const rule={id,...input};this.merchantRules[index]=rule;return structuredClone(rule);}
   async deleteMerchantRule(id:string):Promise<void>{const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");this.merchantRules.splice(index,1);}
+  async listImportProfiles():Promise<ImportProfile[]>{return structuredClone(this.importProfiles);}
+  async saveImportProfile(input:ImportProfileInput):Promise<ImportProfile>{validateImportProfile(input,this.accounts);const existing=this.importProfiles.find(item=>item.name===input.name&&item.headerSignature===input.headerSignature);const profile={id:existing?.id??crypto.randomUUID(),...input};if(existing)this.importProfiles[this.importProfiles.indexOf(existing)]=profile;else this.importProfiles.unshift(profile);return structuredClone(profile);}
+  async deleteImportProfile(id:string):Promise<void>{const index=this.importProfiles.findIndex(item=>item.id===id);if(index<0)throw new Error("Import profile does not exist");this.importProfiles.splice(index,1);}
   async importTransactions(input: ImportTransactionsInput): Promise<ImportResult> {
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (!account) throw new Error("Account does not exist");
@@ -193,4 +197,12 @@ function validateMerchantRule(input:MerchantRuleInput){
   if(!input.pattern.trim())throw new Error("Match text is required");
   if(!input.renameTo?.trim()&&!input.category?.trim())throw new Error("A rule must rename the payee, assign a category, or both");
   if(!Number.isInteger(input.priority)||input.priority < -10000||input.priority > 10000)throw new Error("Priority must be a whole number between -10000 and 10000");
+}
+
+function validateImportProfile(input:ImportProfileInput,accounts:Account[]){
+  if(!input.name.trim())throw new Error("Profile name is required");
+  if(!input.headerSignature.trim())throw new Error("Header signature is required");
+  if(input.accountId&&!accounts.some(account=>account.id===input.accountId))throw new Error("Profile account does not exist");
+  if(input.dateColumn<0||input.payeeColumn<0)throw new Error("Date and description columns are required");
+  if(input.amountColumn<0&&input.debitColumn<0&&input.creditColumn<0)throw new Error("An amount or debit/credit column is required");
 }

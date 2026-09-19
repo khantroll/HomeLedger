@@ -1,8 +1,9 @@
 import { parseMoney, type ImportTransactionRow, type Transaction } from "./domain";
+import { classifyDuplicates, type DuplicateMatch } from "./duplicateDetection";
 
 export interface ParsedTable { headers: string[]; rows: string[][]; delimiter: "," | "\t"; }
 export interface ColumnMapping { date: number; payee: number; amount: number; debit: number; credit: number; }
-export interface PreviewRow extends ImportTransactionRow { sourceRow: number; duplicate: boolean; error?: string; }
+export interface PreviewRow extends ImportTransactionRow { sourceRow: number; duplicate?: DuplicateMatch; error?: string; }
 
 export function parseDelimited(text: string): ParsedTable {
   const clean = text.replace(/^\uFEFF/, "");
@@ -54,6 +55,8 @@ export function suggestMapping(headers: string[]): ColumnMapping {
   };
 }
 
+export function headerSignature(headers:string[]):string{return headers.map(header=>header.toLowerCase().replace(/\s+/g," ").trim()).join("\u001f");}
+
 export function normalizeDate(value: string): string {
   const trimmed = value.trim();
   let year: number, month: number, day: number;
@@ -80,9 +83,7 @@ export function parseStatementMoney(value: string): number {
 }
 
 export function buildPreview(table: ParsedTable, mapping: ColumnMapping, existing: Transaction[]): PreviewRow[] {
-  const existingKeys = new Set(existing.map(item => transactionDuplicateKey(item.postedDate, item.originalPayee??item.payee, item.amountMinor)));
-  const seen = new Set<string>();
-  return table.rows.map((row, index) => {
+  const rows=table.rows.map((row, index):PreviewRow => {
     try {
       if (mapping.date < 0 || mapping.payee < 0) throw new Error("Map the date and description columns");
       if (mapping.amount < 0 && mapping.debit < 0 && mapping.credit < 0) throw new Error("Map an amount column or debit/credit columns");
@@ -98,14 +99,12 @@ export function buildPreview(table: ParsedTable, mapping: ColumnMapping, existin
         if (!debit && !credit) throw new Error("Missing debit/credit amount");
         amountMinor = debit ? -Math.abs(parseStatementMoney(debit)) : Math.abs(parseStatementMoney(credit));
       }
-      const key = transactionDuplicateKey(postedDate, payee, amountMinor);
-      const duplicate = existingKeys.has(key) || seen.has(key);
-      seen.add(key);
-      return { sourceRow: index + 2, postedDate, payee, amountMinor, duplicate };
+      return { sourceRow: index + 2, postedDate, payee, amountMinor };
     } catch (reason) {
-      return { sourceRow: index + 2, postedDate: "", payee: row[mapping.payee] ?? "", amountMinor: 0, duplicate: false, error: reason instanceof Error ? reason.message : String(reason) };
+      return { sourceRow: index + 2, postedDate: "", payee: row[mapping.payee] ?? "", amountMinor: 0, error: reason instanceof Error ? reason.message : String(reason) };
     }
   });
+  return classifyDuplicates(rows,existing);
 }
 
 export function transactionDuplicateKey(date: string, payee: string, amountMinor: number): string {

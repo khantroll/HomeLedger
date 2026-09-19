@@ -104,4 +104,17 @@ describe("finance repository contract", () => {
     await repository.deleteMerchantRule(rule.id);
     expect(await repository.listMerchantRules()).toHaveLength(0);
   });
+
+  it("saves, updates, and deletes reusable import profiles",async()=>{
+    const repository=new DemoFinanceRepository();
+    const account=await repository.createAccount({name:"Profile Account",type:"checking",currency:"USD",openingBalanceMinor:0,ownerLabel:"Household"});
+    const input={name:"Credit Union CSV",accountId:account.id,headerSignature:"date\u001fdescription\u001famount",dateColumn:0,payeeColumn:1,amountColumn:2,debitColumn:-1,creditColumn:-1};
+    const saved=await repository.saveImportProfile(input);
+    expect((await repository.listImportProfiles())[0]).toMatchObject(input);
+    const updated=await repository.saveImportProfile({...input,amountColumn:-1,debitColumn:2,creditColumn:3});
+    expect(updated.id).toBe(saved.id);
+    expect(await repository.listImportProfiles()).toHaveLength(1);
+    await repository.deleteImportProfile(saved.id);
+    expect(await repository.listImportProfiles()).toHaveLength(0);
+  });
 });

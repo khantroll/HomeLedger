@@ -54,6 +54,9 @@ export interface FinanceRepository {
   createMerchantRule(input: MerchantRuleInput): Promise<MerchantRule>;
   updateMerchantRule(id: string, input: MerchantRuleInput): Promise<MerchantRule>;
   deleteMerchantRule(id: string): Promise<void>;
+  listImportProfiles(): Promise<ImportProfile[]>;
+  saveImportProfile(input: ImportProfileInput): Promise<ImportProfile>;
+  deleteImportProfile(id: string): Promise<void>;
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
@@ -192,6 +195,20 @@ export interface MerchantRule {
 }
 
 export type MerchantRuleInput = Omit<MerchantRule,"id">;
+
+export interface ImportProfile {
+  id: string;
+  name: string;
+  accountId?: string;
+  headerSignature: string;
+  dateColumn: number;
+  payeeColumn: number;
+  amountColumn: number;
+  debitColumn: number;
+  creditColumn: number;
+}
+
+export type ImportProfileInput = Omit<ImportProfile,"id">;
 export function formatMoney(minor: number, currency = "USD"): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 100);
 }
