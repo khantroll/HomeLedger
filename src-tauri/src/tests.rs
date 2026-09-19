@@ -19,6 +19,34 @@ fn migration_creates_local_ledger_tables() {
 }
 
 #[test]
+fn migration_upgrades_a_populated_version_five_ledger() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);").unwrap();
+    let migrations = [
+        (1, "initial local ledger", include_str!("../migrations/001_initial.sql")),
+        (2, "import history totals", include_str!("../migrations/002_import_history.sql")),
+        (3, "provider transaction identifiers", include_str!("../migrations/003_external_transaction_ids.sql")),
+        (4, "HomeLedger database identity", include_str!("../migrations/004_database_identity.sql")),
+        (5, "transaction split ordering", include_str!("../migrations/005_split_order.sql")),
+    ];
+    for (version, description, sql) in migrations {
+        connection.execute_batch(sql).unwrap();
+        connection.execute("INSERT INTO schema_migrations(version, description) VALUES(?1, ?2)", (version, description)).unwrap();
+    }
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('existing', 'Existing Checking', 'checking', 'USD', 10000, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, source) VALUES('existing-transaction', 'existing', '2026-01-15', 'Existing Payee', 'Existing Category', -2500, 'cleared', 'manual')", []).unwrap();
+
+    apply_migrations(&mut connection).unwrap();
+
+    let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
+    let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
+    assert_eq!(version, 9);
+    assert_eq!(preserved, ("Existing Payee".into(), -2500));
+    assert_eq!(locale_columns, 2);
+}
+
+#[test]
 fn input_cleaning_rejects_missing_required_values() {
     assert!(clean_required("  ".into(), "Name", 80).is_err());
     assert_eq!(clean_optional(Some("  ".into()), 80).unwrap(), None);
