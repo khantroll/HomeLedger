@@ -8,6 +8,8 @@ import { formatMoney, type Account, type ImportBatch, type ImportProfile, type S
 import { applyMerchantRules } from "./merchantRules";
 import type { MerchantRule } from "./domain";
 import { decodeStatement, encodingLabel, type StatementEncoding } from "./statementDecoding";
+import { bytesToBase64, suggestWorkbookHeaderRow, suggestWorkbookSelection, workbookHeaderChoices, workbookSheetToTable, type ParsedWorkbook } from "./workbookImport";
+import { workbookRepository } from "./repository";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -15,6 +17,9 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [table,setTable]=useState<ParsedTable|null>(null);
   const [ofx,setOfx]=useState<OfxStatement|null>(null);
   const [qif,setQif]=useState<QifStatement|null>(null);
+  const [workbook,setWorkbook]=useState<ParsedWorkbook|null>(null);
+  const [workbookSheetIndex,setWorkbookSheetIndex]=useState(0);
+  const [workbookHeaderRow,setWorkbookHeaderRow]=useState(0);
   const [fileName,setFileName]=useState("");
   const [accountId,setAccountId]=useState(accounts[0]?.id??"");
   const [mapping,setMapping]=useState<ColumnMapping>({date:-1,payee:-1,amount:-1,debit:-1,credit:-1});
@@ -62,12 +67,23 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     return()=>{current=false;};
   },[accountId,preview]);
 
+  function configureWorkbook(parsedWorkbook:ParsedWorkbook,sheetIndex:number,headerRow?:number){
+    const sheet=parsedWorkbook.sheets[sheetIndex];
+    if(!sheet)throw new Error("Choose a readable worksheet");
+    const selectedHeader=headerRow??suggestWorkbookHeaderRow(sheet);
+    const parsed=workbookSheetToTable(sheet,selectedHeader);
+    setWorkbook(parsedWorkbook);setWorkbookSheetIndex(sheetIndex);setWorkbookHeaderRow(selectedHeader);setTable(parsed);setOfx(null);setQif(null);
+    const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));
+    if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}
+    setIncludedDuplicates(new Set());
+  }
+
   async function chooseFile(event:ChangeEvent<HTMLInputElement>){
     const file=event.target.files?.[0]; if(!file)return;
     setError("");setMessage("");
     if(file.size>10*1024*1024){setError("Statement files are limited to 10 MB in this milestone.");return;}
-    try{const decoded=decodeStatement(await file.arrayBuffer()),text=decoded.text;setFileEncoding(decoded.encoding);setIncludedDuplicates(new Set());if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}setFileName(file.name);}
-    catch(reason){setTable(null);setOfx(null);setQif(null);setError(reason instanceof Error?reason.message:String(reason));}
+    try{const buffer=await file.arrayBuffer();setIncludedDuplicates(new Set());if(/\.(xlsx|xls)$/i.test(file.name)){const parsed=await workbookRepository.parseWorkbook(bytesToBase64(buffer),file.name),selection=suggestWorkbookSelection(parsed);configureWorkbook(parsed,selection.sheetIndex,selection.headerRow);setFileEncoding("utf-8");}else{const decoded=decodeStatement(buffer),text=decoded.text;setFileEncoding(decoded.encoding);setWorkbook(null);if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}}setFileName(file.name);}
+    catch(reason){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setError(reason instanceof Error?reason.message:String(reason));}
     finally{event.target.value="";}
   }
 
@@ -83,23 +99,27 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     if(currencyMismatch){setError(`The statement uses ${ofx?.currency}, but the selected account uses ${selectedAccount?.currency}.`);return;}
     if(!valid.length){setError("There are no new valid transactions to import.");return;}
     setSaving(true);setError("");
-    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setFileName("");setSelectedScheduledMatches(new Map());await onImported();await loadHistory();}
+    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setWorkbook(null);setFileName("");setSelectedScheduledMatches(new Map());await onImported();await loadHistory();}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
     finally{setSaving(false);}
   }
 
-  function reset(){setTable(null);setOfx(null);setQif(null);setFileName("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
+  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setFileName("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
   async function loadHistory(){try{setBatches(await financeRepository.listImportBatches());}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}}
   async function undo(){if(!pendingUndo)return;setUndoing(true);setError("");try{const result=await financeRepository.undoImportBatch(pendingUndo.id);setMessage(`Removed ${result.removedCount} transactions from ${pendingUndo.sourceName}.`);setPendingUndo(null);await onImported();await loadHistory();}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setUndoing(false);}}
   if(!accounts.length)return <section className="panel import-empty"><FileSpreadsheet/><h2>Create an account first</h2><p>Statement transactions must be assigned to a local account.</p></section>;
 
   return <div className="import-page">
     <section className="panel import-controls">
-      <div className="panel-heading"><div><h2>Import a statement</h2><p>CSV, TSV, OFX, QFX, and QIF parsing happens locally; the original file is not retained.</p></div>{(table||ofx||qif)&&<button onClick={reset}><RotateCcw size={14}/> Start over</button>}</div>
+      <div className="panel-heading"><div><h2>Import a statement</h2><p>CSV, TSV, Excel, OFX, QFX, and QIF parsing happens locally; the original file is not retained.</p></div>{(table||ofx||qif)&&<button onClick={reset}><RotateCcw size={14}/> Start over</button>}</div>
       <div className="import-body">
-        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>{fileName?`${encodingLabel(fileEncoding)} detected locally`:"CSV, TSV, OFX, QFX, or QIF, up to 10 MB"}</small></span><input type="file" accept=".csv,.tsv,.txt,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,application/x-ofx,application/qif" onChange={chooseFile}/></label>
+        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>{fileName?(workbook?"Excel workbook parsed locally":`${encodingLabel(fileEncoding)} detected locally`):"CSV, TSV, XLS, XLSX, OFX, QFX, or QIF, up to 10 MB"}</small></span><input type="file" accept=".csv,.tsv,.txt,.xls,.xlsx,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/qif" onChange={chooseFile}/></label>
         {error&&<div className="error-banner" role="alert">{error}</div>}{message&&<div className="success-banner" role="status">{message}</div>}
         {table&&<>
+          {workbook&&<div className="profile-controls workbook-controls">
+            <label>Worksheet<select value={workbookSheetIndex} onChange={event=>{try{setError("");configureWorkbook(workbook,Number(event.target.value));}catch(reason){showError(reason);}}}>{workbook.sheets.map((sheet,index)=><option key={`${sheet.name}-${index}`} value={index}>{sheet.name}</option>)}</select></label>
+            <label>Header row<select value={workbookHeaderRow} onChange={event=>{try{setError("");configureWorkbook(workbook,workbookSheetIndex,Number(event.target.value));}catch(reason){showError(reason);}}}>{workbookHeaderChoices(workbook.sheets[workbookSheetIndex]).map(index=><option key={index} value={index}>Row {workbook.sheets[workbookSheetIndex].firstRow+index}: {workbook.sheets[workbookSheetIndex].rows[index].filter(Boolean).slice(0,3).join(" · ")}</option>)}</select></label>
+          </div>}
           <div className="profile-controls">
             <label>Saved mapping<select value={selectedProfileId} onChange={event=>chooseProfile(event.target.value)}><option value="">Suggested mapping</option>{profiles.filter(profile=>profile.headerSignature===headerSignature(table.headers)).map(profile=><option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
             <label>Profile name<input value={profileName} onChange={event=>setProfileName(event.target.value)} maxLength={80} placeholder="Example Credit Union"/></label>

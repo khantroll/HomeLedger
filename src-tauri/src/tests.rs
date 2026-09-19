@@ -1,5 +1,14 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
+use calamine::Data;
 use rusqlite::Connection;
+
+#[test]
+fn workbook_cells_become_stable_import_text() {
+    assert_eq!(workbook_cell_text(&Data::Int(42)), "42");
+    assert_eq!(workbook_cell_text(&Data::Float(-12.5)), "-12.5");
+    assert_eq!(workbook_cell_text(&Data::String(" Payee ".into())), " Payee ");
+    assert_eq!(workbook_cell_text(&Data::Empty), "");
+}
 
 #[test]
 fn migration_creates_local_ledger_tables() {

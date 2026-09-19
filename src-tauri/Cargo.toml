@@ -1,6 +1,6 @@
 [package]
 name = "homeledger"
-version = "0.22.0"
+version = "0.23.0"
 description = "Privacy-first local household finance"
 authors = ["HomeLedger contributors"]
 edition = "2021"
@@ -21,3 +21,4 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 base64 = "0.22"
 tauri-plugin-dialog = "2"
+calamine = { version = "0.36.1", features = ["chrono"] }
