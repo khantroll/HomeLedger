@@ -78,6 +78,8 @@ export interface FinanceRepository {
   deleteBudgetCategory(id: string): Promise<void>;
   setBudgetAllocation(input: BudgetAllocationInput): Promise<void>;
   getBudgetMonth(month: string): Promise<BudgetMonth>;
+  getDebtPlan(currency: string): Promise<DebtPlan>;
+  saveDebtPlan(input: DebtPlanInput): Promise<DebtPlan>;
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
@@ -160,6 +162,25 @@ export interface BudgetMonth {
   availableMinor: number;
   lines: BudgetMonthLine[];
 }
+
+export type DebtStrategy = "snowball"|"avalanche"|"custom";
+
+export interface DebtTerm {
+  accountId: string;
+  annualRateBps: number;
+  minimumPaymentMinor: number;
+  customPriority: number;
+  enabled: boolean;
+}
+
+export interface DebtPlan {
+  currency: string;
+  strategy: DebtStrategy;
+  extraPaymentMinor: number;
+  terms: DebtTerm[];
+}
+
+export type DebtPlanInput = DebtPlan;
 
 export interface Reconciliation {
   id: string;

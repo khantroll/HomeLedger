@@ -403,6 +403,34 @@ struct BudgetMonth {
     lines: Vec<BudgetMonthLine>,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebtTerm {
+    account_id: String,
+    annual_rate_bps: i64,
+    minimum_payment_minor: i64,
+    custom_priority: i64,
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DebtPlanRequest {
+    currency: String,
+    strategy: String,
+    extra_payment_minor: i64,
+    terms: Vec<DebtTerm>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebtPlan {
+    currency: String,
+    strategy: String,
+    extra_payment_minor: i64,
+    terms: Vec<DebtTerm>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RestoreResult {
@@ -410,7 +438,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 12;
+const CURRENT_SCHEMA_VERSION: i64 = 13;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -502,6 +530,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/012_scheduled_auto_post.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(12, 'reviewed scheduled auto-post')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 13 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/013_debt_plans.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(13, 'debt payoff plans')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1286,6 +1320,49 @@ fn get_budget_month(month:String,state:State<DbState>)->Result<BudgetMonth,Strin
     get_budget_month_inner(&connection,month)
 }
 
+fn clean_debt_currency(value:String)->Result<String,String>{
+    let currency=value.trim().to_uppercase();
+    if currency.len()!=3||!currency.chars().all(|item|item.is_ascii_alphabetic()){return Err("Currency must be a three-letter code".into());}
+    Ok(currency)
+}
+
+fn get_debt_plan_inner(connection:&Connection,currency:String)->Result<DebtPlan,String>{
+    let currency=clean_debt_currency(currency)?;
+    let settings:Option<(String,i64)>=connection.query_row("SELECT strategy,extra_payment_minor FROM debt_plan_settings WHERE currency=?1",params![currency],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT terms.account_id,terms.annual_rate_bps,terms.minimum_payment_minor,terms.custom_priority,terms.enabled FROM debt_terms terms JOIN accounts account ON account.id=terms.account_id WHERE account.currency=?1 AND account.archived_at IS NULL AND account.account_type IN ('credit','loan') ORDER BY terms.custom_priority,account.name COLLATE NOCASE,account.id").map_err(|e|e.to_string())?;
+    let terms=statement.query_map(params![currency],|row|Ok(DebtTerm{account_id:row.get(0)?,annual_rate_bps:row.get(1)?,minimum_payment_minor:row.get(2)?,custom_priority:row.get(3)?,enabled:row.get(4)?})).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    let (strategy,extra_payment_minor)=settings.unwrap_or(("avalanche".into(),0));
+    Ok(DebtPlan{currency,strategy,extra_payment_minor,terms})
+}
+
+fn save_debt_plan_inner(connection:&mut Connection,request:DebtPlanRequest)->Result<DebtPlan,String>{
+    let currency=clean_debt_currency(request.currency)?;
+    if !["snowball","avalanche","custom"].contains(&request.strategy.as_str()){return Err("Debt strategy is invalid".into());}
+    if request.extra_payment_minor<0{return Err("Extra payment must be zero or greater".into());}
+    if request.terms.len()>1000{return Err("Debt plan has too many accounts".into());}
+    let mut ids=HashSet::new();
+    for term in &request.terms{
+        if !ids.insert(term.account_id.clone()){return Err("A debt account was included more than once".into());}
+        if term.annual_rate_bps<0||term.annual_rate_bps>100_000{return Err("Debt APR is invalid".into());}
+        if term.minimum_payment_minor<=0{return Err("Debt minimum payment must be greater than zero".into());}
+        if term.custom_priority<0{return Err("Debt priority is invalid".into());}
+        let eligible:Option<i64>=connection.query_row("SELECT 1 FROM accounts WHERE id=?1 AND currency=?2 AND account_type IN ('credit','loan') AND archived_at IS NULL",params![term.account_id,currency],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
+        if eligible.is_none(){return Err("Debt plan accounts must be credit or loan accounts in the selected currency".into());}
+    }
+    let tx=connection.transaction().map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO debt_plan_settings(currency,strategy,extra_payment_minor) VALUES(?1,?2,?3) ON CONFLICT(currency) DO UPDATE SET strategy=excluded.strategy,extra_payment_minor=excluded.extra_payment_minor,modified_at=CURRENT_TIMESTAMP",params![currency,request.strategy,request.extra_payment_minor]).map_err(|e|e.to_string())?;
+    tx.execute("DELETE FROM debt_terms WHERE account_id IN (SELECT id FROM accounts WHERE currency=?1)",params![currency]).map_err(|e|e.to_string())?;
+    for term in &request.terms{tx.execute("INSERT INTO debt_terms(account_id,annual_rate_bps,minimum_payment_minor,custom_priority,enabled) VALUES(?1,?2,?3,?4,?5)",params![term.account_id,term.annual_rate_bps,term.minimum_payment_minor,term.custom_priority,term.enabled]).map_err(|e|e.to_string())?;}
+    tx.commit().map_err(|e|e.to_string())?;
+    get_debt_plan_inner(connection,currency)
+}
+
+#[tauri::command]
+fn get_debt_plan(currency:String,state:State<DbState>)->Result<DebtPlan,String>{let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;get_debt_plan_inner(&connection,currency)}
+
+#[tauri::command]
+fn save_debt_plan(request:DebtPlanRequest,state:State<DbState>)->Result<DebtPlan,String>{let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;save_debt_plan_inner(&mut connection,request)}
+
 #[tauri::command]
 fn create_transaction(request: CreateTransactionRequest, state: State<DbState>) -> Result<LedgerTransaction, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
@@ -1606,6 +1683,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let budget_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_categories','budget_allocations')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if budget_tables!=2{return Err("The backup is missing budget tables".into());}
     }
+    if version >= 13 {
+        let debt_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('debt_plan_settings','debt_terms')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if debt_tables!=2{return Err("The backup is missing debt plan tables".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -1689,7 +1770,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

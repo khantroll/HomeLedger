@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
@@ -33,6 +33,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   private archivedScheduledIds = new Set<string>();
   private budgetCategories:BudgetCategory[]=[];
   private budgetAllocations:BudgetAllocation[]=[];
+  private debtPlans=new Map<string,DebtPlan>();
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
@@ -254,6 +255,8 @@ export class DemoFinanceRepository implements FinanceRepository {
     if(index<0)this.budgetAllocations.push({...input});else this.budgetAllocations[index]={...input};
   }
   async getBudgetMonth(month:string):Promise<BudgetMonth>{return structuredClone(calculateBudgetMonth(month,this.budgetCategories,this.budgetAllocations,this.transactions));}
+  async getDebtPlan(currency:string):Promise<DebtPlan>{const normalized=cleanCurrency(currency);return structuredClone(this.debtPlans.get(normalized)??{currency:normalized,strategy:"avalanche",extraPaymentMinor:0,terms:[]});}
+  async saveDebtPlan(input:DebtPlanInput):Promise<DebtPlan>{const plan=validateDebtPlan(input,this.accounts);this.debtPlans.set(plan.currency,plan);return structuredClone(plan);}
   async importTransactions(input: ImportTransactionsInput): Promise<ImportResult> {
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (!account) throw new Error("Account does not exist");
@@ -303,6 +306,12 @@ export class DemoFinanceRepository implements FinanceRepository {
 }
 
 function cleanBudgetCategory(value:string):string{const category=value.trim();if(!category)throw new Error("Budget category is required");if(category.length>120)throw new Error("Budget category is too long");return category;}
+function cleanCurrency(value:string):string{const currency=value.trim().toUpperCase();if(!/^[A-Z]{3}$/.test(currency))throw new Error("Currency must be a three-letter code");return currency;}
+function validateDebtPlan(input:DebtPlanInput,accounts:Account[]):DebtPlan{
+  const currency=cleanCurrency(input.currency);if(!["snowball","avalanche","custom"].includes(input.strategy))throw new Error("Debt strategy is invalid");if(!Number.isSafeInteger(input.extraPaymentMinor)||input.extraPaymentMinor<0)throw new Error("Extra payment must be zero or greater");if(input.terms.length>1000)throw new Error("Debt plan has too many accounts");
+  const ids=new Set<string>();for(const term of input.terms){if(ids.has(term.accountId))throw new Error("A debt account was included more than once");ids.add(term.accountId);const account=accounts.find(item=>item.id===term.accountId);if(!account||!["credit","loan"].includes(account.type)||account.currency!==currency)throw new Error("Debt plan accounts must be credit or loan accounts in the selected currency");if(!Number.isInteger(term.annualRateBps)||term.annualRateBps<0||term.annualRateBps>100000)throw new Error("Debt APR is invalid");if(!Number.isSafeInteger(term.minimumPaymentMinor)||term.minimumPaymentMinor<=0)throw new Error("Debt minimum payment must be greater than zero");if(!Number.isInteger(term.customPriority)||term.customPriority<0)throw new Error("Debt priority is invalid");}
+  return structuredClone({...input,currency});
+}
 
 function validateTransactionInput(input:CreateTransactionInput){
   if(input.status==="reconciled")throw new Error("Transactions are marked reconciled through account reconciliation");

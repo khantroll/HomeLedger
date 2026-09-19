@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_transaction_inner, create_transfer_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
 use rusqlite::Connection;
 
 #[test]
@@ -18,7 +18,8 @@ fn migration_creates_local_ledger_tables() {
     let scheduled_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('scheduled_transactions','scheduled_occurrences')", [], |row| row.get(0)).unwrap();
     let budget_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('budget_categories','budget_allocations')", [], |row| row.get(0)).unwrap();
     let auto_post_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('scheduled_transactions') WHERE name='auto_post'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns), (12, 2, 1, 1, 2, 2,1));
+    let debt_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('debt_plan_settings','debt_terms')",[],|row|row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables), (13, 2, 1, 1, 2, 2,1,2));
 }
 
 #[test]
@@ -44,7 +45,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -315,6 +316,19 @@ fn monthly_budget_counts_splits_excludes_transfers_and_rolls_sinking_funds() {
 }
 
 #[test]
+fn debt_plans_are_currency_scoped_validated_and_replaced_atomically(){
+    let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('card','Card','credit','USD',-100000,'Household'),('loan','Loan','loan','USD',-300000,'Household'),('cad','CAD Card','credit','CAD',-50000,'Household'),('cash','Checking','checking','USD',10000,'Household')",[]).unwrap();
+    let request=DebtPlanRequest{currency:"usd".into(),strategy:"avalanche".into(),extra_payment_minor:10000,terms:vec![DebtTerm{account_id:"card".into(),annual_rate_bps:1999,minimum_payment_minor:5000,custom_priority:2,enabled:true},DebtTerm{account_id:"loan".into(),annual_rate_bps:650,minimum_payment_minor:8000,custom_priority:1,enabled:true}]};
+    let saved=save_debt_plan_inner(&mut connection,request).unwrap();assert_eq!((saved.currency.as_str(),saved.strategy.as_str(),saved.terms.len()),("USD","avalanche",2));
+    let loaded=get_debt_plan_inner(&connection,"USD".into()).unwrap();assert_eq!((loaded.extra_payment_minor,loaded.terms[0].account_id.as_str()),(10000,"loan"));
+    let invalid=DebtPlanRequest{currency:"USD".into(),strategy:"snowball".into(),extra_payment_minor:0,terms:vec![DebtTerm{account_id:"cad".into(),annual_rate_bps:100,minimum_payment_minor:100,custom_priority:0,enabled:true}]};
+    assert!(save_debt_plan_inner(&mut connection,invalid).is_err());assert_eq!(get_debt_plan_inner(&connection,"USD".into()).unwrap().terms.len(),2);
+    let replacement=DebtPlanRequest{currency:"USD".into(),strategy:"custom".into(),extra_payment_minor:5000,terms:vec![DebtTerm{account_id:"card".into(),annual_rate_bps:1999,minimum_payment_minor:6000,custom_priority:1,enabled:true}]};
+    assert_eq!(save_debt_plan_inner(&mut connection,replacement).unwrap().terms.len(),1);
+}
+
+#[test]
 fn reconciliation_requires_an_exact_balance_and_protects_completed_items() {
     let mut connection = Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
@@ -367,4 +381,12 @@ fn invalid_restore_does_not_modify_the_ledger() {
     assert!(restore_database_inner(&mut connection, b"not a database").is_err());
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM accounts WHERE id = 'safe'", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 1);
+}
+
+#[test]
+fn backup_validation_accepts_supported_pre_debt_schema() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute_batch("DROP TABLE debt_terms; DROP TABLE debt_plan_settings; DELETE FROM schema_migrations WHERE version=13;").unwrap();
+    validate_backup_database(&connection).unwrap();
 }
