@@ -1,6 +1,7 @@
-import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
+import { findScheduledMatches } from "./scheduledMatching";
 
 const initialAccounts: Account[] = [
   { id: "checking", name: "Household Checking", institution: "Sample Credit Union", type: "checking", currency: "USD", balanceMinor: 428640, ownerLabel: "Household" },
@@ -212,11 +213,23 @@ export class DemoFinanceRepository implements FinanceRepository {
     if(occurrence.status!=="expected")throw new Error("Only expected occurrences can be changed");
     return occurrence;
   }
+  async findScheduledOccurrenceMatches(input:ScheduledImportMatchInput):Promise<ScheduledImportMatch[]>{
+    if(!this.accounts.some(item=>item.id===input.accountId))throw new Error("Account does not exist");
+    return structuredClone(input.rows.map(row=>({sourceRow:row.sourceRow,candidates:findScheduledMatches(row,input.accountId,this.scheduledTransactions,this.scheduledOccurrences)})));
+  }
   async importTransactions(input: ImportTransactionsInput): Promise<ImportResult> {
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (!account) throw new Error("Account does not exist");
-    const batchId = crypto.randomUUID();
     const prepared=applyMerchantRules(input.rows,this.merchantRules).map(item=>item.row);
+    const selectedOccurrences=new Set<string>();
+    prepared.forEach(row=>{
+      if(!row.scheduledOccurrenceId)return;
+      if(selectedOccurrences.has(row.scheduledOccurrenceId))throw new Error("A scheduled occurrence was selected more than once");
+      selectedOccurrences.add(row.scheduledOccurrenceId);
+      const eligible=findScheduledMatches(row,input.accountId,this.scheduledTransactions,this.scheduledOccurrences).some(candidate=>candidate.occurrenceId===row.scheduledOccurrenceId);
+      if(!eligible)throw new Error("The selected scheduled occurrence is no longer eligible for this transaction");
+    });
+    const batchId = crypto.randomUUID();
     const imported = prepared.map(row => ({
       id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
       category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
@@ -224,6 +237,11 @@ export class DemoFinanceRepository implements FinanceRepository {
       splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
       source: "import" as const, importBatchId: batchId
     }));
+    prepared.forEach((row,index)=>{
+      if(!row.scheduledOccurrenceId)return;
+      const occurrence=this.scheduledOccurrences.find(item=>item.id===row.scheduledOccurrenceId)!;
+      occurrence.status="linked";occurrence.transactionId=imported[index].id;
+    });
     this.transactions.unshift(...imported);
     account.balanceMinor += imported.reduce((total, row) => total + row.amountMinor, 0);
     this.importBatches.unshift({ id: batchId, accountId: account.id, accountName: account.name, sourceName: input.sourceName, importedAt: new Date().toISOString(), transactionCount: imported.length, totalMinor: imported.reduce((total, row) => total + row.amountMinor, 0) });

@@ -183,6 +183,44 @@ struct ImportTransactionRow {
     external_id: Option<String>,
     category: Option<String>,
     splits: Option<Vec<ImportTransactionSplit>>,
+    scheduled_occurrence_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledImportMatchRow {
+    source_row: usize,
+    #[serde(flatten)]
+    row: ImportTransactionRow,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledImportMatchRequest {
+    account_id: String,
+    rows: Vec<ScheduledImportMatchRow>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledMatchCandidate {
+    occurrence_id: String,
+    scheduled_transaction_id: String,
+    payee: String,
+    due_date: String,
+    amount_minor: i64,
+    confidence: String,
+    score: i64,
+    reasons: Vec<String>,
+    date_difference_days: i64,
+    amount_difference_minor: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledImportMatch {
+    source_row: usize,
+    candidates: Vec<ScheduledMatchCandidate>,
 }
 
 #[derive(Deserialize)]
@@ -972,6 +1010,66 @@ fn matching_merchant_rule<'a>(rules:&'a [MerchantRule],payee:&str,amount_minor:i
     })
 }
 
+fn merchant_similarity(left:&str,right:&str)->f64{
+    let left=normalize_merchant(left);
+    let right=normalize_merchant(right);
+    if !left.is_empty()&&left==right{return 1.0;}
+    if left.is_empty()||right.is_empty(){return 0.0;}
+    if (left.contains(&right)||right.contains(&left))&&left.len().min(right.len())>=4{return 0.85;}
+    let left_tokens:HashSet<&str>=left.split_whitespace().collect();
+    let right_tokens:HashSet<&str>=right.split_whitespace().collect();
+    let union=left_tokens.union(&right_tokens).count();
+    if union==0{0.0}else{left_tokens.intersection(&right_tokens).count() as f64/union as f64}
+}
+
+fn scheduled_match_candidate(row:&ImportTransactionRow,effective_payee:&str,occurrence_id:String,scheduled_transaction_id:String,due_date:String,template_payee:String,template_amount_minor:i64)->Option<ScheduledMatchCandidate>{
+    if row.amount_minor.signum()!=template_amount_minor.signum(){return None;}
+    let posted=NaiveDate::parse_from_str(&row.posted_date,"%Y-%m-%d").ok()?;
+    let due=NaiveDate::parse_from_str(&due_date,"%Y-%m-%d").ok()?;
+    let date_difference_days=(posted-due).num_days().abs();
+    if date_difference_days>7{return None;}
+    let amount_difference_minor=row.amount_minor.checked_sub(template_amount_minor)?.checked_abs()?;
+    let amount_ratio=if template_amount_minor==0{f64::INFINITY}else{amount_difference_minor as f64/template_amount_minor.abs() as f64};
+    if amount_difference_minor>500&&amount_ratio>0.35{return None;}
+    let original=row.original_payee.as_deref().unwrap_or(&row.payee);
+    let merchant_similarity=merchant_similarity(effective_payee,&template_payee).max(merchant_similarity(original,&template_payee));
+    if merchant_similarity<0.45{return None;}
+    let merchant_score=if merchant_similarity==1.0{50}else if merchant_similarity>=0.7{40}else{30};
+    let date_score=if date_difference_days==0{25}else if date_difference_days<=2{20}else if date_difference_days<=4{12}else{5};
+    let amount_score=if amount_difference_minor==0{25}else if amount_ratio<=0.05{20}else if amount_ratio<=0.15{14}else{7};
+    let score=merchant_score+date_score+amount_score;
+    if score<50{return None;}
+    let confidence=if merchant_similarity==1.0&&date_difference_days==0&&amount_difference_minor==0{"exact"}else if score>=70{"probable"}else{"possible"};
+    let reasons=vec![
+        if merchant_similarity==1.0{"Same normalized merchant".into()}else{format!("Similar merchant ({}%)",(merchant_similarity*100.0).round() as i64)},
+        if date_difference_days==0{"Same date".into()}else{format!("{} day{} from due date",date_difference_days,if date_difference_days==1{""}else{"s"})},
+        if amount_difference_minor==0{"Same amount".into()}else{format!("${:.2} amount difference",amount_difference_minor as f64/100.0)},
+    ];
+    Some(ScheduledMatchCandidate{occurrence_id,scheduled_transaction_id,payee:template_payee,due_date,amount_minor:template_amount_minor,confidence:confidence.into(),score,reasons,date_difference_days,amount_difference_minor})
+}
+
+fn scheduled_candidates(connection:&Connection,account_id:&str,row:&ImportTransactionRow,effective_payee:&str)->Result<Vec<ScheduledMatchCandidate>,String>{
+    let mut statement=connection.prepare("SELECT occurrence.id,template.id,occurrence.due_date,template.payee,template.amount_minor FROM scheduled_occurrences occurrence JOIN scheduled_transactions template ON template.id=occurrence.scheduled_transaction_id WHERE occurrence.status='expected' AND occurrence.transaction_id IS NULL AND template.account_id=?1 AND template.kind='transaction' AND template.enabled=1 AND template.archived_at IS NULL").map_err(|e|e.to_string())?;
+    let values=statement.query_map(params![account_id],|result|Ok((result.get(0)?,result.get(1)?,result.get(2)?,result.get(3)?,result.get(4)?))).map_err(|e|e.to_string())?;
+    let mut candidates=Vec::new();
+    for value in values{
+        let (occurrence_id,scheduled_transaction_id,due_date,payee,amount_minor):(String,String,String,String,i64)=value.map_err(|e|e.to_string())?;
+        if let Some(candidate)=scheduled_match_candidate(row,effective_payee,occurrence_id,scheduled_transaction_id,due_date,payee,amount_minor){candidates.push(candidate);}
+    }
+    candidates.sort_by(|left,right|right.score.cmp(&left.score).then(left.date_difference_days.cmp(&right.date_difference_days)).then(left.occurrence_id.cmp(&right.occurrence_id)));
+    candidates.truncate(3);
+    Ok(candidates)
+}
+
+#[tauri::command]
+fn find_scheduled_occurrence_matches(request:ScheduledImportMatchRequest,state:State<DbState>)->Result<Vec<ScheduledImportMatch>,String>{
+    let account_id=clean_required(request.account_id,"Account",80)?;
+    let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
+    let exists:Option<i64>=connection.query_row("SELECT 1 FROM accounts WHERE id=?1 AND archived_at IS NULL",params![account_id],|result|result.get(0)).optional().map_err(|e|e.to_string())?;
+    if exists.is_none(){return Err("Account does not exist".into());}
+    request.rows.into_iter().map(|item|Ok(ScheduledImportMatch{source_row:item.source_row,candidates:scheduled_candidates(&connection,&account_id,&item.row,item.row.payee.as_str())?})).collect()
+}
+
 #[tauri::command]
 fn create_transaction(request: CreateTransactionRequest, state: State<DbState>) -> Result<LedgerTransaction, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
@@ -1037,6 +1135,7 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
     let source_name = clean_required(request.source_name, "Source filename", 255)?;
     let account_id = clean_required(request.account_id, "Account", 80)?;
 
+    let mut selected_occurrences=HashSet::new();
     for row in &request.rows {
         if NaiveDate::parse_from_str(&row.posted_date, "%Y-%m-%d").is_err() { return Err(format!("Invalid import date: {}", row.posted_date)); }
         clean_required(row.payee.clone(), "Description/payee", 160)?;
@@ -1044,6 +1143,10 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
         clean_optional(row.memo.clone(), 500)?;
         clean_optional(row.external_id.clone(), 255)?;
         clean_optional(row.category.clone(), 120)?;
+        if let Some(occurrence_id)=&row.scheduled_occurrence_id{
+            let occurrence_id=clean_required(occurrence_id.clone(),"Scheduled occurrence",80)?;
+            if !selected_occurrences.insert(occurrence_id){return Err("A scheduled occurrence was selected more than once".into());}
+        }
         if let Some(splits) = &row.splits {
             if splits.is_empty() { return Err("Split transactions must contain at least one split".into()); }
             let mut split_total = 0_i64;
@@ -1066,7 +1169,7 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
     let original_total_minor: i64 = request.rows.iter().map(|row| row.amount_minor).try_fold(0_i64, |total, amount| total.checked_add(amount).ok_or("Import total is too large"))?;
     tx.execute("INSERT INTO import_batches(id, account_id, source_name, original_transaction_count, original_total_minor) VALUES(?1, ?2, ?3, ?4, ?5)", params![batch_id, account_id, source_name, imported_count as i64, original_total_minor]).map_err(|e| e.to_string())?;
     for row in request.rows {
-        let original_payee=clean_required(row.original_payee.unwrap_or_else(||row.payee.clone()),"Description/payee",160)?;
+        let original_payee=clean_required(row.original_payee.clone().unwrap_or_else(||row.payee.clone()),"Description/payee",160)?;
         let matched_rule=matching_merchant_rule(&merchant_rules,&original_payee,row.amount_minor);
         let payee=matched_rule.and_then(|rule|rule.rename_to.clone()).unwrap_or_else(||row.payee.trim().to_string());
         let duplicate: Option<i64> = tx.query_row(
@@ -1075,6 +1178,10 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
             |result| result.get(0)
         ).optional().map_err(|e| e.to_string())?;
         if duplicate.is_some() { return Err(format!("A matching transaction already exists for {}. Nothing was imported.", row.posted_date)); }
+        if let Some(occurrence_id)=&row.scheduled_occurrence_id{
+            let eligible=scheduled_candidates(&tx,&account_id,&row,&payee)?.into_iter().any(|candidate|candidate.occurrence_id==*occurrence_id);
+            if !eligible{return Err("The selected scheduled occurrence is no longer eligible for this transaction".into());}
+        }
         let transaction_id = Uuid::new_v4().to_string();
         let source_category=row.category.as_deref().map(str::trim).filter(|value|!value.is_empty()&&*value!="Uncategorized");
         let category=source_category.or_else(||matched_rule.and_then(|rule|rule.category.as_deref())).unwrap_or("Uncategorized");
@@ -1089,6 +1196,10 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
                     params![Uuid::new_v4().to_string(), transaction_id, split.category.trim(), split.amount_minor, split.memo, index as i64]
                 ).map_err(|e| e.to_string())?;
             }
+        }
+        if let Some(occurrence_id)=row.scheduled_occurrence_id{
+            let changed=tx.execute("UPDATE scheduled_occurrences SET status='linked',transaction_id=?2,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='expected' AND transaction_id IS NULL",params![occurrence_id,transaction_id]).map_err(|e|e.to_string())?;
+            if changed!=1{return Err("The selected scheduled occurrence changed before import; nothing was imported".into());}
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -1358,7 +1469,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, skip_scheduled_occurrence, link_scheduled_occurrence, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, import_transactions, list_import_batches, undo_import_batch, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }
