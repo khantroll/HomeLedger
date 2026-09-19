@@ -796,7 +796,12 @@ fn generate_scheduled_dates(template:&ScheduledTransaction,from:NaiveDate,reques
                     let interval=(count as i32)*if template.custom_interval_unit.as_deref()==Some("years"){12}else{1};
                     let month_difference=(from.year()-anchor.year())*12+from.month0() as i32-anchor.month0() as i32;
                     let mut step=(month_difference.div_euclid(interval)-1).max(0);
-                    loop{let occurrence=clamped_month_date(anchor,step*interval)?;if occurrence>end{break;}if occurrence>=anchor&&occurrence>=from{dates.push(occurrence);}step+=1;}
+                    loop{
+                        let occurrence=clamped_month_date(anchor,step*interval)?;
+                        if occurrence>end{break;}
+                        if occurrence>=anchor&&occurrence>=from{dates.push(occurrence);}
+                        step+=1;
+                    }
                 },
                 _=>return Err("Stored custom schedule has an invalid unit".into())
             }
