@@ -5,6 +5,8 @@ import { buildOfxPreview, parseOfx, type OfxStatement } from "./ofxImport";
 import { buildQifPreview, parseQif, type QifStatement } from "./qifImport";
 import { financeRepository } from "./repository";
 import { formatMoney, type Account, type ImportBatch, type Transaction } from "./domain";
+import { applyMerchantRules } from "./merchantRules";
+import type { MerchantRule } from "./domain";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -21,12 +23,16 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [batches,setBatches]=useState<ImportBatch[]>([]);
   const [pendingUndo,setPendingUndo]=useState<ImportBatch|null>(null);
   const [undoing,setUndoing]=useState(false);
+  const [rules,setRules]=useState<MerchantRule[]>([]);
 
   useEffect(()=>{if(!accountId&&accounts[0])setAccountId(accounts[0].id);},[accountId,accounts]);
-  useEffect(()=>{void loadHistory();},[]);
+  useEffect(()=>{void loadHistory();void financeRepository.listMerchantRules().then(setRules).catch(reason=>setError(reason instanceof Error?reason.message:String(reason)));},[]);
 
   const accountTransactions=useMemo(()=>transactions.filter(item=>item.accountId===accountId),[transactions,accountId]);
-  const preview=useMemo(()=>qif?buildQifPreview(qif,accountTransactions):ofx?buildOfxPreview(ofx,accountTransactions):table?buildPreview(table,mapping,accountTransactions):[],[qif,ofx,table,mapping,accountTransactions]);
+  const rawPreview=useMemo(()=>qif?buildQifPreview(qif,accountTransactions):ofx?buildOfxPreview(ofx,accountTransactions):table?buildPreview(table,mapping,accountTransactions):[],[qif,ofx,table,mapping,accountTransactions]);
+  const applications=useMemo(()=>applyMerchantRules(rawPreview,rules),[rawPreview,rules]);
+  const preview=useMemo(()=>applications.map(item=>item.row),[applications]);
+  const matchedRules=useMemo(()=>new Map(applications.filter(item=>item.rule).map(item=>[item.row.sourceRow,item.rule!])),[applications]);
   const valid=preview.filter(row=>!row.error&&!row.duplicate);
   const duplicates=preview.filter(row=>row.duplicate).length;
   const errors=preview.filter(row=>row.error).length;
@@ -48,7 +54,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     if(currencyMismatch){setError(`The statement uses ${ofx?.currency}, but the selected account uses ${selectedAccount?.currency}.`);return;}
     if(!valid.length){setError("There are no new valid transactions to import.");return;}
     setSaving(true);setError("");
-    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({postedDate,payee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,amountMinor,memo,externalId,category,splits}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setFileName("");await onImported();await loadHistory();}
+    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setFileName("");await onImported();await loadHistory();}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
     finally{setSaving(false);}
   }
@@ -79,7 +85,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
         {qif&&<><div className="ofx-summary"><div><span>Statement type</span><strong>{qif.accountType==="credit-card"?"Credit card":qif.accountType==="cash"?"Cash":"Bank account"}</strong></div><div><span>Statement account</span><strong>{qif.accountName||"Not supplied"}</strong></div><div><span>Transactions</span><strong>{qif.rows.length}</strong></div><div><span>Split transactions</span><strong>{qif.rows.filter(row=>row.splits?.length).length}</strong></div></div><label className="ofx-account">Import to account<select value={accountId} onChange={e=>setAccountId(e.target.value)}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label><p className="mapping-help">QIF does not specify currency. Amounts will use the selected account’s {selectedAccount?.currency} currency.</p></>}
       </div>
     </section>
-    {(table||ofx||qif)&&<section className="panel import-preview"><div className="panel-heading"><div><h2>Pre-import review</h2><p>{valid.length} ready · {duplicates} duplicates excluded · {errors} errors</p></div><button className="primary-action" disabled={saving||errors>0||valid.length===0||currencyMismatch} onClick={commit}>{saving?"Importing…":`Import ${valid.length}`}</button></div><div className="table-wrap"><table><thead><tr><th>Source row</th><th>Date</th><th>Description</th><th>Result</th><th>Amount</th></tr></thead><tbody>{preview.slice(0,100).map(row=><tr key={row.sourceRow} className={row.error?"row-error":row.duplicate?"row-duplicate":""}><td>{row.sourceRow}</td><td>{row.postedDate||"—"}</td><td>{row.payee||"—"}{row.splits?.length?<small className="split-count">{row.splits.length} splits</small>:null}</td><td>{row.error?<span className="import-status error">{row.error}</span>:row.duplicate?<span className="import-status duplicate">Duplicate</span>:<span className="import-status ready">Ready</span>}</td><td className={row.amountMinor<0?"amount negative":"amount positive"}>{row.error?"—":formatMoney(row.amountMinor,ofx?.currency??selectedAccount?.currency)}</td></tr>)}</tbody></table></div>{preview.length>100&&<p className="preview-limit">Showing the first 100 of {preview.length} rows.</p>}</section>}
+    {(table||ofx||qif)&&<section className="panel import-preview"><div className="panel-heading"><div><h2>Pre-import review</h2><p>{valid.length} ready · {duplicates} duplicates excluded · {errors} errors</p></div><button className="primary-action" disabled={saving||errors>0||valid.length===0||currencyMismatch} onClick={commit}>{saving?"Importing…":`Import ${valid.length}`}</button></div><div className="table-wrap"><table><thead><tr><th>Source row</th><th>Date</th><th>Description</th><th>Category / result</th><th>Amount</th></tr></thead><tbody>{preview.slice(0,100).map(row=>{const rule=matchedRules.get(row.sourceRow);return <tr key={row.sourceRow} className={row.error?"row-error":row.duplicate?"row-duplicate":""}><td>{row.sourceRow}</td><td>{row.postedDate||"—"}</td><td>{row.payee||"—"}{row.originalPayee&&row.originalPayee!==row.payee?<small className="split-count">From: {row.originalPayee}</small>:null}{row.splits?.length?<small className="split-count">{row.splits.length} splits</small>:null}</td><td>{row.error?<span className="import-status error">{row.error}</span>:row.duplicate?<span className="import-status duplicate">Duplicate</span>:<><span className="import-status ready">{row.category??"Uncategorized"}</span>{rule&&<small className="rule-match">Rule: {rule.name}</small>}</>}</td><td className={row.amountMinor<0?"amount negative":"amount positive"}>{row.error?"—":formatMoney(row.amountMinor,ofx?.currency??selectedAccount?.currency)}</td></tr>;})}</tbody></table></div>{preview.length>100&&<p className="preview-limit">Showing the first 100 of {preview.length} rows.</p>}</section>}
     <section className="panel import-history"><div className="panel-heading"><div><h2>Import history</h2><p>Every committed batch remains in the audit history.</p></div><History size={18}/></div>{batches.length===0?<div className="empty-state">No statements have been imported yet.</div>:<div className="table-wrap"><table><thead><tr><th>Imported</th><th>Source</th><th>Account</th><th>Transactions</th><th>Net amount</th><th>Status</th><th></th></tr></thead><tbody>{batches.map(batch=><tr key={batch.id}><td>{formatTimestamp(batch.importedAt)}</td><td><strong>{batch.sourceName}</strong></td><td>{batch.accountName}</td><td>{batch.transactionCount}</td><td className={batch.totalMinor<0?"amount negative":"amount positive"}>{formatMoney(batch.totalMinor)}</td><td>{batch.undoneAt?<span className="import-status duplicate">Undone</span>:<span className="import-status ready">Active</span>}</td><td>{!batch.undoneAt&&<button className="undo-button" onClick={()=>setPendingUndo(batch)}><Undo2 size={13}/> Undo</button>}</td></tr>)}</tbody></table></div>}</section>
     {pendingUndo&&<UndoDialog batch={pendingUndo} busy={undoing} onCancel={()=>setPendingUndo(null)} onConfirm={undo}/>}
   </div>;

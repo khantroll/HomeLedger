@@ -1,4 +1,5 @@
-import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportResult, type ImportTransactionsInput, type Reconciliation, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, type Account, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type FinanceRepository, type ImportBatch, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { applyMerchantRules } from "./merchantRules";
 
 const initialAccounts: Account[] = [
   { id: "checking", name: "Household Checking", institution: "Sample Credit Union", type: "checking", currency: "USD", balanceMinor: 428640, ownerLabel: "Household" },
@@ -22,6 +23,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   private importedTransactionIds = new Map<string, string[]>();
   private reconciliations: Reconciliation[] = [];
   private reconciledTransactionIds = new Set<string>();
+  private merchantRules: MerchantRule[] = [];
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
@@ -131,14 +133,19 @@ export class DemoFinanceRepository implements FinanceRepository {
     for(const item of pair){const account=this.accounts.find(account=>account.id===item.accountId);if(account)account.balanceMinor-=item.amountMinor;}
     this.transactions=this.transactions.filter(item=>item.transferLinkId!==id);
   }
+  async listMerchantRules():Promise<MerchantRule[]>{return structuredClone([...this.merchantRules].sort((a,b)=>b.priority-a.priority||a.id.localeCompare(b.id)));}
+  async createMerchantRule(input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const rule={id:crypto.randomUUID(),...input};this.merchantRules.push(rule);return structuredClone(rule);}
+  async updateMerchantRule(id:string,input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");const rule={id,...input};this.merchantRules[index]=rule;return structuredClone(rule);}
+  async deleteMerchantRule(id:string):Promise<void>{const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");this.merchantRules.splice(index,1);}
   async importTransactions(input: ImportTransactionsInput): Promise<ImportResult> {
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (!account) throw new Error("Account does not exist");
     const batchId = crypto.randomUUID();
-    const imported = input.rows.map(row => ({
+    const prepared=applyMerchantRules(input.rows,this.merchantRules).map(item=>item.row);
+    const imported = prepared.map(row => ({
       id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
       category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
-      memo: row.memo, externalId: row.externalId,
+      memo: row.memo, externalId: row.externalId, originalPayee: row.originalPayee,
       splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
       source: "import" as const, importBatchId: batchId
     }));
@@ -179,4 +186,11 @@ function validateTransferInput(input:CreateTransferInput,accounts:Account[]){
   const from=accounts.find(item=>item.id===input.fromAccountId),to=accounts.find(item=>item.id===input.toAccountId);
   if(!from||!to)throw new Error("Transfer account does not exist");
   if(from.currency!==to.currency)throw new Error("Transfers between different currencies are not supported yet");
+}
+
+function validateMerchantRule(input:MerchantRuleInput){
+  if(!input.name.trim())throw new Error("Rule name is required");
+  if(!input.pattern.trim())throw new Error("Match text is required");
+  if(!input.renameTo?.trim()&&!input.category?.trim())throw new Error("A rule must rename the payee, assign a category, or both");
+  if(!Number.isInteger(input.priority)||input.priority < -10000||input.priority > 10000)throw new Error("Priority must be a whole number between -10000 and 10000");
 }

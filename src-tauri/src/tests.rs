@@ -11,6 +11,10 @@ fn migration_creates_local_ledger_tables() {
     assert_eq!(count, 1);
     let application_id: i64 = connection.query_row("PRAGMA application_id", [], |row| row.get(0)).unwrap();
     assert_eq!(application_id, 1_212_957_767);
+    let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
+    let reconciliation_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('reconciliations','reconciliation_items')", [], |row| row.get(0)).unwrap();
+    let merchant_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='merchant_rules'", [], |row| row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables), (7, 2, 1));
 }
 
 #[test]
@@ -27,7 +31,7 @@ fn statement_import_is_atomic_and_rejects_duplicates() {
     let request = || ImportTransactionsRequest {
         account_id: "a".into(), source_name: "statement.csv".into(),
         rows: vec![ImportTransactionRow {
-            posted_date: "2026-09-18".into(), payee: "Store".into(), amount_minor: -1250, memo: None,
+            posted_date: "2026-09-18".into(), payee: "Store".into(), original_payee: None, amount_minor: -1250, memo: None,
             external_id: Some("bank-1".into()), category: Some("Split transaction".into()),
             splits: Some(vec![
                 ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None },
@@ -61,7 +65,7 @@ fn statement_import_rejects_unbalanced_splits_before_writing() {
     let request = ImportTransactionsRequest {
         account_id: "a".into(), source_name: "bad.qif".into(),
         rows: vec![ImportTransactionRow {
-            posted_date: "2026-09-18".into(), payee: "Store".into(), amount_minor: -1250, memo: None,
+            posted_date: "2026-09-18".into(), payee: "Store".into(), original_payee: None, amount_minor: -1250, memo: None,
             external_id: None, category: Some("Split transaction".into()),
             splits: Some(vec![ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None }])
         }]
@@ -69,6 +73,23 @@ fn statement_import_rejects_unbalanced_splits_before_writing() {
     assert!(import_transactions_inner(&mut connection, request).is_err());
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 0);
+}
+
+#[test]
+fn statement_import_applies_deterministic_merchant_rules() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 0, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled) VALUES('rule','Market','NEIGHBORHOOD MARKET','neighborhood market','contains','expense','Neighborhood Market','Food: Groceries',100,1)", []).unwrap();
+    import_transactions_inner(&mut connection, ImportTransactionsRequest {
+        account_id: "a".into(), source_name: "rules.csv".into(),
+        rows: vec![ImportTransactionRow {
+            posted_date: "2026-09-18".into(), payee: "SQ *NEIGHBORHOOD MARKET #42".into(), original_payee: None,
+            amount_minor: -1250, memo: None, external_id: None, category: None, splits: None,
+        }],
+    }).unwrap();
+    let imported: (String,String,String) = connection.query_row("SELECT payee,original_payee,category FROM transactions", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+    assert_eq!(imported, ("Neighborhood Market".into(), "SQ *NEIGHBORHOOD MARKET #42".into(), "Food: Groceries".into()));
 }
 
 #[test]
