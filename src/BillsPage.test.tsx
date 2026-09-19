@@ -83,4 +83,23 @@ describe("BillsPage",()=>{
     await user.click(screen.getByRole("button",{name:"Save schedule"}));
     expect(create).toHaveBeenCalledWith(expect.objectContaining({kind:"transfer",accountId:"checking",transferAccountId:"savings",amountMinor:5000,category:"Transfer"}));
   });
+
+  it("explains detected subscriptions and requires review before creating a schedule",async()=>{
+    const user=userEvent.setup(),onChanged=vi.fn(async()=>{});
+    const create=vi.spyOn(financeRepository,"createScheduledTransaction").mockImplementation(async input=>({id:"detected",...input}));
+    const recurring:Transaction[]=[
+      {id:"cloud-1",accountId:"checking",postedDate:"2026-06-15",payee:"CloudBox 101",category:"Software",amountMinor:-1299,status:"cleared",source:"import"},
+      {id:"cloud-2",accountId:"checking",postedDate:"2026-07-15",payee:"CloudBox 202",category:"Software",amountMinor:-1299,status:"cleared",source:"import"},
+      {id:"cloud-3",accountId:"checking",postedDate:"2026-08-15",payee:"CloudBox 303",category:"Software",amountMinor:-1299,status:"reconciled",source:"import"},
+    ];
+    render(<BillsPage accounts={accounts} transactions={recurring} templates={[]} occurrences={[]} onChanged={onChanged} today="2026-09-18"/>);
+    expect(screen.getByText("3 payments · 31-day median · ±$0.00")).toBeTruthy();
+    await user.click(screen.getByRole("button",{name:"Review and schedule"}));
+    expect((screen.getByLabelText("Payee or source") as HTMLInputElement).value).toBe("CloudBox 303");
+    expect((screen.getByLabelText("Expected amount") as HTMLInputElement).value).toBe("12.99");
+    expect((screen.getByLabelText("First due date") as HTMLInputElement).value).toBe("2026-10-15");
+    await user.click(screen.getByRole("button",{name:"Save schedule"}));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({accountId:"checking",payee:"CloudBox 303",category:"Software",amountMinor:-1299,frequency:"monthly",anchorDate:"2026-10-15",autoPost:false}));
+    expect(onChanged).toHaveBeenCalledOnce();
+  });
 });
