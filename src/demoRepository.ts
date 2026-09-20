@@ -1,14 +1,14 @@
-import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
 import { calculateBudgetMonth,validateMonth } from "./budgetMath";
 
 const initialAccounts: Account[] = [
-  { id: "checking", name: "Household Checking", institution: "Sample Credit Union", type: "checking", currency: "USD", balanceMinor: 428640, ownerLabel: "Household" },
-  { id: "savings", name: "Emergency Savings", institution: "Sample Credit Union", type: "savings", currency: "USD", balanceMinor: 185000, ownerLabel: "Household" },
-  { id: "credit", name: "Everyday Card", institution: "Sample Bank", type: "credit", currency: "USD", balanceMinor: -143826, ownerLabel: "Household", needsReview: true },
-  { id: "auto", name: "Vehicle Loan", institution: "Sample Lender", type: "loan", currency: "USD", balanceMinor: -1104755, ownerLabel: "Household" }
+  { id: "checking", name: "Household Checking", institution: "Sample Credit Union", type: "checking", currency: "USD", balanceMinor: 428640, ownerLabel: "Household", sortOrder: 0, archived: false },
+  { id: "savings", name: "Emergency Savings", institution: "Sample Credit Union", type: "savings", currency: "USD", balanceMinor: 185000, ownerLabel: "Household", sortOrder: 1, archived: false },
+  { id: "credit", name: "Everyday Card", institution: "Sample Bank", type: "credit", currency: "USD", balanceMinor: -143826, ownerLabel: "Household", needsReview: true, sortOrder: 2, archived: false },
+  { id: "auto", name: "Vehicle Loan", institution: "Sample Lender", type: "loan", currency: "USD", balanceMinor: -1104755, ownerLabel: "Household", sortOrder: 3, archived: false }
 ];
 
 const initialTransactions: Transaction[] = [
@@ -40,7 +40,12 @@ export class DemoFinanceRepository implements FinanceRepository {
   private savingsGoals:SavingsGoal[]=[];
   private debtPlans=new Map<string,DebtPlan>();
 
-  async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
+  async listAccounts(includeArchived = false): Promise<Account[]> {
+    return structuredClone(this.accounts
+      .filter(account => includeArchived || !account.archived)
+      .map(account => ({ ...account, needsReview: this.transactions.some(transaction => transaction.accountId === account.id && transaction.status === "review") }))
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)));
+  }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
     const rows = accountId ? this.transactions.filter((item) => item.accountId === accountId) : this.transactions;
     return structuredClone([...rows].sort((a, b) => b.postedDate.localeCompare(a.postedDate) || b.id.localeCompare(a.id)));
@@ -117,10 +122,49 @@ export class DemoFinanceRepository implements FinanceRepository {
     return structuredClone(reconciliation);
   }
   async createAccount(input: CreateAccountInput): Promise<Account> {
-    const account: Account = { id: crypto.randomUUID(), name: input.name, institution: input.institution, type: input.type, currency: input.currency, balanceMinor: input.openingBalanceMinor, ownerLabel: input.ownerLabel };
+    const details = validateAccountDetails(input);
+    const sortOrder = this.accounts.filter(account => !account.archived).reduce((max, account) => Math.max(max, account.sortOrder ?? 0), -1) + 1;
+    const account: Account = { id: crypto.randomUUID(), ...details, balanceMinor: input.openingBalanceMinor, needsReview: false, sortOrder, archived: false };
     this.accounts.push(account);
     this.openingBalances.set(account.id, input.openingBalanceMinor);
     return structuredClone(account);
+  }
+  async updateAccount(id: string, input: UpdateAccountInput): Promise<Account> {
+    const account = this.accounts.find(item => item.id === id);
+    if (!account) throw new Error("Account does not exist");
+    const details = validateAccountDetails(input);
+    if (details.currency !== account.currency && this.accountHasHistory(id)) throw new Error("Currency cannot be changed after an account has activity or linked planning data");
+    if (details.type !== "savings" && this.savingsGoals.some(goal => goal.accountId === id)) throw new Error("Remove this account's savings goal before changing its type");
+    if (!["credit", "loan"].includes(details.type) && [...this.debtPlans.values()].some(plan => plan.terms.some(term => term.accountId === id))) throw new Error("Remove this account from its debt plan before changing its type");
+    Object.assign(account, details);
+    return structuredClone(account);
+  }
+  async setAccountArchived(id: string, archived: boolean): Promise<void> {
+    const account = this.accounts.find(item => item.id === id);
+    if (!account) throw new Error("Account does not exist");
+    if (account.archived === archived) return;
+    if (archived) {
+      if (this.transactions.some(item => item.accountId === id && ["pending", "review"].includes(item.status))) throw new Error("Resolve pending and review transactions before archiving this account");
+      if (this.scheduledTransactions.some(item => !this.archivedScheduledIds.has(item.id) && item.enabled && (item.accountId === id || item.transferAccountId === id))) throw new Error("Disable or archive scheduled transactions for this account first");
+      if (this.savingsGoals.some(item => item.accountId === id)) throw new Error("Remove this account's savings goal before archiving it");
+      if ([...this.debtPlans.values()].some(plan => plan.terms.some(term => term.accountId === id && term.enabled))) throw new Error("Disable this account in its debt plan before archiving it");
+    }
+    account.archived = archived;
+    if (!archived) account.sortOrder = this.accounts.filter(item => !item.archived && item.id !== id).reduce((max, item) => Math.max(max, item.sortOrder ?? 0), -1) + 1;
+  }
+  async reorderAccounts(accountIds: string[]): Promise<void> {
+    const activeIds = this.accounts.filter(account => !account.archived).map(account => account.id);
+    if (new Set(accountIds).size !== accountIds.length) throw new Error("An account was included more than once");
+    if (accountIds.length !== activeIds.length || activeIds.some(id => !accountIds.includes(id))) throw new Error("Account order must include every active account exactly once");
+    accountIds.forEach((id, sortOrder) => { this.accounts.find(account => account.id === id)!.sortOrder = sortOrder; });
+  }
+  private accountHasHistory(id: string): boolean {
+    return this.transactions.some(item => item.accountId === id || item.transferAccountId === id)
+      || this.reconciliations.some(item => item.accountId === id)
+      || this.importBatches.some(item => item.accountId === id)
+      || this.scheduledTransactions.some(item => item.accountId === id || item.transferAccountId === id)
+      || this.savingsGoals.some(item => item.accountId === id)
+      || [...this.debtPlans.values()].some(plan => plan.terms.some(term => term.accountId === id));
   }
   async createTransaction(input: CreateTransactionInput): Promise<Transaction> {
     validateTransactionInput(input);
@@ -354,6 +398,14 @@ export class DemoFinanceRepository implements FinanceRepository {
   }
 }
 
+function validateAccountDetails(input:UpdateAccountInput):Pick<Account,"name"|"institution"|"type"|"currency"|"ownerLabel">{
+  const name=input.name.trim(),institution=input.institution?.trim()||undefined,ownerLabel=input.ownerLabel.trim();
+  if(!name)throw new Error("Account name is required");if(name.length>80)throw new Error("Account name is too long");
+  if(institution&&institution.length>80)throw new Error("Institution is too long");
+  if(!["checking","savings","credit","cash","loan","asset"].includes(input.type))throw new Error("Unsupported account type");
+  if(!ownerLabel)throw new Error("Owner is required");if(ownerLabel.length>80)throw new Error("Owner is too long");
+  return{name,institution,type:input.type,currency:cleanCurrency(input.currency),ownerLabel};
+}
 function cleanBudgetCategory(value:string):string{const category=value.trim();if(!category)throw new Error("Budget category is required");if(category.length>120)throw new Error("Budget category is too long");return category;}
 function validateSavingsGoal(input:SavingsGoalInput,accounts:Account[],goals:SavingsGoal[],id:string):SavingsGoal{
   const name=input.name.trim();if(!name)throw new Error("Savings goal name is required");if(name.length>120)throw new Error("Savings goal name is too long");

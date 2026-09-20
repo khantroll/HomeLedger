@@ -98,6 +98,8 @@ struct Account {
     balance_minor: i64,
     owner_label: String,
     needs_review: bool,
+    sort_order: i64,
+    archived: bool,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +110,16 @@ struct CreateAccountRequest {
     r#type: String,
     currency: String,
     opening_balance_minor: i64,
+    owner_label: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateAccountRequest {
+    name: String,
+    institution: Option<String>,
+    r#type: String,
+    currency: String,
     owner_label: String,
 }
 
@@ -644,10 +656,11 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_accounts(state: State<DbState>) -> Result<Vec<Account>, String> {
+fn list_accounts(include_archived: Option<bool>, state: State<DbState>) -> Result<Vec<Account>, String> {
     let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    let mut statement = connection.prepare("SELECT a.id, a.name, a.institution, a.account_type, a.currency, a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0), a.owner_label, EXISTS(SELECT 1 FROM transactions review WHERE review.account_id = a.id AND review.status = 'review') FROM accounts a LEFT JOIN transactions t ON t.account_id = a.id WHERE a.archived_at IS NULL GROUP BY a.id ORDER BY a.sort_order, a.created_at").map_err(|e| e.to_string())?;
-    let rows = statement.query_map([], |row| Ok(Account { id: row.get(0)?, name: row.get(1)?, institution: row.get(2)?, r#type: row.get(3)?, currency: row.get(4)?, balance_minor: row.get(5)?, owner_label: row.get(6)?, needs_review: row.get(7)? })).map_err(|e| e.to_string())?;
+    let sql = format!("SELECT a.id, a.name, a.institution, a.account_type, a.currency, a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0), a.owner_label, EXISTS(SELECT 1 FROM transactions review WHERE review.account_id = a.id AND review.status = 'review'), a.sort_order, a.archived_at IS NOT NULL FROM accounts a LEFT JOIN transactions t ON t.account_id = a.id {} GROUP BY a.id ORDER BY a.archived_at IS NOT NULL, a.sort_order, a.created_at", if include_archived.unwrap_or(false) { "" } else { "WHERE a.archived_at IS NULL" });
+    let mut statement = connection.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| Ok(Account { id: row.get(0)?, name: row.get(1)?, institution: row.get(2)?, r#type: row.get(3)?, currency: row.get(4)?, balance_minor: row.get(5)?, owner_label: row.get(6)?, needs_review: row.get(7)?, sort_order: row.get(8)?, archived: row.get(9)? })).map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
@@ -657,10 +670,92 @@ fn create_account(request: CreateAccountRequest, state: State<DbState>) -> Resul
     if !TYPES.contains(&request.r#type.as_str()) { return Err("Unsupported account type".into()); }
     let currency = request.currency.trim().to_uppercase();
     if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) { return Err("Currency must be a three-letter code".into()); }
-    let account = Account { id: Uuid::new_v4().to_string(), name: clean_required(request.name, "Account name", 80)?, institution: clean_optional(request.institution, 80)?, r#type: request.r#type, currency, balance_minor: request.opening_balance_minor, owner_label: clean_required(request.owner_label, "Owner", 80)?, needs_review: false };
+    let mut account = Account { id: Uuid::new_v4().to_string(), name: clean_required(request.name, "Account name", 80)?, institution: clean_optional(request.institution, 80)?, r#type: request.r#type, currency, balance_minor: request.opening_balance_minor, owner_label: clean_required(request.owner_label, "Owner", 80)?, needs_review: false, sort_order: 0, archived: false };
     let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    connection.execute("INSERT INTO accounts(id, name, institution, account_type, currency, opening_balance_minor, owner_label) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![account.id, account.name, account.institution, account.r#type, account.currency, account.balance_minor, account.owner_label]).map_err(|e| e.to_string())?;
+    account.sort_order = connection.query_row("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM accounts WHERE archived_at IS NULL", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    connection.execute("INSERT INTO accounts(id, name, institution, account_type, currency, opening_balance_minor, owner_label, sort_order) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", params![account.id, account.name, account.institution, account.r#type, account.currency, account.balance_minor, account.owner_label, account.sort_order]).map_err(|e| e.to_string())?;
     Ok(account)
+}
+
+fn validate_account_details(request: UpdateAccountRequest) -> Result<(String, Option<String>, String, String, String), String> {
+    const TYPES: &[&str] = &["checking", "savings", "credit", "cash", "loan", "asset"];
+    if !TYPES.contains(&request.r#type.as_str()) { return Err("Unsupported account type".into()); }
+    let currency = request.currency.trim().to_uppercase();
+    if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) { return Err("Currency must be a three-letter code".into()); }
+    Ok((clean_required(request.name, "Account name", 80)?, clean_optional(request.institution, 80)?, request.r#type, currency, clean_required(request.owner_label, "Owner", 80)?))
+}
+
+fn update_account_inner(connection: &Connection, account_id: &str, request: UpdateAccountRequest) -> Result<Account, String> {
+    let (name, institution, account_type, currency, owner_label) = validate_account_details(request)?;
+    let current_currency: String = connection.query_row("SELECT currency FROM accounts WHERE id = ?1", [account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?.ok_or("Account does not exist")?;
+    if current_currency != currency {
+        let has_history: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id=?1 UNION ALL SELECT 1 FROM reconciliations WHERE account_id=?1 UNION ALL SELECT 1 FROM import_batches WHERE account_id=?1 UNION ALL SELECT 1 FROM scheduled_transactions WHERE account_id=?1 OR transfer_account_id=?1 UNION ALL SELECT 1 FROM savings_goals WHERE account_id=?1 UNION ALL SELECT 1 FROM debt_terms WHERE account_id=?1)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if has_history { return Err("Currency cannot be changed after an account has activity or linked planning data".into()); }
+    }
+    if account_type != "savings" {
+        let has_goal: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM savings_goals WHERE account_id=?1)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if has_goal { return Err("Remove this account's savings goal before changing its type".into()); }
+    }
+    if account_type != "credit" && account_type != "loan" {
+        let has_debt_terms: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM debt_terms WHERE account_id=?1)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if has_debt_terms { return Err("Remove this account from its debt plan before changing its type".into()); }
+    }
+    connection.execute("UPDATE accounts SET name=?2, institution=?3, account_type=?4, currency=?5, owner_label=?6, modified_at=CURRENT_TIMESTAMP WHERE id=?1", params![account_id, name, institution, account_type, currency, owner_label]).map_err(|e| e.to_string())?;
+    connection.query_row("SELECT a.id, a.name, a.institution, a.account_type, a.currency, a.opening_balance_minor + COALESCE((SELECT SUM(t.amount_minor) FROM transactions t WHERE t.account_id=a.id), 0), a.owner_label, EXISTS(SELECT 1 FROM transactions review WHERE review.account_id=a.id AND review.status='review'), a.sort_order, a.archived_at IS NOT NULL FROM accounts a WHERE a.id=?1", [account_id], |row| Ok(Account { id: row.get(0)?, name: row.get(1)?, institution: row.get(2)?, r#type: row.get(3)?, currency: row.get(4)?, balance_minor: row.get(5)?, owner_label: row.get(6)?, needs_review: row.get(7)?, sort_order: row.get(8)?, archived: row.get(9)? })).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_account(account_id: String, request: UpdateAccountRequest, state: State<DbState>) -> Result<Account, String> {
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    update_account_inner(&connection, &account_id, request)
+}
+
+fn set_account_archived_inner(connection: &Connection, account_id: &str, archived: bool) -> Result<(), String> {
+    let current: Option<bool> = connection.query_row("SELECT archived_at IS NOT NULL FROM accounts WHERE id=?1", [account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let Some(current) = current else { return Err("Account does not exist".into()); };
+    if current == archived { return Ok(()); }
+    if archived {
+        let unresolved: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id=?1 AND status IN ('pending','review'))", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if unresolved { return Err("Resolve pending and review transactions before archiving this account".into()); }
+        let active_schedule: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM scheduled_transactions WHERE (account_id=?1 OR transfer_account_id=?1) AND enabled=1 AND archived_at IS NULL)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if active_schedule { return Err("Disable or archive scheduled transactions for this account first".into()); }
+        let has_goal: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM savings_goals WHERE account_id=?1)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if has_goal { return Err("Remove this account's savings goal before archiving it".into()); }
+        let enabled_debt: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM debt_terms WHERE account_id=?1 AND enabled=1)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if enabled_debt { return Err("Disable this account in its debt plan before archiving it".into()); }
+        connection.execute("UPDATE accounts SET archived_at=CURRENT_TIMESTAMP, modified_at=CURRENT_TIMESTAMP WHERE id=?1", [account_id]).map_err(|e| e.to_string())?;
+    } else {
+        connection.execute("UPDATE accounts SET archived_at=NULL, sort_order=(SELECT COALESCE(MAX(sort_order), -1) + 1 FROM accounts WHERE archived_at IS NULL), modified_at=CURRENT_TIMESTAMP WHERE id=?1", [account_id]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_account_archived(account_id: String, archived: bool, state: State<DbState>) -> Result<(), String> {
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    set_account_archived_inner(&connection, &account_id, archived)
+}
+
+fn reorder_accounts_inner(connection: &mut Connection, account_ids: &[String]) -> Result<(), String> {
+    if account_ids.len() > 10_000 { return Err("Account order is too large".into()); }
+    let unique: HashSet<&String> = account_ids.iter().collect();
+    if unique.len() != account_ids.len() { return Err("An account was included more than once".into()); }
+    let mut statement = connection.prepare("SELECT id FROM accounts WHERE archived_at IS NULL").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let active_ids: HashSet<String> = rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    drop(statement);
+    if active_ids.len() != account_ids.len() || account_ids.iter().any(|id| !active_ids.contains(id)) { return Err("Account order must include every active account exactly once".into()); }
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    for (sort_order, id) in account_ids.iter().enumerate() {
+        tx.execute("UPDATE accounts SET sort_order=?2, modified_at=CURRENT_TIMESTAMP WHERE id=?1", params![id, sort_order as i64]).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reorder_accounts(account_ids: Vec<String>, state: State<DbState>) -> Result<(), String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    reorder_accounts_inner(&mut connection, &account_ids)
 }
 
 #[derive(Deserialize)]
@@ -2095,7 +2190,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

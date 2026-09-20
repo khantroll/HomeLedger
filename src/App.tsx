@@ -8,6 +8,7 @@ import { TransactionDialog } from "./TransactionDialog";
 import { TransferDialog } from "./TransferDialog";
 import { ReconciliationDialog } from "./ReconciliationDialog";
 import "./register.css";
+import "./accountLifecycle.css";
 import { RulesPage } from "./RulesPage";
 import { BillsPage } from "./BillsPage";
 import { BudgetPage } from "./BudgetPage";
@@ -18,7 +19,7 @@ import { AccountRegister, type RegisterDialogRequest } from "./AccountRegister";
 import { addDaysIso, formatDate, occurrenceDisplayState, occurrenceStateLabel, todayIso } from "./scheduledPresentation";
 
 type EditorDialog =
-  | "account"
+  | { kind: "account"; account?: Account }
   | { kind: "transaction"; transaction?: Transaction; accountId?: string }
   | { kind: "transfer"; transaction?: Transaction; accountId?: string }
   | { kind: "reconciliation"; account: Account }
@@ -44,7 +45,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     try {
       const [nextAccounts, nextTransactions, nextTemplates] = await Promise.all([
-        repository.listAccounts(),
+        repository.listAccounts(true),
         repository.listTransactions(),
         repository.listScheduledTransactions(),
       ]);
@@ -68,8 +69,9 @@ export default function App() {
     void refresh();
   }, [refresh]);
 
-  const assets = useMemo(() => sumMoney(accounts.filter((a) => a.balanceMinor > 0).map((a) => a.balanceMinor)), [accounts]);
-  const liabilities = useMemo(() => sumMoney(accounts.filter((a) => a.balanceMinor < 0).map((a) => a.balanceMinor)), [accounts]);
+  const activeAccounts = useMemo(() => accounts.filter(account => !account.archived), [accounts]);
+  const assets = useMemo(() => sumMoney(activeAccounts.filter((a) => a.balanceMinor > 0).map((a) => a.balanceMinor)), [activeAccounts]);
+  const liabilities = useMemo(() => sumMoney(activeAccounts.filter((a) => a.balanceMinor < 0).map((a) => a.balanceMinor)), [activeAccounts]);
   const reviewCount = useMemo(() => transactions.filter((item) => item.status === "review").length, [transactions]);
 
   function openNav(label: string) {
@@ -136,17 +138,17 @@ export default function App() {
         </header>
         <section className="content">
           {active === "Imports" ? (
-            <ImportPage accounts={accounts} transactions={transactions} onImported={refresh} />
+            <ImportPage accounts={activeAccounts} transactions={transactions} onImported={refresh} />
           ) : active === "Rules" ? (
             <RulesPage />
           ) : active === "Budget" ? (
-            <BudgetPage transactions={transactions} accounts={accounts} />
+            <BudgetPage transactions={transactions} accounts={activeAccounts} />
           ) : active === "Bills" ? (
-            <BillsPage accounts={accounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} />
+            <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} />
           ) : active === "Forecast" ? (
-            <ForecastPage accounts={accounts} templates={scheduledTemplates} />
+            <ForecastPage accounts={activeAccounts} templates={scheduledTemplates} />
           ) : active === "Debt" ? (
-            <DebtPage accounts={accounts} />
+            <DebtPage accounts={activeAccounts} />
           ) : active === "Reports" ? (
             <ReportsPage accounts={accounts} transactions={transactions} />
           ) : active === "Settings" ? (
@@ -161,7 +163,7 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <AccountRegister accounts={accounts} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
+              <AccountRegister accounts={activeAccounts} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
             </>
           ) : active === "Accounts" ? (
             <>
@@ -179,14 +181,14 @@ export default function App() {
                     </button>
                   </div>
                   <AccountRegister
-                    accounts={accounts}
+                    accounts={activeAccounts}
                     lockedAccountId={registerAccountId}
                     refreshToken={registerToken}
                     onRequestDialog={handleRegisterDialog}
                   />
                 </div>
               ) : (
-                <AccountsPage accounts={accounts} onAdd={() => setDialog("account")} onOpenRegister={openAccountRegister} onReconcile={(account) => setDialog({ kind: "reconciliation", account })} />
+                <AccountsPage accounts={accounts} onAdd={() => setDialog({ kind: "account" })} onEdit={(account) => setDialog({ kind: "account", account })} onChanged={refresh} onOpenRegister={openAccountRegister} onReconcile={(account) => setDialog({ kind: "reconciliation", account })} />
               )}
             </>
           ) : (
@@ -203,19 +205,19 @@ export default function App() {
                 <Summary label="Net worth" value={formatMoney(assets + liabilities)} detail="Based on tracked accounts" />
                 <Summary label="Needs review" value={String(reviewCount)} detail="Transactions requiring attention" tone="warning" />
               </div>
-              <UpcomingScheduled accounts={accounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} />
+              <UpcomingScheduled accounts={activeAccounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} />
               <section className="panel overview-accounts">
                 <div className="panel-heading">
                   <div>
                     <h2>Accounts</h2>
                     <p>Open a register to review activity</p>
                   </div>
-                  <button onClick={() => setDialog("account")}>+ Add account</button>
+                  <button onClick={() => setDialog({ kind: "account" })}>+ Add account</button>
                 </div>
-                {accounts.length === 0 ? (
+                {activeAccounts.length === 0 ? (
                   <Empty text="Add your first local account." />
                 ) : (
-                  accounts
+                  activeAccounts
                     .filter((account) => {
                       if (!query.trim()) return true;
                       const haystack = `${account.name} ${account.institution ?? ""} ${account.ownerLabel}`.toLowerCase();
@@ -227,7 +229,7 @@ export default function App() {
                           <WalletCards size={17} />
                         </div>
                         <div>
-                          <strong>{account.name}</strong>
+                          <strong>{account.name} {account.needsReview && <span className="review-badge">Needs review</span>}</strong>
                           <small>{[account.institution, account.ownerLabel].filter(Boolean).join(" · ")}</small>
                         </div>
                         <div className="account-balance">
@@ -244,8 +246,9 @@ export default function App() {
           )}
         </section>
       </main>
-      {dialog === "account" && (
+      {dialog?.kind === "account" && (
         <AccountDialog
+          account={dialog.account}
           onClose={() => setDialog(null)}
           onSaved={async () => {
             setDialog(null);
@@ -253,9 +256,9 @@ export default function App() {
           }}
         />
       )}
-      {dialog && dialog !== "account" && dialog.kind === "transaction" && (
+      {dialog?.kind === "transaction" && (
         <TransactionDialog
-          accounts={accounts}
+          accounts={activeAccounts}
           transaction={dialog.transaction}
           defaultAccountId={dialog.accountId}
           onClose={() => setDialog(null)}
@@ -265,9 +268,9 @@ export default function App() {
           }}
         />
       )}
-      {dialog && dialog !== "account" && dialog.kind === "transfer" && (
+      {dialog?.kind === "transfer" && (
         <TransferDialog
-          accounts={accounts}
+          accounts={activeAccounts}
           transaction={dialog.transaction}
           defaultFromAccountId={dialog.accountId}
           onClose={() => setDialog(null)}
@@ -277,7 +280,7 @@ export default function App() {
           }}
         />
       )}
-      {dialog && dialog !== "account" && dialog.kind === "reconciliation" && (
+      {dialog?.kind === "reconciliation" && (
         <ReconciliationDialog
           account={dialog.account}
           onClose={() => setDialog(null)}
@@ -307,27 +310,57 @@ function StorageNotice() {
 function AccountsPage({
   accounts,
   onAdd,
+  onEdit,
+  onChanged,
   onOpenRegister,
   onReconcile,
 }: {
   accounts: Account[];
   onAdd: () => void;
+  onEdit: (account: Account) => void;
+  onChanged: () => Promise<void>;
   onOpenRegister: (accountId: string) => void;
   onReconcile: (account: Account) => void;
 }) {
+  const [actionError, setActionError] = useState("");
+  const [busyId, setBusyId] = useState("");
+  const activeAccounts = accounts.filter(account => !account.archived);
+  const archivedAccounts = accounts.filter(account => account.archived);
+
+  async function move(accountId: string, direction: -1 | 1) {
+    const index = activeAccounts.findIndex(account => account.id === accountId);
+    const destination = index + direction;
+    if (index < 0 || destination < 0 || destination >= activeAccounts.length) return;
+    const ids = activeAccounts.map(account => account.id);
+    [ids[index], ids[destination]] = [ids[destination], ids[index]];
+    await runAction(accountId, () => repository.reorderAccounts(ids));
+  }
+
+  async function runAction(accountId: string, action: () => Promise<void>) {
+    setBusyId(accountId);
+    setActionError("");
+    try {
+      await action();
+      await onChanged();
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusyId("");
+    }
+  }
+
   return (
-    <section className="panel accounts-list">
-      <div className="panel-heading">
-        <div>
-          <h2>Accounts</h2>
-          <p>Select an account to open its Money-style register</p>
+    <div className="account-management">
+      {actionError && <div className="error-banner" role="alert">{actionError}</div>}
+      <section className="panel accounts-list">
+        <div className="panel-heading">
+          <div>
+            <h2>Accounts</h2>
+            <p>Select an account to open its Money-style register</p>
+          </div>
+          <button onClick={onAdd}>+ Add account</button>
         </div>
-        <button onClick={onAdd}>+ Add account</button>
-      </div>
-      {accounts.length === 0 ? (
-        <Empty text="Add your first local account." />
-      ) : (
-        accounts.map((account) => (
+        {activeAccounts.length === 0 ? <Empty text="Add your first local account." /> : activeAccounts.map((account, index) => (
           <div
             className="account-row"
             key={account.id}
@@ -345,7 +378,7 @@ function AccountsPage({
               <WalletCards size={17} />
             </div>
             <div>
-              <strong>{account.name}</strong>
+              <strong>{account.name} {account.needsReview && <span className="review-badge">Needs review</span>}</strong>
               <small>{[account.institution, account.ownerLabel, accountTypeLabel(account.type)].filter(Boolean).join(" · ")}</small>
             </div>
             <div className="account-balance">
@@ -367,12 +400,43 @@ function AccountsPage({
                 >
                   Reconcile
                 </button>
+                <button onClick={(event) => { event.stopPropagation(); onEdit(account); }}>Edit</button>
+                <button disabled={busyId === account.id || index === 0} aria-label={`Move ${account.name} up`} onClick={(event) => { event.stopPropagation(); void move(account.id, -1); }}>↑</button>
+                <button disabled={busyId === account.id || index === activeAccounts.length - 1} aria-label={`Move ${account.name} down`} onClick={(event) => { event.stopPropagation(); void move(account.id, 1); }}>↓</button>
+                <button
+                  className="danger-link"
+                  disabled={busyId === account.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (window.confirm(`Archive ${account.name}? Its history will remain in reports.`)) void runAction(account.id, () => repository.setAccountArchived(account.id, true));
+                  }}
+                >
+                  Archive
+                </button>
               </div>
             </div>
           </div>
-        ))
+        ))}
+      </section>
+      {archivedAccounts.length > 0 && (
+        <section className="panel accounts-list archived-accounts">
+          <div className="panel-heading"><div><h2>Archived accounts</h2><p>History remains available in reports and backups</p></div></div>
+          {archivedAccounts.map(account => (
+            <div className="account-row archived" key={account.id}>
+              <div className={`account-icon ${account.type}`}><WalletCards size={17} /></div>
+              <div><strong>{account.name}</strong><small>{[account.institution, account.ownerLabel, accountTypeLabel(account.type)].filter(Boolean).join(" · ")}</small></div>
+              <div className="account-balance">
+                <span className={account.balanceMinor < 0 ? "negative" : ""}>{formatMoney(account.balanceMinor, account.currency)}</span>
+                <div className="account-row-actions">
+                  <button onClick={() => onEdit(account)}>Edit</button>
+                  <button disabled={busyId === account.id} onClick={() => void runAction(account.id, () => repository.setAccountArchived(account.id, false))}>Restore</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </section>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -473,7 +537,7 @@ export function UpcomingScheduled({
   );
 }
 
-function AccountDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => Promise<void> }) {
+function AccountDialog({ account, onClose, onSaved }: { account?: Account; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -482,14 +546,15 @@ function AccountDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () 
     setError("");
     const data = new FormData(event.currentTarget);
     try {
-      await repository.createAccount({
+      const details = {
         name: String(data.get("name") || "").trim(),
         institution: String(data.get("institution") || "").trim() || undefined,
         type: String(data.get("type")) as AccountType,
-        currency: "USD",
-        openingBalanceMinor: parseMoney(String(data.get("balance") || "0")),
+        currency: String(data.get("currency") || "").trim().toUpperCase(),
         ownerLabel: String(data.get("owner") || "Household").trim(),
-      });
+      };
+      if (account) await repository.updateAccount(account.id, details);
+      else await repository.createAccount({ ...details, openingBalanceMinor: parseMoney(String(data.get("balance") || "0")) });
       await onSaved();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -497,20 +562,20 @@ function AccountDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () 
     }
   }
   return (
-    <Dialog title="Add account" onClose={onClose}>
+    <Dialog title={account ? "Edit account" : "Add account"} onClose={onClose}>
       <form onSubmit={submit} className="entry-form">
         <label>
           Account name
-          <input name="name" required maxLength={80} autoFocus />
+          <input name="name" required maxLength={80} defaultValue={account?.name} autoFocus />
         </label>
         <label>
           Institution
-          <input name="institution" maxLength={80} />
+          <input name="institution" maxLength={80} defaultValue={account?.institution} />
         </label>
         <div className="form-row">
           <label>
             Type
-            <select name="type" defaultValue="checking">
+            <select name="type" defaultValue={account?.type ?? "checking"}>
               <option value="checking">Checking</option>
               <option value="savings">Savings</option>
               <option value="credit">Credit card</option>
@@ -519,14 +584,28 @@ function AccountDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () 
               <option value="asset">Asset</option>
             </select>
           </label>
-          <label>
-            Opening balance
-            <input name="balance" inputMode="decimal" defaultValue="0.00" required />
-          </label>
+          {account ? (
+            <label>
+              Currency
+              <input name="currency" list="currency-codes" defaultValue={account.currency} required maxLength={3} pattern="[A-Za-z]{3}" autoCapitalize="characters" />
+            </label>
+          ) : (
+            <label>
+              Opening balance
+              <input name="balance" inputMode="decimal" defaultValue="0.00" required />
+            </label>
+          )}
         </div>
+        {!account && (
+          <label>
+            Currency
+            <input name="currency" list="currency-codes" defaultValue="USD" required maxLength={3} pattern="[A-Za-z]{3}" autoCapitalize="characters" />
+          </label>
+        )}
+        <datalist id="currency-codes"><option value="USD" /><option value="CAD" /><option value="EUR" /><option value="GBP" /><option value="AUD" /></datalist>
         <label>
           Owner
-          <input name="owner" defaultValue="Household" required maxLength={80} />
+          <input name="owner" defaultValue={account?.ownerLabel ?? "Household"} required maxLength={80} />
         </label>
         {error && <p className="form-error">{error}</p>}
         <FormActions onCancel={onClose} saving={saving} />

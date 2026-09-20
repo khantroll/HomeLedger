@@ -54,4 +54,33 @@ describe("App navigation shell", () => {
     expect(await screen.findByRole("heading", { name: "All accounts" })).toBeTruthy();
     expect(screen.getByLabelText("Filter register by account")).toBeTruthy();
   });
+
+  it("shows review and archived account lifecycle controls and saves account edits", async () => {
+    const user = userEvent.setup();
+    const lifecycleAccounts: Account[] = [
+      { ...accounts[0], needsReview: true, sortOrder: 0, archived: false },
+      { ...accounts[1], sortOrder: 1, archived: true },
+    ];
+    vi.spyOn(repositoryModule.financeRepository, "listAccounts").mockResolvedValue(lifecycleAccounts);
+    vi.spyOn(repositoryModule.financeRepository, "listTransactions").mockResolvedValue(transactions);
+    vi.spyOn(repositoryModule.financeRepository, "listScheduledTransactions").mockResolvedValue([]);
+    vi.spyOn(repositoryModule.financeRepository, "generateScheduledOccurrences").mockResolvedValue(0);
+    vi.spyOn(repositoryModule.financeRepository, "listScheduledOccurrences").mockResolvedValue([]);
+    const update = vi.spyOn(repositoryModule.financeRepository, "updateAccount").mockResolvedValue({ ...lifecycleAccounts[0], name: "Primary Checking" });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Overview" });
+    expect(screen.getAllByText("Needs review").length).toBeGreaterThan(1);
+    expect(screen.queryByText("Emergency Savings")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Accounts" }));
+    expect(screen.getByRole("heading", { name: "Archived accounts" })).toBeTruthy();
+    expect(screen.getByText("Emergency Savings")).toBeTruthy();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const name = screen.getByLabelText("Account name");
+    await user.clear(name);
+    await user.type(name, "Primary Checking");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(update).toHaveBeenCalledWith("checking", expect.objectContaining({ name: "Primary Checking", currency: "USD" }));
+  });
 });
