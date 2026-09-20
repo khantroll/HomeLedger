@@ -13,7 +13,14 @@ const transactions:Transaction[]=[
 ];
 const templates:ScheduledTransaction[]=[];
 const occurrences:ScheduledOccurrence[]=[];
-const budgets:BudgetMonth[]=[];
+const budgets:BudgetMonth[]=[{
+  month:"2026-09",
+  plannedMinor:50_000,
+  spentMinor:1_234,
+  carryInMinor:0,
+  availableMinor:48_766,
+  lines:[{id:"b-food",category:"Food",rolloverEnabled:false,plannedMinor:50_000,spentMinor:1_234,carryInMinor:0,availableMinor:48_766}]
+}];
 
 describe("AI Insights privacy review",()=>{
   it("builds a localhost aggregate preview without offering browser transmission",async()=>{
@@ -54,6 +61,19 @@ describe("AI Insights privacy review",()=>{
     expect(screen.getByText(/HomeLedger spending findings/i)).toBeTruthy();
     expect(screen.getByText(/Task-specific Spending Change Analysis/)).toBeTruthy();
     expect(screen.getByText(/"task": "spending-change-analysis"/)).toBeTruthy();
+    expect(screen.queryByText(/Neighborhood Market/)).toBeNull();
+    expect(screen.queryByText(/Household Checking/)).toBeNull();
+  });
+
+  it("builds a budget-review preview with local findings and sanitized payload",async()=>{
+    const user=userEvent.setup();
+    render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets} today="2026-09-20"/>);
+    await user.click(screen.getByText(/^Budget Review$/i));
+    await user.type(screen.getByLabelText("Model name",{exact:true}),"qwen3.5:9b");
+    await user.click(screen.getByRole("button",{name:/Build exact preview/}));
+    expect(screen.getByText(/HomeLedger budget review/i)).toBeTruthy();
+    expect(screen.getByText(/Task-specific Budget Review/)).toBeTruthy();
+    expect(screen.getByText(/"task": "budget-review-analysis"/)).toBeTruthy();
     expect(screen.queryByText(/Neighborhood Market/)).toBeNull();
     expect(screen.queryByText(/Household Checking/)).toBeNull();
   });
