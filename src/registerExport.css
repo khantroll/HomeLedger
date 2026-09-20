@@ -1,0 +1,2 @@
+.register-heading-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:650px){.register-ledger .panel-heading{align-items:stretch;display:grid;gap:9px}.register-heading-actions{justify-content:flex-start}}

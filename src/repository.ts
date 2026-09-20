@@ -61,6 +61,16 @@ class TauriFinanceRepository implements FinanceRepository {
 export const isNativeApp = "__TAURI_INTERNALS__" in window;
 export const financeRepository: FinanceRepository = isNativeApp ? new TauriFinanceRepository() : new DemoFinanceRepository();
 
+export interface CsvExportRepository { saveCsv(contents:string,fileName:string):Promise<boolean>; }
+class TauriCsvExportRepository implements CsvExportRepository { saveCsv(contents:string,fileName:string):Promise<boolean>{return invoke("save_csv_file",{contents,fileName});} }
+class BrowserCsvExportRepository implements CsvExportRepository {
+  async saveCsv(contents:string,fileName:string):Promise<boolean>{
+    const url=URL.createObjectURL(new Blob([contents],{type:"text/csv;charset=utf-8"})),link=document.createElement("a");
+    link.href=url;link.download=fileName;link.style.display="none";document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);return true;
+  }
+}
+export const csvExportRepository:CsvExportRepository=isNativeApp?new TauriCsvExportRepository():new BrowserCsvExportRepository();
+
 class TauriBackupRepository implements BackupRepository {
   exportSnapshot(): Promise<string> { return invoke("export_backup_snapshot"); }
   saveEncryptedFile(contents: string): Promise<boolean> { return invoke("save_backup_file", { contents }); }

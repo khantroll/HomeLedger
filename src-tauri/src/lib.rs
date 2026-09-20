@@ -20,6 +20,7 @@ const MAX_WORKBOOK_COLUMNS: usize = 256;
 const MAX_WORKBOOK_CELLS: usize = 500_000;
 const MAX_WORKBOOK_CELL_CHARS: usize = 20_000;
 const MAX_PDF_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CSV_EXPORT_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2209,6 +2210,23 @@ fn save_backup_file(contents: String, app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
+fn validate_csv_export(contents: &str, file_name: &str) -> Result<(), String> {
+    if contents.is_empty() { return Err("The CSV export is empty".into()); }
+    if contents.len() > MAX_CSV_EXPORT_BYTES { return Err("CSV exports are limited to 50 MB".into()); }
+    if contents.contains('\0') { return Err("The CSV export contains invalid data".into()); }
+    if file_name.is_empty() || file_name.len() > 120 || file_name.contains('/') || file_name.contains('\\') || !file_name.to_ascii_lowercase().ends_with(".csv") { return Err("The CSV export filename is invalid".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_csv_file(contents: String, file_name: String, app: AppHandle) -> Result<bool, String> {
+    validate_csv_export(&contents, &file_name)?;
+    let Some(file) = app.dialog().file().add_filter("Comma-separated values", &["csv"]).set_file_name(&file_name).blocking_save_file() else { return Ok(false); };
+    let path = file.into_path().map_err(|_| "The selected CSV destination is not a local file".to_string())?;
+    std::fs::write(path, contents.as_bytes()).map_err(|e| format!("Could not write the CSV export: {e}"))?;
+    Ok(true)
+}
+
 #[tauri::command]
 fn choose_backup_file(app: AppHandle) -> Result<Option<String>, String> {
     let Some(file) = app.dialog().file().add_filter("HomeLedger encrypted backup", &["hlb"]).blocking_pick_file() else { return Ok(None); };
@@ -2237,7 +2255,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }
