@@ -6,6 +6,8 @@ import type { PdfExtraction, PdfRepository } from "./pdfImport";
 
 class TauriFinanceRepository implements FinanceRepository {
   listAccounts(includeArchived=false): Promise<Account[]> { return invoke("list_accounts", { includeArchived }); }
+  listCategories():Promise<string[]>{return invoke("list_categories");}
+  listPayees():Promise<string[]>{return invoke("list_payees");}
   listTransactions(accountId?: string): Promise<Transaction[]> { return invoke("list_transactions", { accountId: accountId ?? null }); }
   listTransactionsPage(query: TransactionQuery = {}): Promise<TransactionPage> { return invoke("list_transactions_page", { request: query }); }
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]> { return invoke("list_reconciliation_transactions", { accountId, statementEndDate }); }

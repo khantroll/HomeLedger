@@ -39,12 +39,27 @@ export class DemoFinanceRepository implements FinanceRepository {
   private budgetAllocations:BudgetAllocation[]=[];
   private savingsGoals:SavingsGoal[]=[];
   private debtPlans=new Map<string,DebtPlan>();
+  private categoryMemory=new Set(initialTransactions.map(item=>item.category).filter(isRememberedCategory));
+  private payeeMemory=new Set(initialTransactions.map(item=>item.payee));
 
   async listAccounts(includeArchived = false): Promise<Account[]> {
     return structuredClone(this.accounts
       .filter(account => includeArchived || !account.archived)
       .map(account => ({ ...account, needsReview: this.transactions.some(transaction => transaction.accountId === account.id && transaction.status === "review") }))
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)));
+  }
+  async listCategories():Promise<string[]>{
+    this.transactions.forEach(item=>{if(isRememberedCategory(item.category))this.categoryMemory.add(item.category.trim());item.splits?.forEach(split=>this.categoryMemory.add(split.category.trim()));});
+    this.scheduledTransactions.forEach(item=>{if(item.kind==="transaction"&&isRememberedCategory(item.category))this.categoryMemory.add(item.category.trim());});
+    this.budgetCategories.forEach(item=>this.categoryMemory.add(item.category.trim()));
+    this.merchantRules.forEach(item=>{if(item.category?.trim())this.categoryMemory.add(item.category.trim());});
+    return [...this.categoryMemory].filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  }
+  async listPayees():Promise<string[]>{
+    this.transactions.forEach(item=>this.payeeMemory.add(item.payee.trim()));
+    this.scheduledTransactions.forEach(item=>this.payeeMemory.add(item.payee.trim()));
+    this.merchantRules.forEach(item=>{if(item.renameTo?.trim())this.payeeMemory.add(item.renameTo.trim());});
+    return [...this.payeeMemory].filter(Boolean).sort((a,b)=>a.localeCompare(b));
   }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
     const rows = accountId ? this.transactions.filter((item) => item.accountId === accountId) : this.transactions;
@@ -398,6 +413,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   }
 }
 
+function isRememberedCategory(value:string):boolean{const category=value.trim();return Boolean(category)&&category!=="Split transaction"&&!category.startsWith("Transfer:");}
 function validateAccountDetails(input:UpdateAccountInput):Pick<Account,"name"|"institution"|"type"|"currency"|"ownerLabel">{
   const name=input.name.trim(),institution=input.institution?.trim()||undefined,ownerLabel=input.ownerLabel.trim();
   if(!name)throw new Error("Account name is required");if(name.length>80)throw new Error("Account name is too long");

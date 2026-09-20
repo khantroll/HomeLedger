@@ -52,6 +52,15 @@ describe("finance repository contract", () => {
     expect((await repository.listAccounts()).find(item => item.id === account.id)?.balanceMinor).toBe(7500);
   });
 
+  it("shares remembered categories and payees across ledger and planning workflows", async () => {
+    const repository = new DemoFinanceRepository();
+    const account = await repository.createAccount({ name: "Catalog", type: "checking", currency: "USD", openingBalanceMinor: 0, ownerLabel: "Household" });
+    await repository.createTransaction({ accountId: account.id, postedDate: "2026-09-20", payee: "Corner Bakery", category: "Food: Dining", amountMinor: -1200, status: "cleared" });
+    await repository.createBudgetCategory({ category: "Home: Repairs", rolloverEnabled: true });
+    expect(await repository.listCategories()).toEqual(expect.arrayContaining(["Food: Dining", "Home: Repairs"]));
+    expect(await repository.listPayees()).toContain("Corner Bakery");
+  });
+
   it("retains import history and reverses a complete batch", async () => {
     const repository = new DemoFinanceRepository();
     const account = await repository.createAccount({ name: "Import Account", type: "checking", currency: "USD", openingBalanceMinor: 10000, ownerLabel: "Household" });

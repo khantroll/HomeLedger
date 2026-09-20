@@ -82,6 +82,8 @@ export interface TransactionPage {
 
 export interface FinanceRepository {
   listAccounts(includeArchived?: boolean): Promise<Account[]>;
+  listCategories(): Promise<string[]>;
+  listPayees(): Promise<string[]>;
   listTransactions(accountId?: string): Promise<Transaction[]>;
   listTransactionsPage(query?: TransactionQuery): Promise<TransactionPage>;
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]>;
