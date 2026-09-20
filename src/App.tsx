@@ -166,7 +166,7 @@ export default function App() {
           ) : active === "Settings" ? (
             <BackupPage onRestored={refresh} />
           ) : active === "AI Insights" ? (
-            <AiInsightsPage accounts={activeAccounts} transactions={transactions} />
+            <AiInsightsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} />
           ) : active === "Transactions" ? (
             <>
               <StorageNotice />

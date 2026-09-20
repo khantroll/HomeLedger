@@ -1,8 +1,31 @@
 import {useEffect,useMemo,useState,type FormEvent} from "react";
-import {Bot,Eye,LockKeyhole,Send,Server,ShieldCheck,Wifi} from "lucide-react";
-import type {Account,Transaction} from "./domain";
-import {buildAiFirewallPreview,LOCAL_PROVIDER_PRESETS,validateLocalAiProvider,type AiDisclosureMode,type AiFirewallPreview,type CustomDisclosureField,type LocalAiProviderKind} from "./aiPrivacy";
-import {aiRepository,isNativeApp} from "./repository";
+import {Bot,Eye,KeyRound,LockKeyhole,Send,Server,ShieldCheck,Wifi} from "lucide-react";
+import type {Account,BudgetMonth,DebtPlan,SavingsGoal,ScheduledOccurrence,ScheduledTransaction,Transaction} from "./domain";
+import {parseMoney} from "./domain";
+import {
+  buildAiFirewallPreview,
+  buildAiTaskFirewallPreview,
+  LOCAL_PROVIDER_PRESETS,
+  prepareReviewedTransmission,
+  validateLocalAiProvider,
+  type AiAnalysisMode,
+  type AiDisclosureMode,
+  type AiFirewallPreview,
+  type CustomDisclosureField,
+  type LocalAiProviderKind
+} from "./aiPrivacy";
+import {
+  CLOUD_PROVIDER_PRESETS,
+  cloudProviderDescriptor,
+  localProviderDescriptor,
+  validateProviderEndpoint,
+  type CloudProviderDraft
+} from "./aiProvider";
+import {buildAffordabilityAnalysisContext} from "./aiTaskContext";
+import {validateCredentialAccountId,validateCredentialSecret} from "./aiCredentials";
+import {aiRepository,financeRepository as repository,isNativeApp} from "./repository";
+import {addDaysIso,todayIso} from "./scheduledPresentation";
+import {forecastMonths} from "./forecastMath";
 import "./aiInsights.css";
 import "./aiLocalAdapter.css";
 
@@ -14,29 +37,237 @@ const disclosureOptions:{value:AiDisclosureMode;label:string;detail:string}[]=[
 ];
 const customOptions:{value:CustomDisclosureField;label:string}[]=[{value:"accountType",label:"Account type"},{value:"month",label:"Transaction month"},{value:"amountBand",label:"$10 amount band"},{value:"merchantAlias",label:"Merchant alias"},{value:"categoryAlias",label:"Category alias"}];
 
-export function AiInsightsPage({accounts,transactions}:{accounts:Account[];transactions:Transaction[]}){
-  const [kind,setKind]=useState<LocalAiProviderKind>("ollama"),[endpoint,setEndpoint]=useState(LOCAL_PROVIDER_PRESETS.ollama.endpoint),[model,setModel]=useState(""),[purpose,setPurpose]=useState(""),[mode,setMode]=useState<AiDisclosureMode>("aggregate"),[customFields,setCustomFields]=useState<Set<CustomDisclosureField>>(new Set(["accountType","month","amountBand"])),[preview,setPreview]=useState<AiFirewallPreview|null>(null),[error,setError]=useState(""),[connectionNotice,setConnectionNotice]=useState(""),[testing,setTesting]=useState(false),[sending,setSending]=useState(false),[answer,setAnswer]=useState("");
-  const providerLabel=kind==="ollama"?"Ollama":kind==="lm-studio"?"LM Studio":"OpenAI-compatible localhost";
+export function AiInsightsPage({
+  accounts,
+  transactions,
+  templates,
+  occurrences,
+  budgets,
+  today=todayIso()
+}:{
+  accounts:Account[];
+  transactions:Transaction[];
+  templates:ScheduledTransaction[];
+  occurrences:ScheduledOccurrence[];
+  budgets:BudgetMonth[];
+  today?:string;
+}){
+  const currencies=useMemo(()=>[...new Set(accounts.map(item=>item.currency))].sort(),[accounts]);
+  const [analysisMode,setAnalysisMode]=useState<AiAnalysisMode>("task");
+  const [kind,setKind]=useState<LocalAiProviderKind>("ollama");
+  const [endpoint,setEndpoint]=useState(LOCAL_PROVIDER_PRESETS.ollama.endpoint);
+  const [model,setModel]=useState("");
+  const [purpose,setPurpose]=useState("Can I afford another $50 per month?");
+  const [proposedCost,setProposedCost]=useState("50.00");
+  const [currency,setCurrency]=useState(currencies[0]??"USD");
+  const [mode,setMode]=useState<AiDisclosureMode>("aggregate");
+  const [customFields,setCustomFields]=useState<Set<CustomDisclosureField>>(new Set(["accountType","month","amountBand"]));
+  const [preview,setPreview]=useState<AiFirewallPreview|null>(null);
+  const [error,setError]=useState("");
+  const [connectionNotice,setConnectionNotice]=useState("");
+  const [testing,setTesting]=useState(false);
+  const [sending,setSending]=useState(false);
+  const [answer,setAnswer]=useState("");
+  const [debtPlan,setDebtPlan]=useState<DebtPlan|undefined>();
+  const [savingsGoals,setSavingsGoals]=useState<SavingsGoal[]>([]);
+  const [taskBudgets,setTaskBudgets]=useState<BudgetMonth[]>(budgets);
+  const [taskOccurrences,setTaskOccurrences]=useState<ScheduledOccurrence[]>(occurrences);
+
+  const [cloudType,setCloudType]=useState<CloudProviderDraft["type"]>("openai");
+  const [cloudEndpoint,setCloudEndpoint]=useState(CLOUD_PROVIDER_PRESETS.openai.endpoint);
+  const [cloudModel,setCloudModel]=useState("");
+  const [cloudSecret,setCloudSecret]=useState("");
+  const [cloudConfigured,setCloudConfigured]=useState(false);
+  const [cloudNotice,setCloudNotice]=useState("");
+  const [cloudBusy,setCloudBusy]=useState(false);
+
   const payloadSize=useMemo(()=>preview?new TextEncoder().encode(preview.payload).byteLength:0,[preview]);
-  useEffect(()=>{setPreview(null);setAnswer("");},[accounts,transactions]);
-  function changeKind(next:LocalAiProviderKind){setKind(next);if(next==="ollama")setEndpoint(LOCAL_PROVIDER_PRESETS.ollama.endpoint);else if(next==="lm-studio")setEndpoint(LOCAL_PROVIDER_PRESETS["lm-studio"].endpoint);setPreview(null);setAnswer("");setConnectionNotice("");setError("");}
-  function submit(event:FormEvent){event.preventDefault();setError("");setAnswer("");try{setPreview(buildAiFirewallPreview({provider:{kind,endpoint,model},purpose,mode,accounts,transactions,customFields:[...customFields]}));}catch(reason){setPreview(null);setError(reason instanceof Error?reason.message:String(reason));}}
-  async function testConnection(){setTesting(true);setError("");setConnectionNotice("");try{const provider=validateLocalAiProvider({kind,endpoint,model:model.trim()||"connection-test"});await aiRepository.testConnection(provider.endpoint);setConnectionNotice("Local provider responded successfully.");}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setTesting(false);}}
-  async function sendReviewed(){if(!preview)return;setSending(true);setError("");setAnswer("");try{const result=await aiRepository.queryLocal({endpoint:preview.destination,model:model.trim(),payload:preview.payload});setAnswer(result.answer);}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setSending(false);}}
-  function toggle(field:CustomDisclosureField){setCustomFields(current=>{const next=new Set(current);if(next.has(field))next.delete(field);else next.add(field);return next;});setPreview(null);setAnswer("");}
+  const cloudAccountId=cloudType==="openai-compatible-remote"?`cloud:openai-compatible-remote:custom`:CLOUD_PROVIDER_PRESETS[cloudType].accountId;
+
+  useEffect(()=>{setPreview(null);setAnswer("");},[accounts,transactions,templates,occurrences,budgets]);
+  useEffect(()=>{if(currencies.length&&!currencies.includes(currency))setCurrency(currencies[0]);},[currencies,currency]);
+  useEffect(()=>{setTaskBudgets(budgets);setTaskOccurrences(occurrences);},[budgets,occurrences]);
+  useEffect(()=>{
+    let current=true;
+    void Promise.all([
+      repository.getDebtPlan(currency).catch(()=>undefined),
+      repository.listSavingsGoals().catch(()=>[] as SavingsGoal[]),
+      repository.generateScheduledOccurrences({fromDate:today,toDate:addDaysIso(today,89)}).then(()=>repository.listScheduledOccurrences({fromDate:today,toDate:addDaysIso(today,89)})),
+      Promise.all(forecastMonths(today,90).map(month=>repository.getBudgetMonth(month)))
+    ]).then(([nextDebt,nextGoals,nextOccurrences,nextBudgets])=>{
+      if(!current)return;
+      setDebtPlan(nextDebt);
+      setSavingsGoals(nextGoals);
+      setTaskOccurrences(nextOccurrences);
+      setTaskBudgets(nextBudgets);
+    }).catch(()=>{/* keep overview data */});
+    return()=>{current=false;};
+  },[currency,today]);
+  useEffect(()=>{
+    let current=true;
+    if(!isNativeApp){setCloudConfigured(false);return;}
+    void aiRepository.credentialStatus(cloudAccountId).then(status=>{if(current)setCloudConfigured(status.configured);}).catch(()=>{if(current)setCloudConfigured(false);});
+    return()=>{current=false;};
+  },[cloudAccountId]);
+
+  function changeKind(next:LocalAiProviderKind){
+    setKind(next);
+    if(next==="ollama")setEndpoint(LOCAL_PROVIDER_PRESETS.ollama.endpoint);
+    else if(next==="lm-studio")setEndpoint(LOCAL_PROVIDER_PRESETS["lm-studio"].endpoint);
+    setPreview(null);setAnswer("");setConnectionNotice("");setError("");
+  }
+
+  function changeCloudType(next:CloudProviderDraft["type"]){
+    setCloudType(next);
+    if(next!=="openai-compatible-remote")setCloudEndpoint(CLOUD_PROVIDER_PRESETS[next].endpoint);
+    setCloudSecret("");setCloudNotice("");setPreview(null);setAnswer("");
+  }
+
+  async function submit(event:FormEvent){
+    event.preventDefault();
+    setError("");setAnswer("");
+    try{
+      if(analysisMode==="task"){
+        const local=validateLocalAiProvider({kind,endpoint,model});
+        const proposedMonthlyCostMinor=parseMoney(proposedCost);
+        const taskContext=buildAffordabilityAnalysisContext({
+          question:purpose,
+          currency,
+          proposedMonthlyCostMinor,
+          asOfDate:today,
+          accounts,
+          transactions,
+          templates,
+          occurrences:taskOccurrences,
+          budgets:taskBudgets,
+          debtPlan,
+          savingsGoals
+        });
+        setPreview(buildAiTaskFirewallPreview({provider:localProviderDescriptor(local),taskContext}));
+      }else{
+        setPreview(buildAiFirewallPreview({provider:{kind,endpoint,model},purpose,mode,accounts,transactions,customFields:[...customFields]}));
+      }
+    }catch(reason){
+      setPreview(null);
+      setError(reason instanceof Error?reason.message:String(reason));
+    }
+  }
+
+  async function testConnection(){
+    setTesting(true);setError("");setConnectionNotice("");
+    try{
+      const provider=validateLocalAiProvider({kind,endpoint,model:model.trim()||"connection-test"});
+      await aiRepository.testConnection(provider.endpoint);
+      setConnectionNotice("Local provider responded successfully.");
+    }catch(reason){
+      setError(reason instanceof Error?reason.message:String(reason));
+    }finally{setTesting(false);}
+  }
+
+  async function sendReviewed(){
+    if(!preview)return;
+    setSending(true);setError("");setAnswer("");
+    try{
+      const local=validateLocalAiProvider({kind,endpoint,model});
+      const provider=localProviderDescriptor(local);
+      const request=prepareReviewedTransmission(provider,preview);
+      const result=await aiRepository.queryLocal(request);
+      setAnswer(result.answer);
+    }catch(reason){
+      setError(reason instanceof Error?reason.message:String(reason));
+    }finally{setSending(false);}
+  }
+
+  async function saveCloudCredential(event:FormEvent){
+    event.preventDefault();
+    setCloudBusy(true);setCloudNotice("");setError("");
+    try{
+      const descriptor=validateProviderEndpoint(cloudProviderDescriptor({
+        type:cloudType,
+        endpoint:cloudEndpoint,
+        model:cloudModel.trim()||"credential-setup",
+        accountId:cloudAccountId
+      }));
+      const accountId=validateCredentialAccountId(descriptor.accountId);
+      const secret=validateCredentialSecret(cloudSecret);
+      const status=await aiRepository.saveCredential(accountId,secret);
+      setCloudConfigured(status.configured);
+      setCloudSecret("");
+      setCloudNotice(`${descriptor.label} credential stored in the OS vault. Transmission remains disabled.`);
+    }catch(reason){
+      setError(reason instanceof Error?reason.message:String(reason));
+    }finally{setCloudBusy(false);}
+  }
+
+  async function clearCloudCredential(){
+    setCloudBusy(true);setCloudNotice("");setError("");
+    try{
+      const status=await aiRepository.clearCredential(validateCredentialAccountId(cloudAccountId));
+      setCloudConfigured(status.configured);
+      setCloudNotice("Cloud credential cleared from the OS vault.");
+    }catch(reason){
+      setError(reason instanceof Error?reason.message:String(reason));
+    }finally{setCloudBusy(false);}
+  }
+
+  function previewCloudTask(){
+    setError("");setAnswer("");
+    try{
+      const proposedMonthlyCostMinor=parseMoney(proposedCost);
+      const taskContext=buildAffordabilityAnalysisContext({
+        question:purpose,
+        currency,
+        proposedMonthlyCostMinor,
+        asOfDate:today,
+        accounts,
+        transactions,
+        templates,
+        occurrences:taskOccurrences,
+        budgets:taskBudgets,
+        debtPlan,
+        savingsGoals
+      });
+      const provider=cloudProviderDescriptor({type:cloudType,endpoint:cloudEndpoint,model:cloudModel||"cloud-model",accountId:cloudAccountId});
+      setPreview(buildAiTaskFirewallPreview({provider,taskContext}));
+      setCloudNotice("Cloud payload preview only. Transmission is disabled until an allow-listed adapter ships.");
+    }catch(reason){
+      setPreview(null);
+      setError(reason instanceof Error?reason.message:String(reason));
+    }
+  }
+
+  function toggle(field:CustomDisclosureField){
+    setCustomFields(current=>{
+      const next=new Set(current);
+      if(next.has(field))next.delete(field);else next.add(field);
+      return next;
+    });
+    setPreview(null);setAnswer("");
+  }
+
   return <div className="ai-page">
-    <section className="ai-safety-banner"><ShieldCheck/><div><strong>Reviewed local analysis</strong><span>Only the payload shown by the Privacy Firewall can be sent, and only to a verified loopback provider. AI answers cannot change ledger records.</span></div></section>
+    <section className="ai-safety-banner"><ShieldCheck/><div><strong>Reviewed local analysis</strong><span>Task contexts prefer deterministic HomeLedger facts. Only the Privacy Firewall payload can be sent, and only to a verified loopback provider. AI answers cannot change ledger records.</span></div></section>
     <div className="ai-layout">
       <form className="panel ai-controls" onSubmit={submit}>
         <div className="panel-heading"><div><h2>Local model provider</h2><p>Configuration stays in memory and is not saved yet</p></div><Server size={18}/></div>
         <div className="ai-form">
+          <fieldset><legend>Analysis mode</legend>
+            <label className={analysisMode==="task"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="task"} onChange={()=>{setAnalysisMode("task");setPreview(null);setAnswer("");}}/><span><strong>Affordability Analysis</strong><small>Deterministic task context for questions like “Can I afford another $50 per month?”</small></span></label>
+            <label className={analysisMode==="adhoc"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="adhoc"} onChange={()=>{setAnalysisMode("adhoc");setPreview(null);setAnswer("");}}/><span><strong>Custom / ad-hoc question</strong><small>Uses Aggregate Only, Redacted, Custom, or Full Local Context disclosure modes.</small></span></label>
+          </fieldset>
           <label>Provider<select value={kind} onChange={event=>changeKind(event.target.value as LocalAiProviderKind)}><option value="ollama">Ollama</option><option value="lm-studio">LM Studio</option><option value="openai-compatible-local">OpenAI-compatible localhost</option></select></label>
           <label>Local endpoint<input value={endpoint} onChange={event=>{setEndpoint(event.target.value);setPreview(null);setAnswer("");setConnectionNotice("");}} inputMode="url" spellCheck={false}/><small>Only HTTP on localhost, 127.0.0.1, or ::1 is accepted.</small></label>
           <label>Model name<input value={model} onChange={event=>{setModel(event.target.value);setPreview(null);setAnswer("");}} placeholder={kind==="ollama"?"qwen3.5:9b":"Local model identifier"}/></label>
-          <label>Analysis purpose / question<textarea value={purpose} onChange={event=>{setPurpose(event.target.value);setPreview(null);setAnswer("");}} placeholder="Explain changes in household spending without giving financial advice."/><small>Your wording is included verbatim in the preview.</small></label>
-          <fieldset><legend>Disclosure mode</legend>{disclosureOptions.map(option=><label className={mode===option.value?"ai-mode selected":"ai-mode"} key={option.value}><input type="radio" name="disclosure" value={option.value} checked={mode===option.value} onChange={()=>{setMode(option.value);setPreview(null);setAnswer("");}}/><span><strong>{option.label}</strong><small>{option.detail}</small></span></label>)}</fieldset>
-          {mode==="custom"&&<fieldset><legend>Custom payload fields</legend><div className="ai-custom-fields">{customOptions.map(option=><label key={option.value}><input type="checkbox" checked={customFields.has(option.value)} onChange={()=>toggle(option.value)}/>{option.label}</label>)}</div></fieldset>}
-          {mode==="full-local"&&<div className="ai-warning"><LockKeyhole/><span>Full Local Context contains exact account names, dates, payees, categories, amounts, and memos. It remains locked to a verified loopback address.</span></div>}
+          <label>Analysis purpose / question<textarea value={purpose} onChange={event=>{setPurpose(event.target.value);setPreview(null);setAnswer("");}} placeholder="Can I afford another $50 per month?"/><small>Your wording is included verbatim in the preview.</small></label>
+          {analysisMode==="task"&&<>
+            <label>Currency<select value={currency} onChange={event=>{setCurrency(event.target.value);setPreview(null);setAnswer("");}}>{currencies.length?currencies.map(item=><option key={item}>{item}</option>):<option>USD</option>}</select></label>
+            <label>Proposed monthly cost<input value={proposedCost} onChange={event=>{setProposedCost(event.target.value);setPreview(null);setAnswer("");}} inputMode="decimal"/><small>Converted locally into minor units before the task context is built.</small></label>
+          </>}
+          {analysisMode==="adhoc"&&<>
+            <fieldset><legend>Disclosure mode</legend>{disclosureOptions.map(option=><label className={mode===option.value?"ai-mode selected":"ai-mode"} key={option.value}><input type="radio" name="disclosure" value={option.value} checked={mode===option.value} onChange={()=>{setMode(option.value);setPreview(null);setAnswer("");}}/><span><strong>{option.label}</strong><small>{option.detail}</small></span></label>)}</fieldset>
+            {mode==="custom"&&<fieldset><legend>Custom payload fields</legend><div className="ai-custom-fields">{customOptions.map(option=><label key={option.value}><input type="checkbox" checked={customFields.has(option.value)} onChange={()=>toggle(option.value)}/>{option.label}</label>)}</div></fieldset>}
+            {mode==="full-local"&&<div className="ai-warning"><LockKeyhole/><span>Full Local Context contains exact account names, dates, payees, categories, amounts, and memos. It remains locked to a verified loopback address.</span></div>}
+          </>}
           {error&&<p className="form-error" role="alert">{error}</p>}
           {connectionNotice&&<p className="success-banner ai-inline-notice" role="status">{connectionNotice}</p>}
           <div className="ai-control-actions"><button type="button" disabled={!isNativeApp||testing} onClick={()=>void testConnection()}><Wifi size={15}/>{testing?"Testing…":"Test local connection"}</button><button className="primary-action ai-preview-button"><Eye size={15}/> Build exact preview</button></div>
@@ -45,16 +276,44 @@ export function AiInsightsPage({accounts,transactions}:{accounts:Account[];trans
       </form>
       <section className="panel ai-preview">
         <div className="panel-heading"><div><h2>Privacy Firewall</h2><p>Reviewed loopback requests only</p></div><LockKeyhole size={18}/></div>
-        {!preview?<div className="ai-preview-empty"><Bot size={30}/><strong>No payload constructed</strong><span>Choose the minimum disclosure needed, then build a preview.</span></div>:<>
-          <dl className="ai-preview-meta"><div><dt>Destination</dt><dd>{preview.destination}</dd></div><div><dt>Provider</dt><dd>{providerLabel}</dd></div><div><dt>Model</dt><dd>{model.trim()}</dd></div><div><dt>Disclosure</dt><dd>{preview.modeLabel}</dd></div><div><dt>Ledger rows considered</dt><dd>{preview.recordCount}</dd></div><div><dt>Payload size</dt><dd>{payloadSize.toLocaleString()} bytes</dd></div><div><dt>Localhost verified</dt><dd>Yes</dd></div></dl>
+        {!preview?<div className="ai-preview-empty"><Bot size={30}/><strong>No payload constructed</strong><span>Prefer Affordability Analysis for structured questions, then build a preview.</span></div>:<>
+          <dl className="ai-preview-meta">
+            <div><dt>Destination</dt><dd>{preview.destination}</dd></div>
+            <div><dt>Provider</dt><dd>{preview.providerLabel}</dd></div>
+            <div><dt>Trust</dt><dd>{preview.trust}</dd></div>
+            <div><dt>Model</dt><dd>{preview.analysisMode==="task"?model.trim()||cloudModel.trim():model.trim()}</dd></div>
+            <div><dt>Disclosure</dt><dd>{preview.modeLabel}</dd></div>
+            <div><dt>Ledger rows considered</dt><dd>{preview.recordCount}</dd></div>
+            <div><dt>Payload size</dt><dd>{payloadSize.toLocaleString()} bytes</dd></div>
+            <div><dt>Localhost verified</dt><dd>{preview.verifiedLocalhost?"Yes":"No"}</dd></div>
+          </dl>
           {preview.excludedSensitiveCategories>0&&<div className="ai-sensitive-note">Removed or aliased {preview.excludedSensitiveCategories} sensitive-category record{preview.excludedSensitiveCategories===1?"":"s"}.</div>}
           <div className="ai-payload-heading"><strong>Exact payload</strong><span>Review every field below</span></div><pre>{preview.payload}</pre>
           <ul className="ai-notices">{preview.notices.map(notice=><li key={notice}>{notice}</li>)}<li>The native adapter adds a fixed read-only analyst instruction; it does not add ledger data.</li></ul>
-          <button className="ai-send-button" disabled={!isNativeApp||sending} onClick={()=>void sendReviewed()}><Send size={14}/>{sending?"Waiting for local model…":"Send reviewed payload to local model"}</button>
+          {preview.transmissionEnabled
+            ?<button className="ai-send-button" disabled={!isNativeApp||sending} onClick={()=>void sendReviewed()}><Send size={14}/>{sending?"Waiting for local model…":"Send reviewed payload to local model"}</button>
+            :<button className="ai-locked-button" type="button" disabled><LockKeyhole size={14}/> Cloud transmission disabled</button>}
           {answer&&<article className="ai-answer" aria-live="polite"><div><Bot size={17}/><strong>Local AI answer</strong></div><p>{answer}</p><small>Advisory text only. HomeLedger did not change or recalculate any ledger record.</small></article>}
         </>}
       </section>
     </div>
-    <section className="panel ai-cloud-disabled"><LockKeyhole/><div><strong>Cloud providers are disabled</strong><p>OpenAI, Anthropic, Gemini, Mistral, and remote compatible APIs will require credential-vault storage, an explicit provider allow-list, this exact payload review, and per-request confirmation before they can be enabled.</p></div></section>
+    <section className="panel ai-cloud-config">
+      <div className="panel-heading"><div><h2>Cloud provider configuration</h2><p>OS credential vault only — transmission remains disabled</p></div><KeyRound size={18}/></div>
+      <form className="ai-form" onSubmit={saveCloudCredential}>
+        <label>Cloud provider<select value={cloudType} onChange={event=>changeCloudType(event.target.value as CloudProviderDraft["type"])}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option><option value="mistral">Mistral</option><option value="openai-compatible-remote">Remote OpenAI-compatible (blocked)</option></select></label>
+        <label>HTTPS endpoint<input value={cloudEndpoint} onChange={event=>setCloudEndpoint(event.target.value)} inputMode="url" spellCheck={false} disabled={cloudType!=="openai-compatible-remote"}/><small>Approved hosts only. Arbitrary URLs fail closed.</small></label>
+        <label>Cloud model name<input value={cloudModel} onChange={event=>setCloudModel(event.target.value)} placeholder="Provider model id"/></label>
+        <label>API credential<input type="password" value={cloudSecret} onChange={event=>setCloudSecret(event.target.value)} autoComplete="off" spellCheck={false} placeholder={cloudConfigured?"Configured — enter a new value to replace":"Stored only in the OS credential vault"}/><small>HomeLedger never writes API credentials to SQLite, browser storage, config files, logs, backups, exports, or AI payloads. After save, the secret is not readable from the UI.</small></label>
+        <div className="ai-cloud-status"><strong>Credential state:</strong> {cloudConfigured?"Configured":"Not configured"} <span>Account id: {cloudAccountId}</span></div>
+        {cloudNotice&&<p className="success-banner ai-inline-notice" role="status">{cloudNotice}</p>}
+        <div className="ai-control-actions">
+          <button type="submit" disabled={!isNativeApp||cloudBusy||!cloudSecret}>{cloudBusy?"Saving…":"Save credential to OS vault"}</button>
+          <button type="button" disabled={!isNativeApp||cloudBusy||!cloudConfigured} onClick={()=>void clearCloudCredential()}>Clear credential</button>
+          <button type="button" disabled={cloudBusy} onClick={previewCloudTask}><Eye size={15}/> Preview affordability for cloud</button>
+        </div>
+        {!isNativeApp&&<small className="ai-native-note">OS credential vault access requires the native desktop application.</small>}
+        <div className="ai-warning"><LockKeyhole/><span>Cloud providers may be configured and previewed, but HomeLedger will not transmit financial context until an allow-listed HTTPS adapter, Privacy Firewall review, and explicit per-request confirmation are enabled in a later slice.</span></div>
+      </form>
+    </section>
   </div>;
 }
