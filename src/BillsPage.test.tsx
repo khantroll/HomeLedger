@@ -29,10 +29,24 @@ describe("BillsPage",()=>{
     expect(screen.getByText("Deposit / income")).toBeTruthy();
     expect(screen.getByText("Monthly on the 15th")).toBeTruthy();
     expect(screen.getByText("Every 2 weeks")).toBeTruthy();
-    expect(screen.getByText("Overdue")).toBeTruthy();
-    expect(screen.getByText("Due soon")).toBeTruthy();
-    expect(screen.getByText("Posted")).toBeTruthy();
+    expect(screen.getAllByText("Overdue").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Due soon").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Posted").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Paused")).toHaveLength(2);
+    expect(screen.getByRole("grid",{name:"September 2026 scheduled transactions"})).toBeTruthy();
+    expect(screen.getByRole("gridcell",{name:/Sep 15, 2026, 1 scheduled event/})).toBeTruthy();
+  });
+
+  it("navigates the month calendar and filters the agenda by day",async()=>{
+    const user=userEvent.setup();
+    const {container}=render(<BillsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} onChanged={async()=>{}} today="2026-09-18"/>);
+    await user.click(screen.getByRole("gridcell",{name:/Sep 15, 2026/}));
+    expect(screen.getByRole("heading",{name:"Sep 15, 2026"})).toBeTruthy();
+    expect(container.querySelectorAll(".occurrence-table tbody tr")).toHaveLength(1);
+    await user.click(screen.getByRole("button",{name:"Show whole month"}));
+    expect(screen.getByRole("heading",{name:"September 2026 agenda"})).toBeTruthy();
+    await user.click(screen.getByRole("button",{name:"Next month"}));
+    expect(screen.getByRole("heading",{name:"October 2026"})).toBeTruthy();
   });
 
   it("posts, skips, and links expected occurrences through repository actions",async()=>{
