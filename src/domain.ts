@@ -409,6 +409,11 @@ export interface ImportProfile {
   name: string;
   accountId?: string;
   headerSignature: string;
+  sourceKind: "delimited"|"workbook"|"pdf"|"ocr";
+  sourceSignature?: string;
+  pdfLayout?: "signed-last"|"signed-before-balance"|"expenses-last"|"expenses-before-balance";
+  workbookSheetName?: string;
+  workbookHeaderRow?: number;
   dateColumn: number;
   payeeColumn: number;
   amountColumn: number;

@@ -462,12 +462,15 @@ function validateMerchantRule(input:MerchantRuleInput){
 }
 
 function validateImportProfile(input:ImportProfileInput,accounts:Account[]){
-  if(!input.name.trim())throw new Error("Profile name is required");
+  if(!input.name.trim())throw new Error("Template name is required");
   if(!input.headerSignature.trim())throw new Error("Header signature is required");
   if(input.accountId&&!accounts.some(account=>account.id===input.accountId))throw new Error("Profile account does not exist");
   if(input.dateColumn<0||input.payeeColumn<0)throw new Error("Date and description columns are required");
   if(input.amountColumn<0&&input.debitColumn<0&&input.creditColumn<0)throw new Error("An amount or debit/credit column is required");
   if(!["mdy","dmy"].includes(input.dateOrder)||!["dot","comma"].includes(input.numberFormat))throw new Error("Import profile locale settings are invalid");
+  if(!["delimited","workbook","pdf","ocr"].includes(input.sourceKind))throw new Error("Import profile source kind is invalid");
+  if((input.sourceKind==="pdf"||input.sourceKind==="ocr")&&(!input.sourceSignature||!input.pdfLayout))throw new Error("PDF and OCR templates require a source signature and statement layout");
+  if(input.sourceKind==="workbook"&&(!input.sourceSignature||!input.workbookSheetName||input.workbookHeaderRow===undefined))throw new Error("Workbook templates require a source signature, worksheet, and header row");
 }
 
 function validateScheduledTransaction(input:ScheduledTransactionInput,accounts:Account[]){

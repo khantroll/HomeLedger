@@ -11,6 +11,7 @@ import { decodeStatement, encodingLabel, type StatementEncoding } from "./statem
 import { bytesToBase64, suggestWorkbookHeaderRow, suggestWorkbookSelection, workbookHeaderChoices, workbookSheetToTable, type ParsedWorkbook } from "./workbookImport";
 import { PDF_LAYOUT_OPTIONS, isPdfComplete, pdfTextToTable, suggestPdfLayout, type PdfLayout, type PdfParseResult } from "./pdfImport";
 import {extractImageText,isSupportedOcrImage,type OcrProgress} from "./ocrImport";
+import {matchingStatementTemplate,statementSourceSignature,type StatementSourceKind} from "./statementTemplates";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -40,6 +41,8 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [profiles,setProfiles]=useState<ImportProfile[]>([]);
   const [selectedProfileId,setSelectedProfileId]=useState("");
   const [profileName,setProfileName]=useState("");
+  const [sourceKind,setSourceKind]=useState<StatementSourceKind>("delimited");
+  const [sourceSignature,setSourceSignature]=useState("");
   const [includedDuplicates,setIncludedDuplicates]=useState<Set<number>>(new Set());
   const [scheduledMatches,setScheduledMatches]=useState<Map<number,ScheduledImportMatch>>(new Map());
   const [selectedScheduledMatches,setSelectedScheduledMatches]=useState<Map<number,string>>(new Map());
@@ -73,45 +76,58 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     return()=>{current=false;};
   },[accountId,preview]);
 
-  function configureWorkbook(parsedWorkbook:ParsedWorkbook,sheetIndex:number,headerRow?:number){
+  function configureWorkbook(parsedWorkbook:ParsedWorkbook,sheetIndex:number,headerRow?:number,preferredProfile?:ImportProfile){
     const sheet=parsedWorkbook.sheets[sheetIndex];
     if(!sheet)throw new Error("Choose a readable worksheet");
     const selectedHeader=headerRow??suggestWorkbookHeaderRow(sheet);
     const parsed=workbookSheetToTable(sheet,selectedHeader);
     setWorkbook(parsedWorkbook);setWorkbookSheetIndex(sheetIndex);setWorkbookHeaderRow(selectedHeader);setTable(parsed);setOfx(null);setQif(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);
-    const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));
+    const signature=headerSignature(parsed.headers);
+    const profile=preferredProfile?.headerSignature===signature?preferredProfile:profiles.find(item=>item.headerSignature===signature&&!item.sourceSignature);
     if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}
     setIncludedDuplicates(new Set());
   }
 
-  function configurePdf(text:string,layout:PdfLayout,confidence:number|null=ocrConfidence){
+  function configurePdf(text:string,layout:PdfLayout,confidence:number|null=ocrConfidence,preferredProfile?:ImportProfile){
     const parsed=pdfTextToTable(text,layout),suggested=suggestMapping(parsed.table.headers);
-    setPdf(parsed);setPdfText(text);setTable(parsed.table);setOfx(null);setQif(null);setWorkbook(null);setOcrConfidence(confidence);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed.table,suggested));setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());
+    setPdf(parsed);setPdfText(text);setTable(parsed.table);setOfx(null);setQif(null);setWorkbook(null);setOcrConfidence(confidence);
+    if(preferredProfile?.headerSignature===headerSignature(parsed.table.headers)){applyProfile(preferredProfile);setProfileName(preferredProfile.name);}else{setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed.table,suggested));setSelectedProfileId("");setProfileName("");}
+    setIncludedDuplicates(new Set());
   }
 
   async function chooseFile(event:ChangeEvent<HTMLInputElement>){
     const file=event.target.files?.[0]; if(!file)return;
-    setError("");setMessage("");setFileName(file.name);setOcrProgress(null);
+    const signature=statementSourceSignature(file.name);
+    setError("");setMessage("");setFileName(file.name);setSourceSignature(signature);setOcrProgress(null);
     if(file.size>10*1024*1024){setError("Statement files are limited to 10 MB in this milestone.");return;}
     try{
       setIncludedDuplicates(new Set());
       if(isSupportedOcrImage(file)||file.type.startsWith("image/")){
+        setSourceKind("ocr");
         setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);
         setOcrProgress({status:"loading local OCR",progress:0});
         const extraction=await extractImageText(file,setOcrProgress);
-        setOcrProgress(null);configurePdf(extraction.text,suggestPdfLayout(extraction.text),extraction.confidence);setFileEncoding("utf-8");
+        const profile=matchingStatementTemplate(profiles,"ocr",signature),layout=profile?.pdfLayout??suggestPdfLayout(extraction.text);
+        setOcrProgress(null);configurePdf(extraction.text,layout,extraction.confidence,profile);setFileEncoding("utf-8");if(profile)setMessage(`Applied statement template “${profile.name}”.`);
         return;
       }
       const buffer=await file.arrayBuffer();
       if(/\.(xlsx|xls)$/i.test(file.name)){
-        const parsed=await workbookRepository.parseWorkbook(bytesToBase64(buffer),file.name),selection=suggestWorkbookSelection(parsed);configureWorkbook(parsed,selection.sheetIndex,selection.headerRow);setFileEncoding("utf-8");
+        setSourceKind("workbook");
+        const parsed=await workbookRepository.parseWorkbook(bytesToBase64(buffer),file.name),profile=matchingStatementTemplate(profiles,"workbook",signature);
+        const savedSheetIndex=profile?.workbookSheetName?parsed.sheets.findIndex(sheet=>sheet.name===profile.workbookSheetName):-1;
+        let selection=suggestWorkbookSelection(parsed),applicableProfile:ImportProfile|undefined;
+        if(savedSheetIndex>=0&&profile?.workbookHeaderRow!==undefined){try{workbookSheetToTable(parsed.sheets[savedSheetIndex],profile.workbookHeaderRow);selection={sheetIndex:savedSheetIndex,headerRow:profile.workbookHeaderRow};applicableProfile=profile;}catch{/* A changed workbook falls back to reviewed suggestions. */}}
+        configureWorkbook(parsed,selection.sheetIndex,selection.headerRow,applicableProfile);setFileEncoding("utf-8");if(applicableProfile)setMessage(`Applied statement template “${applicableProfile.name}”.`);
       }else if(/\.pdf$/i.test(file.name)){
-        const extraction=await pdfRepository.extractText(bytesToBase64(buffer),file.name);configurePdf(extraction.text,suggestPdfLayout(extraction.text),null);setFileEncoding("utf-8");
+        setSourceKind("pdf");
+        const extraction=await pdfRepository.extractText(bytesToBase64(buffer),file.name),profile=matchingStatementTemplate(profiles,"pdf",signature),layout=profile?.pdfLayout??suggestPdfLayout(extraction.text);configurePdf(extraction.text,layout,null,profile);setFileEncoding("utf-8");if(profile)setMessage(`Applied statement template “${profile.name}”.`);
       }else{
+        setSourceKind("delimited");
         const decoded=decodeStatement(buffer),text=decoded.text;setFileEncoding(decoded.encoding);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);
         if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}
         else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}
-        else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const profile=profiles.find(item=>item.headerSignature===headerSignature(parsed.headers));if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}
+        else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const tableSignature=headerSignature(parsed.headers),sourceProfile=matchingStatementTemplate(profiles,"delimited",signature),profile=sourceProfile?.headerSignature===tableSignature?sourceProfile:profiles.find(item=>item.headerSignature===tableSignature&&item.sourceKind==="delimited"&&!item.sourceSignature);if(profile){applyProfile(profile);setProfileName(profile.name);if(sourceProfile===profile)setMessage(`Applied statement template “${profile.name}”.`);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}
       }
     }
     catch(reason){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setError(reason instanceof Error?reason.message:String(reason));}
@@ -119,9 +135,9 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   }
 
   function applyProfile(profile:ImportProfile){setMapping({date:profile.dateColumn,payee:profile.payeeColumn,amount:profile.amountColumn,debit:profile.debitColumn,credit:profile.creditColumn});setParsingOptions({dateOrder:profile.dateOrder,numberFormat:profile.numberFormat});setIncludedDuplicates(new Set());if(profile.accountId&&accounts.some(account=>account.id===profile.accountId))setAccountId(profile.accountId);setSelectedProfileId(profile.id);}
-  async function saveProfile(){if(!table)return;setError("");try{const saved=await financeRepository.saveImportProfile({name:profileName.trim(),accountId,headerSignature:headerSignature(table.headers),dateColumn:mapping.date,payeeColumn:mapping.payee,amountColumn:mapping.amount,debitColumn:mapping.debit,creditColumn:mapping.credit,...parsingOptions});const next=await financeRepository.listImportProfiles();setProfiles(next);setSelectedProfileId(saved.id);setMessage(`Saved import profile “${saved.name}”.`);}catch(reason){showError(reason);}}
-  async function deleteProfile(){if(!selectedProfileId)return;setError("");try{await financeRepository.deleteImportProfile(selectedProfileId);setProfiles(await financeRepository.listImportProfiles());setSelectedProfileId("");setProfileName("");setMessage("Deleted the saved import profile.");}catch(reason){showError(reason);}}
-  function chooseProfile(id:string){setSelectedProfileId(id);const profile=profiles.find(item=>item.id===id);if(profile){applyProfile(profile);setProfileName(profile.name);}else if(table){const suggested=suggestMapping(table.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(table,suggested));setProfileName("");}}
+  async function saveProfile(){if(!table)return;setError("");try{const saved=await financeRepository.saveImportProfile({name:profileName.trim(),accountId,headerSignature:headerSignature(table.headers),sourceKind,sourceSignature:sourceSignature||undefined,pdfLayout:pdf?.layout,workbookSheetName:workbook?.sheets[workbookSheetIndex]?.name,workbookHeaderRow:workbook?workbookHeaderRow:undefined,dateColumn:mapping.date,payeeColumn:mapping.payee,amountColumn:mapping.amount,debitColumn:mapping.debit,creditColumn:mapping.credit,...parsingOptions});const next=await financeRepository.listImportProfiles();setProfiles(next);setSelectedProfileId(saved.id);setMessage(`Saved statement template “${saved.name}”.`);}catch(reason){showError(reason);}}
+  async function deleteProfile(){if(!selectedProfileId)return;setError("");try{await financeRepository.deleteImportProfile(selectedProfileId);setProfiles(await financeRepository.listImportProfiles());setSelectedProfileId("");setProfileName("");setMessage("Deleted the saved statement template.");}catch(reason){showError(reason);}}
+  function chooseProfile(id:string){setSelectedProfileId(id);const profile=profiles.find(item=>item.id===id);if(profile){if(pdf&&profile.pdfLayout&&profile.pdfLayout!==pdf.layout){configurePdf(pdfText,profile.pdfLayout,ocrConfidence,profile);return;}if(workbook&&profile.workbookSheetName&&profile.workbookHeaderRow!==undefined){const sheetIndex=workbook.sheets.findIndex(sheet=>sheet.name===profile.workbookSheetName);if(sheetIndex>=0&&(sheetIndex!==workbookSheetIndex||profile.workbookHeaderRow!==workbookHeaderRow)){try{workbookSheetToTable(workbook.sheets[sheetIndex],profile.workbookHeaderRow);configureWorkbook(workbook,sheetIndex,profile.workbookHeaderRow,profile);}catch(reason){setSelectedProfileId("");showError(reason);}return;}}applyProfile(profile);setProfileName(profile.name);}else if(table){const suggested=suggestMapping(table.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(table,suggested));setProfileName("");}}
   function toggleDuplicate(sourceRow:number){setIncludedDuplicates(current=>{const next=new Set(current);if(next.has(sourceRow))next.delete(sourceRow);else next.add(sourceRow);return next;});}
 
   async function commit(){
@@ -136,7 +152,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     finally{setSaving(false);}
   }
 
-  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setFileName("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
+  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setFileName("");setSourceKind("delimited");setSourceSignature("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
   async function loadHistory(){try{setBatches(await financeRepository.listImportBatches());}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}}
   async function undo(){if(!pendingUndo)return;setUndoing(true);setError("");try{const result=await financeRepository.undoImportBatch(pendingUndo.id);setMessage(`Removed ${result.removedCount} transactions from ${pendingUndo.sourceName}.`);setPendingUndo(null);await onImported();await loadHistory();}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setUndoing(false);}}
   if(!accounts.length)return <section className="panel import-empty"><FileSpreadsheet/><h2>Create an account first</h2><p>Statement transactions must be assigned to a local account.</p></section>;
@@ -154,10 +170,10 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
             <label>Header row<select value={workbookHeaderRow} onChange={event=>{try{setError("");configureWorkbook(workbook,workbookSheetIndex,Number(event.target.value));}catch(reason){showError(reason);}}}>{workbookHeaderChoices(workbook.sheets[workbookSheetIndex]).map(index=><option key={index} value={index}>Row {workbook.sheets[workbookSheetIndex].firstRow+index}: {workbook.sheets[workbookSheetIndex].rows[index].filter(Boolean).slice(0,3).join(" · ")}</option>)}</select></label>
           </div>}
           <div className="profile-controls">
-            <label>Saved mapping<select value={selectedProfileId} onChange={event=>chooseProfile(event.target.value)}><option value="">Suggested mapping</option>{profiles.filter(profile=>profile.headerSignature===headerSignature(table.headers)).map(profile=><option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
-            <label>Profile name<input value={profileName} onChange={event=>setProfileName(event.target.value)} maxLength={80} placeholder="Example Credit Union"/></label>
-            <button onClick={saveProfile} disabled={!profileName.trim()}><Save size={14}/> Save mapping</button>
-            <button onClick={deleteProfile} disabled={!selectedProfileId} aria-label="Delete selected mapping"><Trash2 size={14}/></button>
+            <label>Saved template<select value={selectedProfileId} onChange={event=>chooseProfile(event.target.value)}><option value="">Suggested settings</option>{profiles.filter(profile=>profile.headerSignature===headerSignature(table.headers)&&(!profile.sourceSignature||(profile.sourceKind===sourceKind&&profile.sourceSignature===sourceSignature))).map(profile=><option key={profile.id} value={profile.id}>{profile.name}</option>)}</select></label>
+            <label>Template name<input value={profileName} onChange={event=>setProfileName(event.target.value)} maxLength={80} placeholder="Example Credit Union"/></label>
+            <button onClick={saveProfile} disabled={!profileName.trim()||!sourceSignature}><Save size={14}/> Save template</button>
+            <button onClick={deleteProfile} disabled={!selectedProfileId} aria-label="Delete selected template"><Trash2 size={14}/></button>
           </div>
           <div className="mapping-grid">
             <label>Import to account<select value={accountId} onChange={e=>setAccountId(e.target.value)}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
