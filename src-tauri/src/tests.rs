@@ -29,7 +29,8 @@ fn migration_creates_local_ledger_tables() {
     let auto_post_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('scheduled_transactions') WHERE name='auto_post'",[],|row|row.get(0)).unwrap();
     let debt_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('debt_plan_settings','debt_terms')",[],|row|row.get(0)).unwrap();
     let savings_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='savings_goals'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables), (14, 2, 1, 1, 2, 2,1,2,1));
+    let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables), (15, 2, 1, 1, 2, 2,1,2,1,2));
 }
 
 #[test]
@@ -55,7 +56,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -64,6 +65,20 @@ fn migration_upgrades_a_populated_version_five_ledger() {
 fn input_cleaning_rejects_missing_required_values() {
     assert!(clean_required("  ".into(), "Name", 80).is_err());
     assert_eq!(clean_optional(Some("  ".into()), 80).unwrap(), None);
+}
+
+#[test]
+fn shared_catalogs_remember_ledger_and_planning_labels() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 0, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, source) VALUES('t', 'a', '2026-09-20', 'Neighborhood Market', 'Food: Groceries', -100, 'cleared', 'manual')", []).unwrap();
+    connection.execute("INSERT INTO budget_categories(id, category) VALUES('budget', 'Home: Repairs')", []).unwrap();
+    connection.execute("DELETE FROM transactions WHERE id='t'", []).unwrap();
+    let categories: Vec<String> = connection.prepare("SELECT name FROM categories ORDER BY name").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    let payees: Vec<String> = connection.prepare("SELECT name FROM payees ORDER BY name").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(categories, vec!["Food: Groceries", "Home: Repairs"]);
+    assert_eq!(payees, vec!["Neighborhood Market"]);
 }
 
 #[test]
@@ -447,7 +462,15 @@ fn backup_validation_accepts_supported_pre_debt_schema() {
 fn backup_validation_accepts_supported_pre_savings_schema() {
     let mut connection = Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
-    connection.execute_batch("DROP TABLE savings_goals; DELETE FROM schema_migrations WHERE version=14;").unwrap();
+    connection.execute_batch("DROP TABLE savings_goals; DELETE FROM schema_migrations WHERE version>=14;").unwrap();
+    validate_backup_database(&connection).unwrap();
+}
+
+#[test]
+fn backup_validation_accepts_supported_pre_catalog_schema() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute_batch("DROP TABLE categories; DROP TABLE payees; DELETE FROM schema_migrations WHERE version=15;").unwrap();
     validate_backup_database(&connection).unwrap();
 }
 

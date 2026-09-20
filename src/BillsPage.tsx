@@ -4,6 +4,7 @@ import { formatMoney,parseMoney,type Account,type RecurrenceFrequency,type Sched
 import { financeRepository as repository } from "./repository";
 import { formatDate,nextExpectedOccurrence,occurrenceDisplayState,occurrenceStateLabel,recurrenceDescription,todayIso } from "./scheduledPresentation";
 import {detectSubscriptions,type SubscriptionCandidate} from "./subscriptionDetection";
+import {SuggestionLists,useLedgerSuggestions} from "./useLedgerSuggestions";
 import "./bills.css";
 
 export function BillsPage({accounts,transactions,templates,occurrences,onChanged,today=todayIso()}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];onChanged:()=>Promise<void>;today?:string}){
@@ -57,6 +58,7 @@ export function BillsPage({accounts,transactions,templates,occurrences,onChanged
 }
 
 function ScheduleDialog({accounts,template,draft,onClose,onSaved}:{accounts:Account[];template?:ScheduledTransaction;draft?:ScheduledTransactionInput;onClose:()=>void;onSaved:()=>Promise<void>}){
+  const suggestions=useLedgerSuggestions();
   const seed=template??draft;
   const [frequency,setFrequency]=useState<RecurrenceFrequency>(seed?.frequency??"monthly");
   const [direction,setDirection]=useState<"expense"|"deposit"|"transfer">(seed?.kind==="transfer"?"transfer":(seed?.amountMinor??-1)>0?"deposit":"expense");
@@ -78,8 +80,8 @@ function ScheduleDialog({accounts,template,draft,onClose,onSaved}:{accounts:Acco
   return <div className="dialog-backdrop" role="presentation" onMouseDown={event=>{if(event.currentTarget===event.target&&!saving)onClose();}}><section className="dialog schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="schedule-title"><div className="dialog-header"><h2 id="schedule-title">{template?"Edit scheduled transaction":"New scheduled transaction"}</h2><button onClick={onClose} disabled={saving} aria-label="Close"><X size={18}/></button></div><form className="entry-form" onSubmit={submit}>
     <div className="form-row"><label>Type<select value={direction} onChange={event=>setDirection(event.target.value as typeof direction)}><option value="expense">Bill or expense</option><option value="deposit">Deposit or income</option><option value="transfer">Account transfer</option></select></label><label>{direction==="transfer"?"From account":"Account"}<select name="accountId" value={fromAccountId} onChange={event=>{const next=event.target.value,nextCurrency=accounts.find(item=>item.id===next)?.currency,nextDestinations=accounts.filter(item=>item.id!==next&&item.currency===nextCurrency);setFromAccountId(next);if(!nextDestinations.some(item=>item.id===toAccountId))setToAccountId(nextDestinations[0]?.id??"");}} required>{accounts.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select></label></div>
     {direction==="transfer"&&<label>To account<select name="transferAccountId" value={toAccountId} onChange={event=>setToAccountId(event.target.value)} required>{transferDestinations.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select>{transferDestinations.length===0&&<small>Add another {sourceAccount?.currency} account before scheduling this transfer.</small>}</label>}
-    <label>Payee or source<input name="payee" defaultValue={seed?.payee} required maxLength={160} autoFocus placeholder={direction==="expense"?"Electric utility":"Employer payroll"}/></label>
-    <div className="form-row">{direction!=="transfer"&&<label>Category<input name="category" defaultValue={seed?.category??"Uncategorized"} required maxLength={120}/></label>}<label>Expected amount<input name="amount" inputMode="decimal" defaultValue={seed?(Math.abs(seed.amountMinor)/100).toFixed(2):""} required placeholder="0.00"/></label></div>
+    <label>Payee or source<input name="payee" list={suggestions.payeeListId} defaultValue={seed?.payee} required maxLength={160} autoFocus placeholder={direction==="expense"?"Electric utility":"Employer payroll"}/></label>
+    <div className="form-row">{direction!=="transfer"&&<label>Category<input name="category" list={suggestions.categoryListId} defaultValue={seed?.category??"Uncategorized"} required maxLength={120}/></label>}<label>Expected amount<input name="amount" inputMode="decimal" defaultValue={seed?(Math.abs(seed.amountMinor)/100).toFixed(2):""} required placeholder="0.00"/></label></div>
     <div className="form-row"><label>Repeats<select value={frequency} onChange={event=>setFrequency(event.target.value as RecurrenceFrequency)}><option value="weekly">Every week</option><option value="biweekly">Every 2 weeks</option><option value="semimonthly">Twice each month</option><option value="monthly">Every month</option><option value="annual">Every year</option><option value="custom">Custom interval</option></select></label><label>First due date<input name="anchorDate" type="date" defaultValue={seed?.anchorDate??todayIso()} required/></label></div>
     {frequency==="semimonthly"&&<label>Second day each month<input name="secondMonthDay" type="number" min="1" max="31" defaultValue={seed?.secondMonthDay??15} required/><small>Use 31 for the last day in shorter months.</small></label>}
     {frequency==="custom"&&<div className="form-row"><label>Repeat every<input name="customIntervalCount" type="number" min="1" max="10000" defaultValue={seed?.customIntervalCount??1} required/></label><label>Interval<select name="customIntervalUnit" defaultValue={seed?.customIntervalUnit??"months"}><option value="days">Days</option><option value="weeks">Weeks</option><option value="months">Months</option><option value="years">Years</option></select></label></div>}
@@ -87,6 +89,7 @@ function ScheduleDialog({accounts,template,draft,onClose,onSaved}:{accounts:Acco
     <label>Memo<textarea name="memo" defaultValue={seed?.memo} maxLength={500}/></label>
     <label className="auto-post-choice"><input name="autoPost" type="checkbox" defaultChecked={seed?.autoPost}/><span><strong>Add due items to the auto-post queue</strong><small>Nothing posts until you review and confirm the queue.</small></span></label>
     {error&&<p className="form-error" role="alert">{error}</p>}<div className="form-actions"><button type="button" onClick={onClose} disabled={saving}>Cancel</button><button className="primary" disabled={saving||(direction==="transfer"&&!toAccountId)}>{saving?"Saving…":"Save schedule"}</button></div>
+    <SuggestionLists {...suggestions}/>
   </form></section></div>;
 }
 

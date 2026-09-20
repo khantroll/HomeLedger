@@ -546,7 +546,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 14;
+const CURRENT_SCHEMA_VERSION: i64 = 15;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -652,6 +652,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(14, 'account-linked savings goals')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+    if version < 15 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/015_shared_categories_payees.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(15, 'shared categories and payees')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -661,6 +667,22 @@ fn list_accounts(include_archived: Option<bool>, state: State<DbState>) -> Resul
     let sql = format!("SELECT a.id, a.name, a.institution, a.account_type, a.currency, a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0), a.owner_label, EXISTS(SELECT 1 FROM transactions review WHERE review.account_id = a.id AND review.status = 'review'), a.sort_order, a.archived_at IS NOT NULL FROM accounts a LEFT JOIN transactions t ON t.account_id = a.id {} GROUP BY a.id ORDER BY a.archived_at IS NOT NULL, a.sort_order, a.created_at", if include_archived.unwrap_or(false) { "" } else { "WHERE a.archived_at IS NULL" });
     let mut statement = connection.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |row| Ok(Account { id: row.get(0)?, name: row.get(1)?, institution: row.get(2)?, r#type: row.get(3)?, currency: row.get(4)?, balance_minor: row.get(5)?, owner_label: row.get(6)?, needs_review: row.get(7)?, sort_order: row.get(8)?, archived: row.get(9)? })).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_categories(state: State<DbState>) -> Result<Vec<String>, String> {
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    let mut statement = connection.prepare("SELECT name FROM categories WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE, id").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_payees(state: State<DbState>) -> Result<Vec<String>, String> {
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    let mut statement = connection.prepare("SELECT name FROM payees WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE, id").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
@@ -2107,6 +2129,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let savings_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='savings_goals'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if savings_tables!=1{return Err("The backup is missing savings goals".into());}
     }
+    if version >= 15 {
+        let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if catalog_tables!=2{return Err("The backup is missing shared category or payee tables".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -2190,7 +2216,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }
