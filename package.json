@@ -1,7 +1,7 @@
 {
   "name": "homeledger",
   "private": true,
-  "version": "0.32.0",
+  "version": "0.33.0",
   "type": "module",
   "scripts": {
     "prepare:ocr": "node scripts/prepare-ocr-assets.mjs",
@@ -17,6 +17,7 @@
     "@tauri-apps/api": "^2.8.0",
     "@tesseract.js-data/eng": "^1.0.0",
     "lucide-react": "^0.468.0",
+    "pdfjs-dist": "5.4.624",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "tesseract.js": "^7.0.0"

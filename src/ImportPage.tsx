@@ -12,6 +12,7 @@ import { bytesToBase64, suggestWorkbookHeaderRow, suggestWorkbookSelection, work
 import { PDF_LAYOUT_OPTIONS, isPdfComplete, pdfTextToTable, suggestPdfLayout, type PdfLayout, type PdfParseResult } from "./pdfImport";
 import {extractImageText,isSupportedOcrImage,type OcrProgress} from "./ocrImport";
 import {matchingStatementTemplate,statementSourceSignature,type StatementSourceKind} from "./statementTemplates";
+import {extractScannedPdfText,pdfNeedsOcr} from "./scannedPdfImport";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -26,6 +27,8 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [pdfText,setPdfText]=useState("");
   const [ocrConfidence,setOcrConfidence]=useState<number|null>(null);
   const [ocrProgress,setOcrProgress]=useState<OcrProgress|null>(null);
+  const [ocrSource,setOcrSource]=useState<"image"|"pdf"|null>(null);
+  const [ocrPageCount,setOcrPageCount]=useState<number|null>(null);
   const [fileName,setFileName]=useState("");
   const [accountId,setAccountId]=useState(accounts[0]?.id??"");
   const [mapping,setMapping]=useState<ColumnMapping>({date:-1,payee:-1,amount:-1,debit:-1,credit:-1});
@@ -81,16 +84,16 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     if(!sheet)throw new Error("Choose a readable worksheet");
     const selectedHeader=headerRow??suggestWorkbookHeaderRow(sheet);
     const parsed=workbookSheetToTable(sheet,selectedHeader);
-    setWorkbook(parsedWorkbook);setWorkbookSheetIndex(sheetIndex);setWorkbookHeaderRow(selectedHeader);setTable(parsed);setOfx(null);setQif(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);
+    setWorkbook(parsedWorkbook);setWorkbookSheetIndex(sheetIndex);setWorkbookHeaderRow(selectedHeader);setTable(parsed);setOfx(null);setQif(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);
     const signature=headerSignature(parsed.headers);
     const profile=preferredProfile?.headerSignature===signature?preferredProfile:profiles.find(item=>item.headerSignature===signature&&!item.sourceSignature);
     if(profile){applyProfile(profile);setProfileName(profile.name);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}
     setIncludedDuplicates(new Set());
   }
 
-  function configurePdf(text:string,layout:PdfLayout,confidence:number|null=ocrConfidence,preferredProfile?:ImportProfile){
+  function configurePdf(text:string,layout:PdfLayout,confidence:number|null=ocrConfidence,preferredProfile?:ImportProfile,source:"image"|"pdf"|null=ocrSource,pageCount:number|null=ocrPageCount){
     const parsed=pdfTextToTable(text,layout),suggested=suggestMapping(parsed.table.headers);
-    setPdf(parsed);setPdfText(text);setTable(parsed.table);setOfx(null);setQif(null);setWorkbook(null);setOcrConfidence(confidence);
+    setPdf(parsed);setPdfText(text);setTable(parsed.table);setOfx(null);setQif(null);setWorkbook(null);setOcrConfidence(confidence);setOcrSource(source);setOcrPageCount(pageCount);
     if(preferredProfile?.headerSignature===headerSignature(parsed.table.headers)){applyProfile(preferredProfile);setProfileName(preferredProfile.name);}else{setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed.table,suggested));setSelectedProfileId("");setProfileName("");}
     setIncludedDuplicates(new Set());
   }
@@ -104,11 +107,11 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
       setIncludedDuplicates(new Set());
       if(isSupportedOcrImage(file)||file.type.startsWith("image/")){
         setSourceKind("ocr");
-        setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);
+        setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrSource(null);setOcrPageCount(null);
         setOcrProgress({status:"loading local OCR",progress:0});
         const extraction=await extractImageText(file,setOcrProgress);
         const profile=matchingStatementTemplate(profiles,"ocr",signature),layout=profile?.pdfLayout??suggestPdfLayout(extraction.text);
-        setOcrProgress(null);configurePdf(extraction.text,layout,extraction.confidence,profile);setFileEncoding("utf-8");if(profile)setMessage(`Applied statement template “${profile.name}”.`);
+        setOcrProgress(null);configurePdf(extraction.text,layout,extraction.confidence,profile,"image",1);setFileEncoding("utf-8");if(profile)setMessage(`Applied statement template “${profile.name}”.`);
         return;
       }
       const buffer=await file.arrayBuffer();
@@ -121,16 +124,25 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
         configureWorkbook(parsed,selection.sheetIndex,selection.headerRow,applicableProfile);setFileEncoding("utf-8");if(applicableProfile)setMessage(`Applied statement template “${applicableProfile.name}”.`);
       }else if(/\.pdf$/i.test(file.name)){
         setSourceKind("pdf");
-        const extraction=await pdfRepository.extractText(bytesToBase64(buffer),file.name),profile=matchingStatementTemplate(profiles,"pdf",signature),layout=profile?.pdfLayout??suggestPdfLayout(extraction.text);configurePdf(extraction.text,layout,null,profile);setFileEncoding("utf-8");if(profile)setMessage(`Applied statement template “${profile.name}”.`);
+        let searchableText="";
+        try{searchableText=(await pdfRepository.extractText(bytesToBase64(buffer),file.name)).text;}catch{searchableText="";}
+        const searchableLayout=searchableText.trim().length>=20?suggestPdfLayout(searchableText):null;
+        const searchableResult=searchableLayout?pdfTextToTable(searchableText,searchableLayout):null;
+        const hasSearchableRows=Boolean(searchableLayout&&searchableResult&&searchableResult.candidateRowCount>0);
+        const profile=matchingStatementTemplate(profiles,"pdf",signature);
+        if(hasSearchableRows&&!(await pdfNeedsOcr(buffer))){const layout=profile?.pdfLayout??searchableLayout!;configurePdf(searchableText,layout,null,profile,null,null);}
+        else{setOcrProgress({status:"opening scanned PDF locally",progress:0});const extraction=await extractScannedPdfText(buffer,setOcrProgress),layout=profile?.pdfLayout??suggestPdfLayout(extraction.text);setOcrProgress(null);configurePdf(extraction.text,layout,extraction.confidence,profile,"pdf",extraction.pageCount);}
+        setFileEncoding("utf-8");
+        if(profile)setMessage(`Applied statement template “${profile.name}”.`);
       }else{
         setSourceKind("delimited");
-        const decoded=decodeStatement(buffer),text=decoded.text;setFileEncoding(decoded.encoding);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);
+        const decoded=decodeStatement(buffer),text=decoded.text;setFileEncoding(decoded.encoding);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrSource(null);setOcrPageCount(null);
         if(/<OFX[>\s]/i.test(text)||/\.(ofx|qfx)$/i.test(file.name)){const parsed=parseOfx(text);setOfx(parsed);setQif(null);setTable(null);setSelectedProfileId("");}
         else if(/^!Type:/im.test(text)||/\.qif$/i.test(file.name)){const parsed=parseQif(text);setQif(parsed);setOfx(null);setTable(null);setSelectedProfileId("");}
         else{const parsed=parseDelimited(text);setTable(parsed);setOfx(null);setQif(null);const tableSignature=headerSignature(parsed.headers),sourceProfile=matchingStatementTemplate(profiles,"delimited",signature),profile=sourceProfile?.headerSignature===tableSignature?sourceProfile:profiles.find(item=>item.headerSignature===tableSignature&&item.sourceKind==="delimited"&&!item.sourceSignature);if(profile){applyProfile(profile);setProfileName(profile.name);if(sourceProfile===profile)setMessage(`Applied statement template “${profile.name}”.`);}else{const suggested=suggestMapping(parsed.headers);setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed,suggested));setSelectedProfileId("");setProfileName("");}}
       }
     }
-    catch(reason){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setError(reason instanceof Error?reason.message:String(reason));}
+    catch(reason){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setError(reason instanceof Error?reason.message:String(reason));}
     finally{event.target.value="";}
   }
 
@@ -147,24 +159,24 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     if(pdfIncomplete){setError("Choose a statement layout that recognizes every dated transaction row before importing.");return;}
     if(!valid.length){setError("There are no new valid transactions to import.");return;}
     setSaving(true);setError("");
-    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setFileName("");setSelectedScheduledMatches(new Map());await onImported();await loadHistory();}
+    try{const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)}))});setMessage(`Imported ${result.importedCount} transactions as one atomic batch.`);setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSelectedScheduledMatches(new Map());await onImported();await loadHistory();}
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
     finally{setSaving(false);}
   }
 
-  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setFileName("");setSourceKind("delimited");setSourceSignature("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
+  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceKind("delimited");setSourceSignature("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
   async function loadHistory(){try{setBatches(await financeRepository.listImportBatches());}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}}
   async function undo(){if(!pendingUndo)return;setUndoing(true);setError("");try{const result=await financeRepository.undoImportBatch(pendingUndo.id);setMessage(`Removed ${result.removedCount} transactions from ${pendingUndo.sourceName}.`);setPendingUndo(null);await onImported();await loadHistory();}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setUndoing(false);}}
   if(!accounts.length)return <section className="panel import-empty"><FileSpreadsheet/><h2>Create an account first</h2><p>Statement transactions must be assigned to a local account.</p></section>;
 
   return <div className="import-page">
     <section className="panel import-controls">
-      <div className="panel-heading"><div><h2>Import a statement</h2><p>CSV, TSV, Excel, statement-image OCR, searchable PDF, OFX, QFX, and QIF parsing happens locally; the original file is not retained.</p></div>{(table||ofx||qif)&&<button onClick={reset}><RotateCcw size={14}/> Start over</button>}</div>
+      <div className="panel-heading"><div><h2>Import a statement</h2><p>CSV, TSV, Excel, statement-image OCR, searchable or scanned PDF, OFX, QFX, and QIF parsing happens locally; the original file is not retained.</p></div>{(table||ofx||qif)&&<button onClick={reset}><RotateCcw size={14}/> Start over</button>}</div>
       <div className="import-body">
-        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>{ocrProgress?`${ocrProgress.status} · ${Math.round(ocrProgress.progress*100)}%`:fileName?(workbook?"Excel workbook parsed locally":pdf?(ocrConfidence===null?"Searchable PDF parsed locally":"Statement image OCR completed locally"):`${encodingLabel(fileEncoding)} detected locally`):"CSV, TSV, XLS, XLSX, PNG, JPEG, WebP, PDF, OFX, QFX, or QIF, up to 10 MB"}</small></span><input type="file" disabled={Boolean(ocrProgress)} accept=".csv,.tsv,.txt,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.pdf,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,image/png,image/jpeg,image/webp,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/qif" onChange={chooseFile}/></label>
+        <label className="file-picker"><Upload size={20}/><span><strong>{fileName||"Choose a statement file"}</strong><small>{ocrProgress?`${ocrProgress.status} · ${Math.round(ocrProgress.progress*100)}%`:fileName?(workbook?"Excel workbook parsed locally":pdf?(ocrSource==="pdf"?"Scanned PDF OCR completed locally":ocrSource==="image"?"Statement image OCR completed locally":"Searchable PDF parsed locally"):`${encodingLabel(fileEncoding)} detected locally`):"CSV, TSV, XLS, XLSX, PNG, JPEG, WebP, PDF, OFX, QFX, or QIF, up to 10 MB"}</small></span><input type="file" disabled={Boolean(ocrProgress)} accept=".csv,.tsv,.txt,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.pdf,.ofx,.qfx,.qif,text/csv,text/tab-separated-values,image/png,image/jpeg,image/webp,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/x-ofx,application/qif" onChange={chooseFile}/></label>
         {error&&<div className="error-banner" role="alert">{error}</div>}{message&&<div className="success-banner" role="status">{message}</div>}
         {table&&<>
-          {pdf&&<><div className="ofx-summary"><div><span>Document type</span><strong>{ocrConfidence===null?"Searchable PDF":"OCR statement image"}</strong></div>{ocrConfidence!==null&&<div><span>OCR confidence</span><strong>{Math.round(ocrConfidence)}%</strong></div>}<div><span>Dated rows</span><strong>{pdf.candidateRowCount}</strong></div><div><span>Recognized rows</span><strong>{pdf.matchedRowCount}</strong></div><div><span>Unrecognized rows</span><strong>{pdf.unmatchedLineNumbers.length}</strong></div></div><div className="profile-controls workbook-controls"><label>Statement layout<select value={pdf.layout} onChange={event=>{setError("");configurePdf(pdfText,event.target.value as PdfLayout);}}>{PDF_LAYOUT_OPTIONS.map(option=><option key={option.value} value={option.value}>{option.label} — {option.description}</option>)}</select></label></div>{pdfIncomplete&&<div className="error-banner" role="alert">{pdf.candidateRowCount===0?"No dated transaction rows were found in the extracted text. Try a clearer image or another source format.":`${pdf.unmatchedLineNumbers.length} of ${pdf.candidateRowCount} dated rows do not match this layout (extracted lines ${pdf.unmatchedLineNumbers.slice(0,8).join(", ")}${pdf.unmatchedLineNumbers.length>8?", …":""}). Import is disabled to prevent a partial statement.`}</div>}</>}
+          {pdf&&<><div className="ofx-summary"><div><span>Document type</span><strong>{ocrSource==="pdf"?"Scanned PDF (local OCR)":ocrSource==="image"?"OCR statement image":"Searchable PDF"}</strong></div>{ocrPageCount!==null&&<div><span>Pages processed</span><strong>{ocrPageCount}</strong></div>}{ocrConfidence!==null&&<div><span>OCR confidence</span><strong>{Math.round(ocrConfidence)}%</strong></div>}<div><span>Dated rows</span><strong>{pdf.candidateRowCount}</strong></div><div><span>Recognized rows</span><strong>{pdf.matchedRowCount}</strong></div><div><span>Unrecognized rows</span><strong>{pdf.unmatchedLineNumbers.length}</strong></div></div><div className="profile-controls workbook-controls"><label>Statement layout<select value={pdf.layout} onChange={event=>{setError("");configurePdf(pdfText,event.target.value as PdfLayout);}}>{PDF_LAYOUT_OPTIONS.map(option=><option key={option.value} value={option.value}>{option.label} — {option.description}</option>)}</select></label></div>{pdfIncomplete&&<div className="error-banner" role="alert">{pdf.candidateRowCount===0?"No dated transaction rows were found in the extracted text. Try a clearer scan or another source format.":`${pdf.unmatchedLineNumbers.length} of ${pdf.candidateRowCount} dated rows do not match this layout (extracted lines ${pdf.unmatchedLineNumbers.slice(0,8).join(", ")}${pdf.unmatchedLineNumbers.length>8?", …":""}). Import is disabled to prevent a partial statement.`}</div>}</>}
           {workbook&&<div className="profile-controls workbook-controls">
             <label>Worksheet<select value={workbookSheetIndex} onChange={event=>{try{setError("");configureWorkbook(workbook,Number(event.target.value));}catch(reason){showError(reason);}}}>{workbook.sheets.map((sheet,index)=><option key={`${sheet.name}-${index}`} value={index}>{sheet.name}</option>)}</select></label>
             <label>Header row<select value={workbookHeaderRow} onChange={event=>{try{setError("");configureWorkbook(workbook,workbookSheetIndex,Number(event.target.value));}catch(reason){showError(reason);}}}>{workbookHeaderChoices(workbook.sheets[workbookSheetIndex]).map(index=><option key={index} value={index}>Row {workbook.sheets[workbookSheetIndex].firstRow+index}: {workbook.sheets[workbookSheetIndex].rows[index].filter(Boolean).slice(0,3).join(" · ")}</option>)}</select></label>

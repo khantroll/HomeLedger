@@ -1,6 +1,7 @@
 node_modules/
 dist/
 public/ocr/
+public/pdfjs/
 *.tsbuildinfo
 src-tauri/target/
 src-tauri/gen/
