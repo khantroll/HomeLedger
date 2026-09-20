@@ -1232,7 +1232,7 @@ fn clean_import_profile(request:ImportProfileRequest,id:String)->Result<ImportPr
     let source_signature=clean_optional(request.source_signature,200)?;
     let pdf_layout=clean_optional(request.pdf_layout,40)?;
     if pdf_layout.as_ref().is_some_and(|layout|!["signed-last","signed-before-balance","expenses-last","expenses-before-balance"].contains(&layout.as_str())){return Err("Import profile PDF layout is invalid".into());}
-    if request.source_kind=="pdf"||request.source_kind=="ocr" {if source_signature.is_none()||pdf_layout.is_none(){return Err("PDF and OCR templates require a source signature and statement layout".into());}}
+    if (request.source_kind=="pdf"||request.source_kind=="ocr")&&(source_signature.is_none()||pdf_layout.is_none()){return Err("PDF and OCR templates require a source signature and statement layout".into());}
     let workbook_sheet_name=clean_optional(request.workbook_sheet_name,200)?;
     if request.workbook_header_row.is_some_and(|row|!(0..=10000).contains(&row)){return Err("Workbook header row is out of range".into());}
     if request.source_kind=="workbook"&&(source_signature.is_none()||workbook_sheet_name.is_none()||request.workbook_header_row.is_none()){return Err("Workbook templates require a source signature, worksheet, and header row".into());}
