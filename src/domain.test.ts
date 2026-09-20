@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMoney, parseMoney, reconciliationBalance, reconciliationDifference, runningBalances, sumMoney, validateSplits, type Transaction } from "./domain";
+import { formatMoney, normalizeTransactionQuery, parseMoney, reconciliationBalance, reconciliationDifference, REGISTER_PAGE_SIZE_MAX, runningBalances, sumMoney, validateSplits, type Transaction } from "./domain";
 
 describe("money domain", () => {
   it("formats integer minor units", () => expect(formatMoney(-123456)).toBe("-$1,234.56"));
@@ -22,6 +22,11 @@ describe("money domain", () => {
       { ...base, id: "2", amountMinor: -40 }
     ];
     expect(runningBalances(1000, rows)).toEqual([1100, 1060]);
+  });
+  it("clamps register page queries", () => {
+    expect(normalizeTransactionQuery({ limit: 0, offset: -4 })).toMatchObject({ limit: 1, offset: 0, newest: false });
+    expect(normalizeTransactionQuery({ limit: 9_999 }).limit).toBe(REGISTER_PAGE_SIZE_MAX);
+    expect(normalizeTransactionQuery({ newest: true }).newest).toBe(true);
   });
   it("proves a reconciliation against the statement closing balance", () => {
     const rows = [{ amountMinor: 25000 }, { amountMinor: -4250 }, { amountMinor: -750 }];

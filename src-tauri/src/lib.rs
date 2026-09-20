@@ -663,40 +663,200 @@ fn create_account(request: CreateAccountRequest, state: State<DbState>) -> Resul
     Ok(account)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransactionQuery {
+    account_id: Option<String>,
+    #[serde(default)]
+    offset: i64,
+    #[serde(default = "default_transaction_page_limit")]
+    limit: i64,
+    from_date: Option<String>,
+    to_date: Option<String>,
+    status: Option<String>,
+    search: Option<String>,
+    #[serde(default)]
+    newest: bool,
+}
+
+fn default_transaction_page_limit() -> i64 { 100 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransactionPage {
+    transactions: Vec<LedgerTransaction>,
+    total_count: i64,
+    offset: i64,
+    limit: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prior_balance_minor: Option<i64>,
+}
+
+const TRANSACTION_PAGE_SIZE_MAX: i64 = 500;
+
+fn normalize_transaction_query(mut request: TransactionQuery) -> Result<TransactionQuery, String> {
+    if let Some(account_id) = request.account_id.take() {
+        request.account_id = Some(clean_required(account_id, "Account", 80)?);
+    }
+    if let Some(from_date) = request.from_date.take() {
+        let value = from_date.trim().to_string();
+        if !value.is_empty() {
+            if NaiveDate::parse_from_str(&value, "%Y-%m-%d").is_err() { return Err("From date must be a valid YYYY-MM-DD date".into()); }
+            request.from_date = Some(value);
+        }
+    }
+    if let Some(to_date) = request.to_date.take() {
+        let value = to_date.trim().to_string();
+        if !value.is_empty() {
+            if NaiveDate::parse_from_str(&value, "%Y-%m-%d").is_err() { return Err("To date must be a valid YYYY-MM-DD date".into()); }
+            request.to_date = Some(value);
+        }
+    }
+    if let (Some(from), Some(to)) = (&request.from_date, &request.to_date) {
+        if from > to { return Err("From date must be on or before the to date".into()); }
+    }
+    if let Some(status) = request.status.take() {
+        let value = status.trim().to_ascii_lowercase();
+        if !value.is_empty() && value != "all" {
+            const STATUSES: &[&str] = &["pending", "cleared", "reconciled", "review"];
+            if !STATUSES.contains(&value.as_str()) { return Err("Unsupported transaction status filter".into()); }
+            request.status = Some(value);
+        }
+    }
+    if let Some(search) = request.search.take() {
+        let value = search.trim().to_string();
+        if value.chars().count() > 160 { return Err("Search text is too long".into()); }
+        if !value.is_empty() { request.search = Some(value); }
+    }
+    request.limit = request.limit.clamp(1, TRANSACTION_PAGE_SIZE_MAX);
+    request.offset = request.offset.max(0);
+    Ok(request)
+}
+
 fn query_transactions(connection: &Connection, account_id: Option<&str>, statement_end_date: Option<&str>, reconciliation_candidates: bool) -> Result<Vec<LedgerTransaction>, String> {
-    let mut items = {
-        let mut statement = connection.prepare(
-            "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, external_id, source, import_batch_id
-             FROM transactions
-             WHERE (?1 IS NULL OR account_id = ?1)
-               AND (?2 IS NULL OR posted_date <= ?2)
-               AND (?3 = 0 OR (status <> 'reconciled' AND NOT EXISTS (
-                 SELECT 1 FROM reconciliation_items item WHERE item.transaction_id = transactions.id
-               )))
-             ORDER BY posted_date DESC, created_at DESC
-             LIMIT ?4"
-        ).map_err(|e| e.to_string())?;
-        let limit = if reconciliation_candidates { i64::MAX } else { 1000 };
-        let rows = statement.query_map(params![account_id, statement_end_date, reconciliation_candidates, limit], |row| Ok(LedgerTransaction { id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, original_payee: row.get(4)?, category: row.get(5)?, amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, external_id: row.get(9)?, source: row.get(10)?, import_batch_id: row.get(11)?, splits: vec![], transfer_link_id: None, transfer_account_id: None })).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    let page = list_transactions_page_inner(connection, TransactionQuery {
+        account_id: account_id.map(str::to_string),
+        offset: 0,
+        limit: if reconciliation_candidates { i64::MAX } else { TRANSACTION_PAGE_SIZE_MAX },
+        from_date: None,
+        to_date: statement_end_date.map(str::to_string),
+        status: None,
+        search: None,
+        newest: false,
+    }, reconciliation_candidates)?;
+    let mut all = page.transactions;
+    if !reconciliation_candidates {
+        let mut offset = all.len() as i64;
+        while offset < page.total_count {
+            let next = list_transactions_page_inner(connection, TransactionQuery {
+                account_id: account_id.map(str::to_string),
+                offset,
+                limit: TRANSACTION_PAGE_SIZE_MAX,
+                from_date: None,
+                to_date: statement_end_date.map(str::to_string),
+                status: None,
+                search: None,
+                newest: false,
+            }, false)?;
+            if next.transactions.is_empty() { break; }
+            offset += next.transactions.len() as i64;
+            all.extend(next.transactions);
+        }
+        // Preserve the historical newest-first contract used by import review and existing tests.
+        all.reverse();
+    }
+    Ok(all)
+}
+
+fn list_transactions_page_inner(connection: &Connection, request: TransactionQuery, reconciliation_candidates: bool) -> Result<TransactionPage, String> {
+    let request = if reconciliation_candidates {
+        TransactionQuery { limit: i64::MAX, offset: 0, newest: false, ..request }
+    } else {
+        normalize_transaction_query(request)?
     };
+    if let Some(account_id) = &request.account_id {
+        let exists: Option<i64> = connection.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+        if exists.is_none() { return Err("Account does not exist".into()); }
+    }
+    let search = request.search.as_ref().map(|value| format!("%{}%", value.to_ascii_lowercase()));
+    let status = request.status.as_deref();
+    let from_date = request.from_date.as_deref();
+    let to_date = request.to_date.as_deref();
+    let account_id = request.account_id.as_deref();
+    let filter_sql = "
+        (?1 IS NULL OR account_id = ?1)
+        AND (?2 IS NULL OR posted_date >= ?2)
+        AND (?3 IS NULL OR posted_date <= ?3)
+        AND (?4 IS NULL OR status = ?4)
+        AND (?5 IS NULL OR (
+          lower(payee) LIKE ?5 OR lower(category) LIKE ?5 OR lower(COALESCE(memo,'')) LIKE ?5 OR lower(COALESCE(original_payee,'')) LIKE ?5
+        ))
+        AND (?6 = 0 OR (status <> 'reconciled' AND NOT EXISTS (
+          SELECT 1 FROM reconciliation_items item WHERE item.transaction_id = transactions.id
+        )))
+    ";
+    let total_count: i64 = connection.query_row(
+        &format!("SELECT COUNT(*) FROM transactions WHERE {filter_sql}"),
+        params![account_id, from_date, to_date, status, search, reconciliation_candidates],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    let limit = if reconciliation_candidates { total_count.max(1) } else { request.limit };
+    let offset = if request.newest {
+        (total_count - limit).max(0)
+    } else {
+        request.offset.min(total_count)
+    };
+    let mut statement = connection.prepare(&format!(
+        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, external_id, source, import_batch_id
+         FROM transactions
+         WHERE {filter_sql}
+         ORDER BY posted_date ASC, created_at ASC, id ASC
+         LIMIT ?7 OFFSET ?8"
+    )).map_err(|e| e.to_string())?;
+    let rows = statement.query_map(params![account_id, from_date, to_date, status, search, reconciliation_candidates, limit, offset], |row| Ok(LedgerTransaction {
+        id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, original_payee: row.get(4)?, category: row.get(5)?,
+        amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, external_id: row.get(9)?, source: row.get(10)?, import_batch_id: row.get(11)?,
+        splits: vec![], transfer_link_id: None, transfer_account_id: None
+    })).map_err(|e| e.to_string())?;
+    let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     let mut split_statement = connection.prepare("SELECT id, category, amount_minor, memo FROM transaction_splits WHERE transaction_id = ?1 ORDER BY sort_order, rowid").map_err(|e| e.to_string())?;
     for item in &mut items {
-        let rows = split_statement.query_map(params![item.id], |row| Ok(LedgerTransactionSplit { id: row.get(0)?, category: row.get(1)?, amount_minor: row.get(2)?, memo: row.get(3)? })).map_err(|e| e.to_string())?;
-        item.splits = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        let split_rows = split_statement.query_map(params![item.id], |row| Ok(LedgerTransactionSplit { id: row.get(0)?, category: row.get(1)?, amount_minor: row.get(2)?, memo: row.get(3)? })).map_err(|e| e.to_string())?;
+        item.splits = split_rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     }
     let mut transfer_statement = connection.prepare("SELECT l.id, CASE WHEN l.from_transaction_id = ?1 THEN destination.account_id ELSE origin.account_id END FROM transfer_links l JOIN transactions origin ON origin.id = l.from_transaction_id JOIN transactions destination ON destination.id = l.to_transaction_id WHERE l.from_transaction_id = ?1 OR l.to_transaction_id = ?1").map_err(|e| e.to_string())?;
     for item in &mut items {
         let link: Option<(String,String)> = transfer_statement.query_row(params![item.id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?;
-        if let Some((link_id,account_id))=link { item.transfer_link_id=Some(link_id);item.transfer_account_id=Some(account_id); }
+        if let Some((link_id, linked_account_id)) = link { item.transfer_link_id = Some(link_id); item.transfer_account_id = Some(linked_account_id); }
     }
-    Ok(items)
+    let prior_balance_minor = if let Some(account_id) = account_id {
+        let opening: i64 = connection.query_row("SELECT opening_balance_minor FROM accounts WHERE id = ?1", params![account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        let prior_amounts: i64 = connection.query_row(
+            &format!("SELECT COALESCE(SUM(amount_minor), 0) FROM (
+                SELECT amount_minor FROM transactions WHERE {filter_sql}
+                ORDER BY posted_date ASC, created_at ASC, id ASC
+                LIMIT ?7
+             )"),
+            params![account_id, from_date, to_date, status, search, reconciliation_candidates, offset],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        Some(opening.checked_add(prior_amounts).ok_or("Prior balance exceeds safe integer range")?)
+    } else {
+        None
+    };
+    Ok(TransactionPage { transactions: items, total_count, offset, limit: request.limit, prior_balance_minor })
 }
 
 #[tauri::command]
 fn list_transactions(account_id: Option<String>, state: State<DbState>) -> Result<Vec<LedgerTransaction>, String> {
     let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
     query_transactions(&connection, account_id.as_deref(), None, false)
+}
+
+#[tauri::command]
+fn list_transactions_page(request: TransactionQuery, state: State<DbState>) -> Result<TransactionPage, String> {
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    list_transactions_page_inner(&connection, request, false)
 }
 
 #[tauri::command]
@@ -1923,7 +2083,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![list_accounts, create_account, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

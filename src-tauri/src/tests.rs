@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest};
 use calamine::Data;
 use rusqlite::Connection;
 
@@ -420,4 +420,53 @@ fn backup_validation_accepts_supported_pre_savings_schema() {
     apply_migrations(&mut connection).unwrap();
     connection.execute_batch("DROP TABLE savings_goals; DELETE FROM schema_migrations WHERE version=14;").unwrap();
     validate_backup_database(&connection).unwrap();
+}
+
+#[test]
+fn transaction_pages_expose_history_beyond_the_old_thousand_row_cap() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 500000, 'Household')", []).unwrap();
+    for index in 0..1105 {
+        create_transaction_inner(&mut connection, CreateTransactionRequest {
+            account_id: "a".into(),
+            posted_date: format!("20{:02}-{:02}-{:02}", index / (28 * 12), (index / 28) % 12 + 1, index % 28 + 1),
+            payee: format!("History {index}"),
+            category: "Archive".into(),
+            amount_minor: -1,
+            status: if index % 2 == 0 { "pending".into() } else { "cleared".into() },
+            memo: None,
+            splits: None,
+        }).unwrap();
+    }
+    let all = query_transactions(&connection, Some("a"), None, false).unwrap();
+    assert_eq!(all.len(), 1105);
+    assert_eq!(all[0].payee, "History 1104");
+    let newest = list_transactions_page_inner(&connection, TransactionQuery {
+        account_id: Some("a".into()),
+        offset: 0,
+        limit: 100,
+        from_date: None,
+        to_date: None,
+        status: None,
+        search: None,
+        newest: true,
+    }, false).unwrap();
+    assert_eq!(newest.total_count, 1105);
+    assert_eq!(newest.offset, 1005);
+    assert_eq!(newest.transactions.len(), 100);
+    assert_eq!(newest.prior_balance_minor, Some(500000 - 1005));
+    assert_eq!(newest.transactions.last().unwrap().payee, "History 1104");
+    let earliest = list_transactions_page_inner(&connection, TransactionQuery {
+        account_id: Some("a".into()),
+        offset: 0,
+        limit: 50,
+        from_date: None,
+        to_date: None,
+        status: None,
+        search: None,
+        newest: false,
+    }, false).unwrap();
+    assert_eq!(earliest.prior_balance_minor, Some(500000));
+    assert_eq!(earliest.transactions[0].payee, "History 0");
 }

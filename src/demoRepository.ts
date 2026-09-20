@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransferResult, type UndoImportResult } from "./domain";
+import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
@@ -22,6 +22,10 @@ const initialTransactions: Transaction[] = [
 export class DemoFinanceRepository implements FinanceRepository {
   private accounts = structuredClone(initialAccounts);
   private transactions = structuredClone(initialTransactions);
+  private openingBalances = new Map(initialAccounts.map(account => {
+    const activity = initialTransactions.filter(item => item.accountId === account.id).reduce((total, item) => total + item.amountMinor, 0);
+    return [account.id, account.balanceMinor - activity] as const;
+  }));
   private importBatches: ImportBatch[] = [];
   private importedTransactionIds = new Map<string, string[]>();
   private reconciliations: Reconciliation[] = [];
@@ -38,7 +42,37 @@ export class DemoFinanceRepository implements FinanceRepository {
 
   async listAccounts(): Promise<Account[]> { return structuredClone(this.accounts); }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
-    return structuredClone(accountId ? this.transactions.filter((item) => item.accountId === accountId) : this.transactions);
+    const rows = accountId ? this.transactions.filter((item) => item.accountId === accountId) : this.transactions;
+    return structuredClone([...rows].sort((a, b) => b.postedDate.localeCompare(a.postedDate) || b.id.localeCompare(a.id)));
+  }
+  async listTransactionsPage(query: TransactionQuery = {}): Promise<TransactionPage> {
+    const normalized = normalizeTransactionQuery(query);
+    if (normalized.accountId && !this.accounts.some(item => item.id === normalized.accountId)) throw new Error("Account does not exist");
+    if (normalized.fromDate && !/^\d{4}-\d{2}-\d{2}$/.test(normalized.fromDate)) throw new Error("From date must be a valid YYYY-MM-DD date");
+    if (normalized.toDate && !/^\d{4}-\d{2}-\d{2}$/.test(normalized.toDate)) throw new Error("To date must be a valid YYYY-MM-DD date");
+    if (normalized.fromDate && normalized.toDate && normalized.fromDate > normalized.toDate) throw new Error("From date must be on or before the to date");
+    const search = normalized.search?.trim().toLocaleLowerCase();
+    const status = normalized.status && normalized.status !== "all" ? normalized.status : undefined;
+    const matched = this.transactions.filter(item => {
+      if (normalized.accountId && item.accountId !== normalized.accountId) return false;
+      if (normalized.fromDate && item.postedDate < normalized.fromDate) return false;
+      if (normalized.toDate && item.postedDate > normalized.toDate) return false;
+      if (status && item.status !== status) return false;
+      if (search) {
+        const haystack = `${item.payee} ${item.category} ${item.memo ?? ""} ${item.originalPayee ?? ""}`.toLocaleLowerCase();
+        if (!haystack.includes(search)) return false;
+      }
+      return true;
+    }).sort((a, b) => a.postedDate.localeCompare(b.postedDate) || a.id.localeCompare(b.id));
+    const totalCount = matched.length;
+    const offset = normalized.newest ? Math.max(0, totalCount - normalized.limit) : Math.min(normalized.offset, totalCount);
+    const transactions = matched.slice(offset, offset + normalized.limit);
+    let priorBalanceMinor: number | undefined;
+    if (normalized.accountId) {
+      const opening = this.openingBalances.get(normalized.accountId) ?? 0;
+      priorBalanceMinor = sumMoney([opening, ...matched.slice(0, offset).map(item => item.amountMinor)]);
+    }
+    return structuredClone({ transactions, totalCount, offset, limit: normalized.limit, priorBalanceMinor });
   }
   async listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]> {
     if (!this.accounts.some(item => item.id === accountId)) throw new Error("Account does not exist");
@@ -76,6 +110,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   async createAccount(input: CreateAccountInput): Promise<Account> {
     const account: Account = { id: crypto.randomUUID(), name: input.name, institution: input.institution, type: input.type, currency: input.currency, balanceMinor: input.openingBalanceMinor, ownerLabel: input.ownerLabel };
     this.accounts.push(account);
+    this.openingBalances.set(account.id, input.openingBalanceMinor);
     return structuredClone(account);
   }
   async createTransaction(input: CreateTransactionInput): Promise<Transaction> {
