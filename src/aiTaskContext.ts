@@ -534,14 +534,14 @@ function periodLimitationNote(
   analysis:SpendingChangePeriodFacts,
   comparison:SpendingChangePeriodFacts&{alignment:string}
 ):string{
+  if(comparison.alignment==="custom"&&analysis.dayCount!==comparison.dayCount){
+    return `Analysis and comparison periods have different lengths (${analysis.dayCount} vs ${comparison.dayCount} days). Absolute totals are authoritative; do not invent per-day causes.`;
+  }
   if(analysis.isPartialMonth&&comparison.alignment==="equivalent-prior-days"){
     return `Analysis covers ${analysis.dayCount} days month-to-date. Comparison uses the same number of days from the prior month so incomplete months are not compared against a full month.`;
   }
   if(analysis.isPartialMonth){
     return `Analysis period is a partial month (${analysis.dayCount} days). Treat remaining days as unknown when explaining the change.`;
-  }
-  if(comparison.alignment==="custom"&&analysis.dayCount!==comparison.dayCount){
-    return `Analysis and comparison periods have different lengths (${analysis.dayCount} vs ${comparison.dayCount} days). Absolute totals are authoritative; do not invent per-day causes.`;
   }
   return "Both periods are fully specified by HomeLedger. Explain only causes supported by the supplied totals and selected transactions.";
 }
