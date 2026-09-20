@@ -851,3 +851,26 @@ fn gemini_mocked_transport_uses_generate_content_and_preserves_reviewed_payload(
         confirmed: true,
     }, "gemini-key", |_,_,_| Ok(vec![])).unwrap_err().contains("256 KB"));
 }
+
+#[test]
+fn spending_change_task_selects_dedicated_system_prompt_across_providers() {
+    let payload = serde_json::json!({
+        "model": "gpt-4.1-mini",
+        "purpose": "Why was this month expensive?",
+        "disclosureMode": "task-specific",
+        "analysisMode": "task",
+        "task": "spending-change-analysis",
+        "schemaVersion": 1,
+        "data": {"task": "spending-change-analysis", "spendingChangeMinor": 60000}
+    }).to_string();
+    let openai = super::build_openai_chat_body("gpt-4.1-mini", &payload).unwrap();
+    assert!(openai["messages"][0]["content"].as_str().unwrap().contains("Spending Change Analysis"));
+    assert!(openai["messages"][0]["content"].as_str().unwrap().contains("Do not invent causes"));
+    let anthropic_payload = payload.replace("gpt-4.1-mini", "claude-sonnet-4-5");
+    let anthropic = super::build_anthropic_messages_body("claude-sonnet-4-5", &anthropic_payload).unwrap();
+    assert!(anthropic["system"].as_str().unwrap().contains("Spending Change Analysis"));
+    let gemini_payload = payload.replace("gpt-4.1-mini", "gemini-2.0-flash");
+    let gemini = super::build_gemini_generate_content_body("gemini-2.0-flash", &gemini_payload).unwrap();
+    assert!(gemini["systemInstruction"]["parts"][0]["text"].as_str().unwrap().contains("incomplete-period"));
+    assert!(super::task_system_prompt(&payload).contains("Spending Change Analysis"));
+}

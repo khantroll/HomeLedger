@@ -23,7 +23,7 @@ import {
   type CloudProviderDraft,
   type EnabledCloudProviderType
 } from "./aiProvider";
-import {buildAffordabilityAnalysisContext} from "./aiTaskContext";
+import {buildAffordabilityAnalysisContext,buildSpendingChangeAnalysisContext,defaultSpendingChangePeriods,type AiTaskKind,type SpendingChangeAnalysisContext} from "./aiTaskContext";
 import {assertCloudSendConfirmation,presentAiAdviceText} from "./aiCloud";
 import {validateCredentialAccountId,validateCredentialSecret} from "./aiCredentials";
 import {aiRepository,financeRepository as repository,isNativeApp} from "./repository";
@@ -39,6 +39,10 @@ const disclosureOptions:{value:AiDisclosureMode;label:string;detail:string}[]=[
   {value:"full-local",label:"Full Local Context",detail:"Exact ledger descriptions for a verified localhost model only."}
 ];
 const customOptions:{value:CustomDisclosureField;label:string}[]=[{value:"accountType",label:"Account type"},{value:"month",label:"Transaction month"},{value:"amountBand",label:"$10 amount band"},{value:"merchantAlias",label:"Merchant alias"},{value:"categoryAlias",label:"Category alias"}];
+
+function money(minor:number,currency:string):string{
+  return new Intl.NumberFormat(undefined,{style:"currency",currency}).format(minor/100);
+}
 
 export function AiInsightsPage({
   accounts,
@@ -56,16 +60,23 @@ export function AiInsightsPage({
   today?:string;
 }){
   const currencies=useMemo(()=>[...new Set(accounts.map(item=>item.currency))].sort(),[accounts]);
+  const defaultPeriods=useMemo(()=>defaultSpendingChangePeriods(today),[today]);
   const [analysisMode,setAnalysisMode]=useState<AiAnalysisMode>("task");
+  const [taskKind,setTaskKind]=useState<AiTaskKind>("affordability-analysis");
   const [kind,setKind]=useState<LocalAiProviderKind>("ollama");
   const [endpoint,setEndpoint]=useState(LOCAL_PROVIDER_PRESETS.ollama.endpoint);
   const [model,setModel]=useState("");
   const [purpose,setPurpose]=useState("Can I afford another $50 per month?");
   const [proposedCost,setProposedCost]=useState("50.00");
+  const [analysisFrom,setAnalysisFrom]=useState(defaultPeriods.analysis.fromDate);
+  const [analysisTo,setAnalysisTo]=useState(defaultPeriods.analysis.toDate);
+  const [comparisonFrom,setComparisonFrom]=useState(defaultPeriods.comparison.fromDate);
+  const [comparisonTo,setComparisonTo]=useState(defaultPeriods.comparison.toDate);
   const [currency,setCurrency]=useState(currencies[0]??"USD");
   const [mode,setMode]=useState<AiDisclosureMode>("aggregate");
   const [customFields,setCustomFields]=useState<Set<CustomDisclosureField>>(new Set(["accountType","month","amountBand"]));
   const [preview,setPreview]=useState<AiFirewallPreview|null>(null);
+  const [spendingFindings,setSpendingFindings]=useState<SpendingChangeAnalysisContext|null>(null);
   const [error,setError]=useState("");
   const [connectionNotice,setConnectionNotice]=useState("");
   const [testing,setTesting]=useState(false);
@@ -91,9 +102,15 @@ export function AiInsightsPage({
   const cloudEnabled=isEnabledCloudProvider(cloudType);
   const cloudLabel=cloudType==="openai-compatible-remote"?"Remote OpenAI-compatible":CLOUD_PROVIDER_PRESETS[cloudType].label;
 
-  useEffect(()=>{setPreview(null);setAnswer("");setCloudConfirm(false);},[accounts,transactions,templates,occurrences,budgets]);
+  useEffect(()=>{setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);},[accounts,transactions,templates,occurrences,budgets]);
   useEffect(()=>{if(currencies.length&&!currencies.includes(currency))setCurrency(currencies[0]);},[currencies,currency]);
   useEffect(()=>{setTaskBudgets(budgets);setTaskOccurrences(occurrences);},[budgets,occurrences]);
+  useEffect(()=>{
+    setAnalysisFrom(defaultPeriods.analysis.fromDate);
+    setAnalysisTo(defaultPeriods.analysis.toDate);
+    setComparisonFrom(defaultPeriods.comparison.fromDate);
+    setComparisonTo(defaultPeriods.comparison.toDate);
+  },[defaultPeriods]);
   useEffect(()=>{
     let current=true;
     void Promise.all([
@@ -133,6 +150,29 @@ export function AiInsightsPage({
     });
   }
 
+  function buildSpendingChangeContext(){
+    return buildSpendingChangeAnalysisContext({
+      question:purpose,
+      currency,
+      asOfDate:today,
+      analysisPeriod:{fromDate:analysisFrom,toDate:analysisTo},
+      comparisonPeriod:{fromDate:comparisonFrom,toDate:comparisonTo},
+      accounts,
+      transactions,
+      templates
+    });
+  }
+
+  function buildSelectedTaskContext(){
+    return taskKind==="spending-change-analysis"?buildSpendingChangeContext():buildAffordabilityContext();
+  }
+
+  function changeTaskKind(next:AiTaskKind){
+    setTaskKind(next);
+    setPurpose(next==="spending-change-analysis"?"Why was this month expensive?":"Can I afford another $50 per month?");
+    setPreview(null);setSpendingFindings(null);setAnswer("");setError("");setCloudConfirm(false);
+  }
+
   function changeKind(next:LocalAiProviderKind){
     setKind(next);
     if(next==="ollama")setEndpoint(LOCAL_PROVIDER_PRESETS.ollama.endpoint);
@@ -155,12 +195,17 @@ export function AiInsightsPage({
     try{
       if(analysisMode==="task"){
         const local=validateLocalAiProvider({kind,endpoint,model});
-        setPreview(buildAiTaskFirewallPreview({provider:localProviderDescriptor(local),taskContext:buildAffordabilityContext()}));
+        const taskContext=buildSelectedTaskContext();
+        if(taskContext.task==="spending-change-analysis")setSpendingFindings(taskContext);
+        else setSpendingFindings(null);
+        setPreview(buildAiTaskFirewallPreview({provider:localProviderDescriptor(local),taskContext}));
       }else{
+        setSpendingFindings(null);
         setPreview(buildAiFirewallPreview({provider:{kind,endpoint,model},purpose,mode,accounts,transactions,customFields:[...customFields]}));
       }
     }catch(reason){
       setPreview(null);
+      setSpendingFindings(null);
       setError(reason instanceof Error?reason.message:String(reason));
     }
   }
@@ -256,10 +301,14 @@ export function AiInsightsPage({
         model:cloudModel.trim()||CLOUD_PROVIDER_PRESETS[cloudType].defaultModel||"cloud-model",
         accountId:cloudAccountId
       }));
-      setPreview(buildAiTaskFirewallPreview({provider,taskContext:buildAffordabilityContext()}));
+      const taskContext=buildSelectedTaskContext();
+      if(taskContext.task==="spending-change-analysis")setSpendingFindings(taskContext);
+      else setSpendingFindings(null);
+      setPreview(buildAiTaskFirewallPreview({provider,taskContext}));
       setCloudNotice(`Review the exact payload. ${provider.label} transmission leaves this device and requires explicit confirmation.`);
     }catch(reason){
       setPreview(null);
+      setSpendingFindings(null);
       setError(reason instanceof Error?reason.message:String(reason));
     }
   }
@@ -280,16 +329,29 @@ export function AiInsightsPage({
         <div className="panel-heading"><div><h2>Local model provider</h2><p>Configuration stays in memory and is not saved yet</p></div><Server size={18}/></div>
         <div className="ai-form">
           <fieldset><legend>Analysis mode</legend>
-            <label className={analysisMode==="task"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="task"} onChange={()=>{setAnalysisMode("task");setPreview(null);setAnswer("");setCloudConfirm(false);}}/><span><strong>Affordability Analysis</strong><small>Deterministic task context for questions like “Can I afford another $50 per month?”</small></span></label>
-            <label className={analysisMode==="adhoc"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="adhoc"} onChange={()=>{setAnalysisMode("adhoc");setPreview(null);setAnswer("");setCloudConfirm(false);}}/><span><strong>Custom / ad-hoc question</strong><small>Uses Aggregate Only, Redacted, Custom, or Full Local Context disclosure modes.</small></span></label>
+            <label className={analysisMode==="task"&&taskKind==="affordability-analysis"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="task"&&taskKind==="affordability-analysis"} onChange={()=>{setAnalysisMode("task");changeTaskKind("affordability-analysis");}}/><span><strong>Affordability Analysis</strong><small>Deterministic task context for questions like “Can I afford another $50 per month?”</small></span></label>
+            <label className={analysisMode==="task"&&taskKind==="spending-change-analysis"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="task"&&taskKind==="spending-change-analysis"} onChange={()=>{setAnalysisMode("task");changeTaskKind("spending-change-analysis");}}/><span><strong>Spending Change Analysis</strong><small>Compare periods to explain “Why was this month expensive?”</small></span></label>
+            <label className={analysisMode==="adhoc"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="adhoc"} onChange={()=>{setAnalysisMode("adhoc");setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}/><span><strong>Custom / ad-hoc question</strong><small>Uses Aggregate Only, Redacted, Custom, or Full Local Context disclosure modes.</small></span></label>
           </fieldset>
           <label>Provider<select value={kind} onChange={event=>changeKind(event.target.value as LocalAiProviderKind)}><option value="ollama">Ollama</option><option value="lm-studio">LM Studio</option><option value="openai-compatible-local">OpenAI-compatible localhost</option></select></label>
           <label>Local endpoint<input value={endpoint} onChange={event=>{setEndpoint(event.target.value);setPreview(null);setAnswer("");setConnectionNotice("");setCloudConfirm(false);}} inputMode="url" spellCheck={false}/><small>Only HTTP on localhost, 127.0.0.1, or ::1 is accepted.</small></label>
           <label>Model name<input value={model} onChange={event=>{setModel(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}} placeholder={kind==="ollama"?"qwen3.5:9b":"Local model identifier"}/></label>
           <label>Analysis purpose / question<textarea value={purpose} onChange={event=>{setPurpose(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}} placeholder="Can I afford another $50 per month?"/><small>Your wording is included verbatim in the preview.</small></label>
-          {analysisMode==="task"&&<>
+          {analysisMode==="task"&&taskKind==="affordability-analysis"&&<>
             <label>Currency<select value={currency} onChange={event=>{setCurrency(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}}>{currencies.length?currencies.map(item=><option key={item}>{item}</option>):<option>USD</option>}</select></label>
             <label>Proposed monthly cost<input value={proposedCost} onChange={event=>{setProposedCost(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}} inputMode="decimal"/><small>Converted locally into minor units before the task context is built.</small></label>
+          </>}
+          {analysisMode==="task"&&taskKind==="spending-change-analysis"&&<>
+            <label>Currency<select value={currency} onChange={event=>{setCurrency(event.target.value);setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}>{currencies.length?currencies.map(item=><option key={item}>{item}</option>):<option>USD</option>}</select></label>
+            <fieldset><legend>Analysis period</legend>
+              <label>From<input type="date" value={analysisFrom} onChange={event=>{setAnalysisFrom(event.target.value);setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}/></label>
+              <label>To<input type="date" value={analysisTo} onChange={event=>{setAnalysisTo(event.target.value);setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}/></label>
+            </fieldset>
+            <fieldset><legend>Comparison period</legend>
+              <label>From<input type="date" value={comparisonFrom} onChange={event=>{setComparisonFrom(event.target.value);setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}/></label>
+              <label>To<input type="date" value={comparisonTo} onChange={event=>{setComparisonTo(event.target.value);setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}/></label>
+              <small>Defaults to month-to-date versus the same number of days in the prior month.</small>
+            </fieldset>
           </>}
           {analysisMode==="adhoc"&&<>
             <fieldset><legend>Disclosure mode</legend>{disclosureOptions.map(option=><label className={mode===option.value?"ai-mode selected":"ai-mode"} key={option.value}><input type="radio" name="disclosure" value={option.value} checked={mode===option.value} onChange={()=>{setMode(option.value);setPreview(null);setAnswer("");setCloudConfirm(false);}}/><span><strong>{option.label}</strong><small>{option.detail}</small></span></label>)}</fieldset>
@@ -304,7 +366,18 @@ export function AiInsightsPage({
       </form>
       <section className="panel ai-preview">
         <div className="panel-heading"><div><h2>Privacy Firewall</h2><p>{previewIsCloud?"Cloud destination — leaves this device":"Reviewed loopback requests"}</p></div><LockKeyhole size={18}/></div>
-        {!preview?<div className="ai-preview-empty"><Bot size={30}/><strong>No payload constructed</strong><span>Prefer Affordability Analysis for structured questions, then build a preview.</span></div>:<>
+        {spendingFindings&&<div className="ai-findings" aria-live="polite">
+          <strong>HomeLedger spending findings</strong>
+          <p>{money(spendingFindings.changeSummary.spendingDifferenceMinor,spendingFindings.currency)} spending change ({spendingFindings.analysisPeriod.fromDate}–{spendingFindings.analysisPeriod.toDate} vs {spendingFindings.comparisonPeriod.fromDate}–{spendingFindings.comparisonPeriod.toDate}).</p>
+          <ul>
+            {spendingFindings.changeSummary.topIncreaseCategories.slice(0,3).map(item=><li key={`up-${item.category}`}>Up {money(item.changeMinor,spendingFindings.currency)} in {item.category}</li>)}
+            {spendingFindings.changeSummary.topDecreaseCategories.slice(0,2).map(item=><li key={`down-${item.category}`}>Down {money(Math.abs(item.changeMinor),spendingFindings.currency)} in {item.category}</li>)}
+            {spendingFindings.notableTransactions.slice(0,3).map(item=><li key={`${item.postedDate}-${item.merchantAlias}`}>{money(item.amountMinor,spendingFindings.currency)} {item.reason.replace("-"," ")} on {item.postedDate} ({item.category})</li>)}
+            {spendingFindings.changeSummary.recurringExpenseChangeMinor!==0&&<li>Recurring/scheduled spending changed by {money(spendingFindings.changeSummary.recurringExpenseChangeMinor,spendingFindings.currency)}</li>}
+          </ul>
+          <small>{spendingFindings.periodLimitations.note}</small>
+        </div>}
+        {!preview?<div className="ai-preview-empty"><Bot size={30}/><strong>No payload constructed</strong><span>Prefer a structured task analysis, then build a preview.</span></div>:<>
           <dl className="ai-preview-meta">
             <div><dt>Destination</dt><dd>{preview.destination}</dd></div>
             <div><dt>Provider</dt><dd>{preview.providerLabel}</dd></div>
@@ -339,7 +412,7 @@ export function AiInsightsPage({
         <div className="ai-control-actions">
           <button type="submit" disabled={!isNativeApp||cloudBusy||!cloudSecret}>{cloudBusy?"Saving…":cloudConfigured?"Replace credential in OS vault":"Save credential to OS vault"}</button>
           <button type="button" disabled={!isNativeApp||cloudBusy||!cloudConfigured} onClick={()=>void clearCloudCredential()}>Clear credential</button>
-          <button type="button" disabled={cloudBusy||!cloudEnabled} onClick={previewCloudTask}><Eye size={15}/> Preview affordability for {cloudLabel}</button>
+          <button type="button" disabled={cloudBusy||!cloudEnabled||analysisMode!=="task"} onClick={previewCloudTask}><Eye size={15}/> Preview {taskKind==="spending-change-analysis"?"spending change":"affordability"} for {cloudLabel}</button>
         </div>
         {!isNativeApp&&<small className="ai-native-note">OS credential vault access and cloud transmission require the native desktop application.</small>}
         <div className="ai-warning"><LockKeyhole/><span>Cloud requests use native HTTPS adapters only, never browser networking. Each send requires exact payload review and explicit confirmation. Mistral and arbitrary remote endpoints remain disabled.</span></div>

@@ -88,6 +88,9 @@ export function buildAiTaskFirewallPreview(input:{
     if(provider.allowsFullLocalContext)throw new Error("Full local capability cannot be enabled for non-local providers");
   }
   const leavesDevice=provider.trust!=="local";
+  const modeLabel=input.taskContext.task==="spending-change-analysis"
+    ?"Task-specific Spending Change Analysis"
+    :"Task-specific Affordability Analysis";
   const taskPayload={
     model:provider.model,
     purpose:input.taskContext.question,
@@ -99,7 +102,7 @@ export function buildAiTaskFirewallPreview(input:{
   };
   return finalizePreview({
     provider,
-    modeLabel:"Task-specific Affordability Analysis",
+    modeLabel,
     payload:JSON.stringify(taskPayload,null,2),
     recordCount:0,
     excludedSensitiveCategories:0,
