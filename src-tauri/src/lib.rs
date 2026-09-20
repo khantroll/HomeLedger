@@ -27,6 +27,16 @@ const MAX_CLOUD_AI_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_CLOUD_AI_RESPONSE_BYTES: usize = 1024 * 1024;
 const LOCAL_AI_SYSTEM_PROMPT: &str = "You are a read-only household-finance analyst. Explain patterns and offer clearly labeled suggestions using only the supplied context. Never claim to calculate authoritative ledger balances, never claim to change records, and never request credentials, account numbers, or additional unredacted financial files.";
 const CLOUD_AFFORDABILITY_SYSTEM_PROMPT: &str = "You are a read-only household-finance analyst for HomeLedger. Use only the supplied Affordability Analysis context. Explain the effect on monthly surplus, the projected low cash balance, relevant debt/savings/budget tradeoffs, tight periods or risks, and assumptions or limitations visible in the context. Do not recalculate authoritative balances HomeLedger already computed. Do not invent missing accounts, transactions, or credentials. Never claim to change records or execute actions. Treat your reply as advisory analysis only.";
+const CLOUD_SPENDING_CHANGE_SYSTEM_PROMPT: &str = "You are a read-only household-finance analyst for HomeLedger. Use only the supplied Spending Change Analysis context. Explain why spending changed between the analysis and comparison periods using HomeLedger's deterministic totals, category deltas, recurring changes, and selected notable transactions. Distinguish recurring structural changes, discretionary changes, unusual or one-time expenses, income changes, and incomplete-period limitations. Do not recalculate totals HomeLedger already computed. Do not invent causes unsupported by the supplied context; when the data cannot explain a change, say so explicitly. Never claim to change records, recategorize transactions, or execute actions. Treat your reply as advisory analysis only.";
+
+fn task_system_prompt(payload: &str) -> &'static str {
+    let context: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+    match context.get("task").and_then(|value| value.as_str()) {
+        Some("affordability-analysis") => CLOUD_AFFORDABILITY_SYSTEM_PROMPT,
+        Some("spending-change-analysis") => CLOUD_SPENDING_CHANGE_SYSTEM_PROMPT,
+        _ => LOCAL_AI_SYSTEM_PROMPT,
+    }
+}
 const AI_CREDENTIAL_SERVICE: &str = "HomeLedger AI Provider";
 const OPENAI_HOST: &str = "api.openai.com";
 const OPENAI_DEFAULT_ACCOUNT_ID: &str = "cloud:openai:default";
@@ -200,7 +210,7 @@ async fn query_local_ai(request:LocalAiRequest)->Result<LocalAiAnswer,String>{
     if request.payload.is_empty()||request.payload.len()>MAX_LOCAL_AI_PAYLOAD_BYTES{return Err("The reviewed AI payload must be between 1 byte and 256 KB".into());}
     let context:serde_json::Value=serde_json::from_str(&request.payload).map_err(|_|"The reviewed AI payload is not valid JSON".to_string())?;
     if context.get("model").and_then(|value|value.as_str())!=Some(model){return Err("The reviewed AI payload does not match the selected model".into());}
-    let body=serde_json::json!({"model":model,"messages":[{"role":"system","content":LOCAL_AI_SYSTEM_PROMPT},{"role":"user","content":request.payload}],"stream":false,"temperature":0.2});
+    let body=serde_json::json!({"model":model,"messages":[{"role":"system","content":task_system_prompt(&request.payload)},{"role":"user","content":request.payload}],"stream":false,"temperature":0.2});
     let response=local_ai_client()?.post(url).json(&body).send().await.map_err(|error|if error.is_timeout(){"The local AI request timed out".to_string()}else{"Could not connect to the local AI provider".to_string()})?;
     let bytes=bounded_local_ai_response(response).await?;
     let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"The local AI provider returned invalid JSON".to_string())?;
@@ -267,11 +277,7 @@ fn build_openai_chat_body(model: &str, payload: &str) -> Result<serde_json::Valu
     if context.get("model").and_then(|value| value.as_str()) != Some(model) {
         return Err("The reviewed AI payload does not match the selected model".into());
     }
-    let system = if context.get("task").and_then(|value| value.as_str()) == Some("affordability-analysis") {
-        CLOUD_AFFORDABILITY_SYSTEM_PROMPT
-    } else {
-        LOCAL_AI_SYSTEM_PROMPT
-    };
+    let system = task_system_prompt(payload);
     Ok(serde_json::json!({
         "model": model,
         "messages": [
@@ -475,11 +481,7 @@ fn build_anthropic_messages_body(model: &str, payload: &str) -> Result<serde_jso
     if context.get("model").and_then(|value| value.as_str()) != Some(model) {
         return Err("The reviewed AI payload does not match the selected model".into());
     }
-    let system = if context.get("task").and_then(|value| value.as_str()) == Some("affordability-analysis") {
-        CLOUD_AFFORDABILITY_SYSTEM_PROMPT
-    } else {
-        LOCAL_AI_SYSTEM_PROMPT
-    };
+    let system = task_system_prompt(payload);
     Ok(serde_json::json!({
         "model": model,
         "max_tokens": ANTHROPIC_MAX_TOKENS,
@@ -676,11 +678,7 @@ fn build_gemini_generate_content_body(model: &str, payload: &str) -> Result<serd
     if context.get("model").and_then(|value| value.as_str()) != Some(model) {
         return Err("The reviewed AI payload does not match the selected model".into());
     }
-    let system = if context.get("task").and_then(|value| value.as_str()) == Some("affordability-analysis") {
-        CLOUD_AFFORDABILITY_SYSTEM_PROMPT
-    } else {
-        LOCAL_AI_SYSTEM_PROMPT
-    };
+    let system = task_system_prompt(payload);
     Ok(serde_json::json!({
         "systemInstruction": {
             "parts": [{"text": system}]
