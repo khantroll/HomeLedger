@@ -14,6 +14,8 @@ export interface Account {
   balanceMinor: number;
   ownerLabel: string;
   needsReview?: boolean;
+  sortOrder?: number;
+  archived?: boolean;
 }
 
 export interface TransactionSplit {
@@ -79,13 +81,16 @@ export interface TransactionPage {
 }
 
 export interface FinanceRepository {
-  listAccounts(): Promise<Account[]>;
+  listAccounts(includeArchived?: boolean): Promise<Account[]>;
   listTransactions(accountId?: string): Promise<Transaction[]>;
   listTransactionsPage(query?: TransactionQuery): Promise<TransactionPage>;
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]>;
   listReconciliations(accountId: string): Promise<Reconciliation[]>;
   completeReconciliation(input: CompleteReconciliationInput): Promise<Reconciliation>;
   createAccount(input: CreateAccountInput): Promise<Account>;
+  updateAccount(id: string, input: UpdateAccountInput): Promise<Account>;
+  setAccountArchived(id: string, archived: boolean): Promise<void>;
+  reorderAccounts(accountIds: string[]): Promise<void>;
   createTransaction(input: CreateTransactionInput): Promise<Transaction>;
   updateTransaction(id: string, input: CreateTransactionInput): Promise<Transaction>;
   deleteTransaction(id: string): Promise<void>;
@@ -344,6 +349,8 @@ export interface CreateAccountInput {
   openingBalanceMinor: number;
   ownerLabel: string;
 }
+
+export type UpdateAccountInput = Omit<CreateAccountInput, "openingBalanceMinor">;
 
 export interface CreateTransactionInput {
   accountId: string;

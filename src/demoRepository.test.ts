@@ -11,6 +11,34 @@ describe("finance repository contract", () => {
     expect((await repository.listAccounts()).find(item => item.id === account.id)?.balanceMinor).toBe(10000);
   });
 
+  it("edits, orders, archives, and restores accounts without losing history", async () => {
+    const repository = new DemoFinanceRepository();
+    const first = await repository.createAccount({ name: "First", type: "checking", currency: "USD", openingBalanceMinor: 1000, ownerLabel: "Alex" });
+    const second = await repository.createAccount({ name: "Second", type: "cash", currency: "USD", openingBalanceMinor: 2000, ownerLabel: "Alex" });
+    const edited = await repository.updateAccount(first.id, { name: "Primary", institution: "Local CU", type: "checking", currency: "USD", ownerLabel: "Household" });
+    expect(edited).toMatchObject({ name: "Primary", institution: "Local CU", ownerLabel: "Household" });
+
+    const activeIds = (await repository.listAccounts()).map(account => account.id);
+    const reordered = [second.id, ...activeIds.filter(id => id !== second.id)];
+    await repository.reorderAccounts(reordered);
+    expect((await repository.listAccounts())[0].id).toBe(second.id);
+
+    await repository.setAccountArchived(second.id, true);
+    expect((await repository.listAccounts()).some(account => account.id === second.id)).toBe(false);
+    expect((await repository.listAccounts(true)).find(account => account.id === second.id)).toMatchObject({ archived: true, balanceMinor: 2000 });
+    await repository.setAccountArchived(second.id, false);
+    expect((await repository.listAccounts()).at(-1)?.id).toBe(second.id);
+  });
+
+  it("protects account currency and archive dependencies", async () => {
+    const repository = new DemoFinanceRepository();
+    const account = await repository.createAccount({ name: "Protected", type: "checking", currency: "USD", openingBalanceMinor: 0, ownerLabel: "Household" });
+    await repository.createTransaction({ accountId: account.id, postedDate: "2026-09-19", payee: "Unreviewed", category: "Test", amountMinor: -100, status: "review" });
+    await expect(repository.updateAccount(account.id, { name: "Protected", type: "checking", currency: "EUR", ownerLabel: "Household" })).rejects.toThrow("Currency cannot be changed");
+    await expect(repository.setAccountArchived(account.id, true)).rejects.toThrow("Resolve pending and review transactions");
+    await expect(repository.reorderAccounts([account.id])).rejects.toThrow("every active account exactly once");
+  });
+
   it("updates the computed account balance after a transaction", async () => {
     const repository = new DemoFinanceRepository();
     const account = await repository.createAccount({

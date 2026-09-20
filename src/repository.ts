@@ -1,17 +1,20 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult } from "./domain";
+import type { Account, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
 import type { ParsedWorkbook, WorkbookRepository } from "./workbookImport";
 import type { PdfExtraction, PdfRepository } from "./pdfImport";
 
 class TauriFinanceRepository implements FinanceRepository {
-  listAccounts(): Promise<Account[]> { return invoke("list_accounts"); }
+  listAccounts(includeArchived=false): Promise<Account[]> { return invoke("list_accounts", { includeArchived }); }
   listTransactions(accountId?: string): Promise<Transaction[]> { return invoke("list_transactions", { accountId: accountId ?? null }); }
   listTransactionsPage(query: TransactionQuery = {}): Promise<TransactionPage> { return invoke("list_transactions_page", { request: query }); }
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]> { return invoke("list_reconciliation_transactions", { accountId, statementEndDate }); }
   listReconciliations(accountId: string): Promise<Reconciliation[]> { return invoke("list_reconciliations", { accountId }); }
   completeReconciliation(input: CompleteReconciliationInput): Promise<Reconciliation> { return invoke("complete_reconciliation", { request: input }); }
   createAccount(input: CreateAccountInput): Promise<Account> { return invoke("create_account", { request: input }); }
+  updateAccount(id: string,input: UpdateAccountInput): Promise<Account> { return invoke("update_account", { accountId:id,request:input }); }
+  setAccountArchived(id:string,archived:boolean):Promise<void>{return invoke("set_account_archived",{accountId:id,archived});}
+  reorderAccounts(accountIds:string[]):Promise<void>{return invoke("reorder_accounts",{accountIds});}
   createTransaction(input: CreateTransactionInput): Promise<Transaction> { return invoke("create_transaction", { request: input }); }
   updateTransaction(id: string, input: CreateTransactionInput): Promise<Transaction> { return invoke("update_transaction", { transactionId: id, request: input }); }
   deleteTransaction(id: string): Promise<void> { return invoke("delete_transaction", { transactionId: id }); }

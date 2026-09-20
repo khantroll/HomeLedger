@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, restore_database_inner, save_debt_plan_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest, UpdateAccountRequest};
 use calamine::Data;
 use rusqlite::Connection;
 
@@ -64,6 +64,35 @@ fn migration_upgrades_a_populated_version_five_ledger() {
 fn input_cleaning_rejects_missing_required_values() {
     assert!(clean_required("  ".into(), "Name", 80).is_err());
     assert_eq!(clean_optional(Some("  ".into()), 80).unwrap(), None);
+}
+
+#[test]
+fn account_lifecycle_preserves_history_and_enforces_safety_rules() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label, sort_order) VALUES('a', 'Checking', 'checking', 'USD', 1000, 'Household', 0), ('b', 'Cash', 'cash', 'USD', 2000, 'Household', 1)", []).unwrap();
+
+    let edited = update_account_inner(&connection, "a", UpdateAccountRequest {
+        name: "Primary".into(), institution: Some("Local CU".into()), r#type: "checking".into(), currency: "EUR".into(), owner_label: "Alex".into(),
+    }).unwrap();
+    assert_eq!((edited.name.as_str(), edited.currency.as_str(), edited.owner_label.as_str()), ("Primary", "EUR", "Alex"));
+
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, source) VALUES('review', 'a', '2026-09-20', 'Store', 'Test', -100, 'review', 'manual')", []).unwrap();
+    assert!(update_account_inner(&connection, "a", UpdateAccountRequest {
+        name: "Primary".into(), institution: None, r#type: "checking".into(), currency: "GBP".into(), owner_label: "Alex".into(),
+    }).is_err());
+    assert!(set_account_archived_inner(&connection, "a", true).is_err());
+
+    connection.execute("UPDATE transactions SET status='cleared' WHERE id='review'", []).unwrap();
+    set_account_archived_inner(&connection, "a", true).unwrap();
+    let archived: bool = connection.query_row("SELECT archived_at IS NOT NULL FROM accounts WHERE id='a'", [], |row| row.get(0)).unwrap();
+    assert!(archived);
+    set_account_archived_inner(&connection, "a", false).unwrap();
+
+    reorder_accounts_inner(&mut connection, &["a".into(), "b".into()]).unwrap();
+    let order: Vec<String> = connection.prepare("SELECT id FROM accounts WHERE archived_at IS NULL ORDER BY sort_order").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(order, vec!["a", "b"]);
+    assert!(reorder_accounts_inner(&mut connection, &["a".into()]).is_err());
 }
 
 #[test]
