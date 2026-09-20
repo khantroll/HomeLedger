@@ -21,6 +21,68 @@ const MAX_WORKBOOK_CELLS: usize = 500_000;
 const MAX_WORKBOOK_CELL_CHARS: usize = 20_000;
 const MAX_PDF_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CSV_EXPORT_BYTES: usize = 50 * 1024 * 1024;
+const MAX_LOCAL_AI_PAYLOAD_BYTES: usize = 256 * 1024;
+const MAX_LOCAL_AI_RESPONSE_BYTES: usize = 1024 * 1024;
+const LOCAL_AI_SYSTEM_PROMPT: &str = "You are a read-only household-finance analyst. Explain patterns and offer clearly labeled suggestions using only the supplied context. Never claim to calculate authoritative ledger balances, never claim to change records, and never request credentials, account numbers, or additional unredacted financial files.";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAiRequest { endpoint: String, model: String, payload: String }
+
+#[derive(Serialize)]
+struct LocalAiAnswer { answer: String }
+
+fn local_ai_url(endpoint: &str, route: &str) -> Result<reqwest::Url, String> {
+    if endpoint.is_empty() || endpoint.len() > 2048 { return Err("The local AI endpoint is invalid".into()); }
+    let mut url = reqwest::Url::parse(endpoint).map_err(|_| "The local AI endpoint is invalid".to_string())?;
+    if url.scheme() != "http" { return Err("Local AI endpoints must use HTTP in this milestone".into()); }
+    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() { return Err("Local AI endpoint URLs cannot contain credentials, query strings, or fragments".into()); }
+    let host = url.host_str().ok_or_else(|| "The local AI endpoint is missing its host".to_string())?.to_ascii_lowercase();
+    if host == "localhost" { url.set_host(Some("127.0.0.1")).map_err(|_| "The local AI endpoint is invalid".to_string())?; }
+    else {
+        let address: std::net::IpAddr = host.parse().map_err(|_| "The AI endpoint must use localhost or a numeric loopback address".to_string())?;
+        if !address.is_loopback() { return Err("The AI endpoint must use a loopback address".into()); }
+    }
+    let base = url.path().trim_end_matches('/');
+    let path = if route == "chat/completions" && base.ends_with("/chat/completions") { base.to_string() }
+        else if route == "models" && base.ends_with("/chat/completions") { format!("{}/models", base.trim_end_matches("/chat/completions")) }
+        else { format!("{base}/{route}") };
+    url.set_path(&path);Ok(url)
+}
+
+fn local_ai_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(3)).timeout(Duration::from_secs(60)).user_agent("HomeLedger-local-ai").build().map_err(|_| "Could not initialize the local AI client".to_string())
+}
+
+async fn bounded_local_ai_response(mut response:reqwest::Response)->Result<Vec<u8>,String>{
+    if !response.status().is_success(){return Err(format!("The local AI provider returned HTTP {}",response.status().as_u16()));}
+    if response.content_length().is_some_and(|length|length>MAX_LOCAL_AI_RESPONSE_BYTES as u64){return Err("The local AI response exceeded the 1 MB limit".into());}
+    let mut bytes=Vec::new();
+    while let Some(chunk)=response.chunk().await.map_err(|_|"Could not read the local AI response".to_string())?{if bytes.len().saturating_add(chunk.len())>MAX_LOCAL_AI_RESPONSE_BYTES{return Err("The local AI response exceeded the 1 MB limit".into());}bytes.extend_from_slice(&chunk);}
+    Ok(bytes)
+}
+
+fn validate_local_ai_model(model:&str)->Result<&str,String>{let model=model.trim();if model.is_empty()||model.len()>200||model.chars().any(char::is_control){return Err("The local AI model name is invalid".into());}Ok(model)}
+
+#[tauri::command]
+async fn test_local_ai(endpoint:String)->Result<(),String>{
+    let url=local_ai_url(&endpoint,"models")?,client=local_ai_client()?;
+    let response=client.get(url).send().await.map_err(|error|if error.is_timeout(){"The local AI connection timed out".to_string()}else{"Could not connect to the local AI provider".to_string()})?;
+    let _=bounded_local_ai_response(response).await?;Ok(())
+}
+
+#[tauri::command]
+async fn query_local_ai(request:LocalAiRequest)->Result<LocalAiAnswer,String>{
+    let model=validate_local_ai_model(&request.model)?,url=local_ai_url(&request.endpoint,"chat/completions")?;
+    if request.payload.is_empty()||request.payload.len()>MAX_LOCAL_AI_PAYLOAD_BYTES{return Err("The reviewed AI payload must be between 1 byte and 256 KB".into());}
+    let context:serde_json::Value=serde_json::from_str(&request.payload).map_err(|_|"The reviewed AI payload is not valid JSON".to_string())?;
+    if context.get("model").and_then(|value|value.as_str())!=Some(model){return Err("The reviewed AI payload does not match the selected model".into());}
+    let body=serde_json::json!({"model":model,"messages":[{"role":"system","content":LOCAL_AI_SYSTEM_PROMPT},{"role":"user","content":request.payload}],"stream":false,"temperature":0.2});
+    let response=local_ai_client()?.post(url).json(&body).send().await.map_err(|error|if error.is_timeout(){"The local AI request timed out".to_string()}else{"Could not connect to the local AI provider".to_string()})?;
+    let bytes=bounded_local_ai_response(response).await?,value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"The local AI provider returned invalid JSON".to_string())?;
+    let answer=value.pointer("/choices/0/message/content").and_then(|item|item.as_str()).map(str::trim).filter(|item|!item.is_empty()).ok_or_else(||"The local AI provider returned no answer".to_string())?;
+    Ok(LocalAiAnswer{answer:answer.to_string()})
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2279,7 +2341,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

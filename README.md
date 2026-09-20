@@ -6,6 +6,8 @@ HomeLedger is a privacy-first, local household finance desktop application inspi
 
 ## Current status
 
+Local AI analysis can now reach Ollama, LM Studio, or another OpenAI-compatible provider through a narrow native adapter after the user builds and reviews the Privacy Firewall payload. The adapter permits HTTP loopback addresses only, normalizes `localhost` to numeric loopback, bypasses proxies, refuses redirects, bounds connection and request time, caps request/response sizes, and never logs payload or response contents. A separate model-list connection test sends no ledger data. Returned answers render as advisory text and have no repository or ledger mutation path; browser networking and all cloud providers remain disabled.
+
 Milestone 5 now begins with a non-networked AI Insights and Privacy Firewall foundation. It configures Ollama, LM Studio, or another OpenAI-compatible loopback endpoint in memory; rejects non-local destinations; and constructs an exact reviewable payload using Aggregate Only, Redacted Transactions, Custom field selection, or Full Local Context modes. Cloud providers, credential entry, request transmission, and AI ledger mutation remain disabled. Internal/provider identifiers and import provenance are always excluded, while non-full modes minimize transaction data with stable aliases, month-only dates, amount bands, and sensitive-category removal.
 
 Structured statement import now supports MT940 and ISO 20022 CAMT.052/.053/.054 alongside the existing formats. Account, currency, date-range, provider-reference, and closing-balance metadata are retained when supplied. Unsafe multi-account, mixed-currency, aggregated, malformed, or incomplete structured statements are rejected as a complete file rather than partially imported.

@@ -555,3 +555,21 @@ fn csv_export_validation_restricts_size_content_and_filename() {
     assert!(super::validate_csv_export("date,value", "../report.csv").is_err());
     assert!(super::validate_csv_export("date,value", "report.txt").is_err());
 }
+
+#[test]
+fn local_ai_urls_are_strictly_loopback_and_route_bounded_commands() {
+    assert_eq!(super::local_ai_url("http://127.0.0.1:11434/v1", "chat/completions").unwrap().as_str(), "http://127.0.0.1:11434/v1/chat/completions");
+    assert_eq!(super::local_ai_url("http://localhost:1234/v1/chat/completions", "models").unwrap().as_str(), "http://127.0.0.1:1234/v1/models");
+    assert!(super::local_ai_url("https://localhost:1234/v1", "models").is_err());
+    assert!(super::local_ai_url("http://192.168.1.10:1234/v1", "models").is_err());
+    assert!(super::local_ai_url("http://localhost.evil:1234/v1", "models").is_err());
+    assert!(super::local_ai_url("http://user@localhost:1234/v1", "models").is_err());
+}
+
+#[test]
+fn local_ai_model_validation_rejects_empty_long_and_control_values() {
+    assert_eq!(super::validate_local_ai_model(" qwen-local ").unwrap(), "qwen-local");
+    assert!(super::validate_local_ai_model("").is_err());
+    assert!(super::validate_local_ai_model(&"x".repeat(201)).is_err());
+    assert!(super::validate_local_ai_model("model\nname").is_err());
+}

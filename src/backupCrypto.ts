@@ -26,7 +26,7 @@ export async function encryptBackup(
     format: BACKUP_FORMAT,
     version: BACKUP_VERSION,
     createdAt: (options.createdAt ?? new Date()).toISOString(),
-    appVersion: options.appVersion ?? "0.35.0",
+    appVersion: options.appVersion ?? "0.36.0",
     kdf: { name: "PBKDF2-SHA256", iterations, salt: bytesToBase64(salt) },
     cipher: { name: "AES-256-GCM", iv: bytesToBase64(iv) },
     ciphertext: ""
