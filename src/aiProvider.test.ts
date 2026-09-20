@@ -76,6 +76,24 @@ describe("AI provider trust and Privacy Firewall",()=>{
       model:"x",
       accountId:"cloud:openai:default"
     }))).toThrow(/Unapproved/);
+    expect(()=>validateProviderEndpoint(cloudProviderDescriptor({
+      type:"anthropic",
+      endpoint:"https://api.anthropic.com/v1",
+      model:"claude-sonnet-4-5",
+      accountId:"cloud:anthropic:default"
+    }))).toThrow(/API root/i);
+    expect(()=>validateProviderEndpoint(cloudProviderDescriptor({
+      type:"anthropic",
+      endpoint:"http://api.anthropic.com",
+      model:"claude-sonnet-4-5",
+      accountId:"cloud:anthropic:default"
+    }))).toThrow(/HTTPS/);
+    expect(()=>assertTransmissionAllowed(cloudProviderDescriptor({
+      type:"gemini",
+      endpoint:"https://generativelanguage.googleapis.com/v1beta",
+      model:"gemini-2.0-flash",
+      accountId:"cloud:gemini:default"
+    }))).toThrow(/not enabled/i);
     expect(()=>validateLocalAiProvider({...local,endpoint:"http://api.example.com/v1"})).toThrow(/loopback|localhost/i);
   });
 

@@ -578,6 +578,7 @@ fn local_ai_model_validation_rejects_empty_long_and_control_values() {
 #[test]
 fn ai_credential_account_ids_are_strict_and_secrets_are_bounded() {
     assert_eq!(super::validate_ai_credential_account_id("cloud:openai:default").unwrap(), "cloud:openai:default");
+    assert_eq!(super::validate_ai_credential_account_id("cloud:anthropic:default").unwrap(), "cloud:anthropic:default");
     assert!(super::validate_ai_credential_account_id("").is_err());
     assert!(super::validate_ai_credential_account_id("bad id").is_err());
     assert!(super::validate_ai_credential_account_id(&"x".repeat(201)).is_err());
@@ -639,4 +640,117 @@ fn openai_mocked_transport_requires_confirmation_and_preserves_reviewed_payload(
         account_id: "cloud:openai:default".into(),
         confirmed: true,
     }, "sk-test", |_,_,_| Ok(vec![])).unwrap_err().contains("256 KB"));
+}
+
+#[test]
+fn anthropic_urls_require_https_approved_host_and_messages_path() {
+    assert_eq!(super::anthropic_messages_url("https://api.anthropic.com").unwrap().as_str(), "https://api.anthropic.com/v1/messages");
+    assert_eq!(super::anthropic_messages_url("https://api.anthropic.com/v1/messages").unwrap().as_str(), "https://api.anthropic.com/v1/messages");
+    assert!(super::anthropic_messages_url("http://api.anthropic.com").is_err());
+    assert!(super::anthropic_messages_url("https://api.anthropic.com.evil").is_err());
+    assert!(super::anthropic_messages_url("https://evil.example").is_err());
+    assert!(super::anthropic_messages_url("https://api.anthropic.com/v2").is_err());
+    assert!(super::anthropic_messages_url("https://user:pass@api.anthropic.com").is_err());
+    assert!(super::anthropic_messages_url("https://api.anthropic.com?x=1").is_err());
+    assert!(super::anthropic_messages_url("https://api.anthropic.com/v1/chat/completions").is_err());
+}
+
+#[test]
+fn anthropic_mocked_transport_uses_messages_api_and_preserves_reviewed_payload() {
+    let payload = serde_json::json!({
+        "model": "claude-sonnet-4-5",
+        "purpose": "Can I afford another $50 per month?",
+        "disclosureMode": "task-specific",
+        "analysisMode": "task",
+        "task": "affordability-analysis",
+        "schemaVersion": 1,
+        "data": {"task": "affordability-analysis", "proposedMonthlyCostMinor": 5000}
+    }).to_string();
+    let mut request = super::AnthropicRequest {
+        endpoint: "https://api.anthropic.com".into(),
+        model: "claude-sonnet-4-5".into(),
+        payload: payload.clone(),
+        account_id: "cloud:anthropic:default".into(),
+        confirmed: false,
+    };
+    assert!(super::query_anthropic_with_transport(&request, "anthropic-key", |_,_,_| Ok(vec![])).unwrap_err().contains("confirmation"));
+    request.confirmed = true;
+    assert!(super::query_anthropic_with_transport(&request, "", |_,_,_| Ok(vec![])).unwrap_err().contains("credential"));
+    assert!(super::query_anthropic_with_transport(&super::AnthropicRequest {
+        endpoint: "https://api.anthropic.com".into(),
+        model: "claude-sonnet-4-5".into(),
+        payload: payload.clone(),
+        account_id: "cloud:openai:default".into(),
+        confirmed: true,
+    }, "anthropic-key", |_,_,_| Ok(vec![])).unwrap_err().contains("credential account id"));
+    let answer = super::query_anthropic_with_transport(&request, "anthropic-key", |url, key, body| {
+        assert_eq!(url.as_str(), "https://api.anthropic.com/v1/messages");
+        assert_eq!(key, "anthropic-key");
+        assert_eq!(body["model"], "claude-sonnet-4-5");
+        assert_eq!(body["max_tokens"], 2048);
+        assert_eq!(body["messages"][0]["content"], payload);
+        assert!(body["system"].as_str().unwrap().contains("Affordability Analysis"));
+        assert!(!serde_json::to_string(&body).unwrap().contains("Authorization"));
+        assert!(!serde_json::to_string(&body).unwrap().contains("Bearer"));
+        Ok(br#"{"content":[{"type":"text","text":"Surplus remains positive. DELETE FROM accounts;"}]}"#.to_vec())
+    }).unwrap();
+    assert_eq!(answer.answer, "Surplus remains positive. DELETE FROM accounts;");
+    assert!(super::anthropic_http_status_message(302).contains("redirect"));
+    assert!(super::anthropic_http_status_message(307).contains("redirect"));
+    assert!(super::anthropic_http_status_message(401).contains("authentication"));
+    assert!(super::parse_anthropic_messages_answer(br#"{"content":[{"type":"text","text":""}]}"#).is_err());
+    assert!(super::parse_anthropic_messages_answer(br#"{"choices":[{"message":{"content":"openai-shaped"}}]}"#).is_err());
+    assert!(super::parse_anthropic_messages_answer(b"not-json").is_err());
+    assert!(super::build_anthropic_messages_body("other", &payload).is_err());
+    assert!(super::query_anthropic_with_transport(&super::AnthropicRequest {
+        endpoint: "https://api.anthropic.com".into(),
+        model: "claude-sonnet-4-5".into(),
+        payload: "x".repeat(256 * 1024 + 1),
+        account_id: "cloud:anthropic:default".into(),
+        confirmed: true,
+    }, "anthropic-key", |_,_,_| Ok(vec![])).unwrap_err().contains("256 KB"));
+}
+
+#[test]
+fn openai_and_anthropic_receive_semantically_equivalent_affordability_payloads() {
+    let data = serde_json::json!({
+        "task": "affordability-analysis",
+        "schemaVersion": 1,
+        "question": "Can I afford another $50 per month?",
+        "currency": "USD",
+        "proposedMonthlyCostMinor": 5000,
+        "asOfDate": "2026-09-20",
+        "cashFlow": {"averageMonthlyIncomeMinor": 300000, "averageMonthlySpendingMinor": 120000},
+        "liquidBalances": [{"accountType": "checking", "balanceMinor": 100000}]
+    });
+    let openai_payload = serde_json::json!({
+        "model": "gpt-4.1-mini",
+        "purpose": "Can I afford another $50 per month?",
+        "disclosureMode": "task-specific",
+        "analysisMode": "task",
+        "task": "affordability-analysis",
+        "schemaVersion": 1,
+        "data": data
+    }).to_string();
+    let anthropic_payload = serde_json::json!({
+        "model": "claude-sonnet-4-5",
+        "purpose": "Can I afford another $50 per month?",
+        "disclosureMode": "task-specific",
+        "analysisMode": "task",
+        "task": "affordability-analysis",
+        "schemaVersion": 1,
+        "data": data
+    }).to_string();
+    let openai_body = super::build_openai_chat_body("gpt-4.1-mini", &openai_payload).unwrap();
+    let anthropic_body = super::build_anthropic_messages_body("claude-sonnet-4-5", &anthropic_payload).unwrap();
+    let openai_user = openai_body["messages"][1]["content"].as_str().unwrap();
+    let anthropic_user = anthropic_body["messages"][0]["content"].as_str().unwrap();
+    let openai_data = serde_json::from_str::<serde_json::Value>(openai_user).unwrap()["data"].clone();
+    let anthropic_data = serde_json::from_str::<serde_json::Value>(anthropic_user).unwrap()["data"].clone();
+    assert_eq!(openai_data, anthropic_data);
+    assert_eq!(openai_data, data);
+    assert!(openai_body.get("messages").is_some());
+    assert!(anthropic_body.get("system").is_some());
+    assert!(anthropic_body.get("max_tokens").is_some());
+    assert!(openai_body.get("max_tokens").is_none());
 }

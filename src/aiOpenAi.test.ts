@@ -24,15 +24,12 @@ const transactions:Transaction[]=[
 ];
 
 describe("OpenAI cloud adapter boundaries",()=>{
-  it("enables only the named OpenAI provider for cloud transmission",()=>{
+  it("enables the named OpenAI provider for cloud transmission",()=>{
     const openai=validateProviderEndpoint(cloudProviderDescriptor({
       type:"openai",endpoint:OPENAI_ENDPOINT,model:"gpt-4.1-mini",accountId:OPENAI_ACCOUNT_ID
     }));
     expect(openai.transmissionEnabled).toBe(true);
     assertTransmissionAllowed(openai);
-    expect(()=>assertTransmissionAllowed(cloudProviderDescriptor({
-      type:"anthropic",endpoint:"https://api.anthropic.com",model:"claude",accountId:"cloud:anthropic:default"
-    }))).toThrow(/not enabled/i);
   });
 
   it("requires explicit confirmation and transmits only the reviewed affordability payload",()=>{
