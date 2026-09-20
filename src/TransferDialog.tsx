@@ -4,8 +4,8 @@ import { formatMoney, parseMoney, type Account, type Transaction, type Transacti
 import { financeRepository as repository } from "./repository";
 import "./transferEditor.css";
 
-export function TransferDialog({accounts,transaction,onClose,onSaved}:{accounts:Account[];transaction?:Transaction;onClose:()=>void;onSaved:()=>Promise<void>}) {
-  const initialFrom=transaction?(transaction.amountMinor<0?transaction.accountId:transaction.transferAccountId):accounts[0]?.id;
+export function TransferDialog({accounts,transaction,defaultFromAccountId,onClose,onSaved}:{accounts:Account[];transaction?:Transaction;defaultFromAccountId?:string;onClose:()=>void;onSaved:()=>Promise<void>}) {
+  const initialFrom=transaction?(transaction.amountMinor<0?transaction.accountId:transaction.transferAccountId):defaultFromAccountId??accounts[0]?.id;
   const initialTo=transaction?(transaction.amountMinor<0?transaction.transferAccountId:transaction.accountId):accounts.find(account=>account.id!==initialFrom&&account.currency===accounts.find(item=>item.id===initialFrom)?.currency)?.id;
   const [fromAccountId,setFromAccountId]=useState(initialFrom??"");
   const [toAccountId,setToAccountId]=useState(initialTo??"");

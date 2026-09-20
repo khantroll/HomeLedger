@@ -41,9 +41,47 @@ export interface Transaction {
   transferAccountId?: string;
 }
 
+/** Default register page size; large enough for daily use, small enough to stay responsive. */
+export const REGISTER_PAGE_SIZE = 100;
+/** Hard ceiling for a single page request so clients cannot ask for unbounded windows. */
+export const REGISTER_PAGE_SIZE_MAX = 500;
+
+export type TransactionStatusFilter = TransactionStatus | "all";
+
+export interface TransactionQuery {
+  accountId?: string;
+  /** Chronological offset from the oldest matching row (0 = oldest). */
+  offset?: number;
+  limit?: number;
+  fromDate?: string;
+  toDate?: string;
+  status?: TransactionStatusFilter;
+  search?: string;
+  /**
+   * When true, ignore `offset` and return the newest matching window
+   * (still ordered oldest→newest within the page for running balances).
+   */
+  newest?: boolean;
+}
+
+export interface TransactionPage {
+  transactions: Transaction[];
+  totalCount: number;
+  offset: number;
+  limit: number;
+  /**
+   * True ledger balance immediately before the first returned row:
+   * opening balance plus every account transaction that sorts earlier.
+   * Present when `accountId` is set. Meaningful for the Balance column only when
+   * the query is contiguous (status=all and no search); date filters remain contiguous.
+   */
+  priorBalanceMinor?: number;
+}
+
 export interface FinanceRepository {
   listAccounts(): Promise<Account[]>;
   listTransactions(accountId?: string): Promise<Transaction[]>;
+  listTransactionsPage(query?: TransactionQuery): Promise<TransactionPage>;
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]>;
   listReconciliations(accountId: string): Promise<Reconciliation[]>;
   completeReconciliation(input: CompleteReconciliationInput): Promise<Reconciliation>;
@@ -400,9 +438,16 @@ export function validateSplits(transaction: Pick<Transaction, "amountMinor" | "s
   return sumMoney(transaction.splits.map((split) => split.amountMinor)) === transaction.amountMinor;
 }
 
-export function runningBalances(openingMinor: number, transactions: readonly Transaction[]): number[] {
+export function runningBalances(openingMinor: number, transactions: readonly Pick<Transaction, "amountMinor">[]): number[] {
   let running = openingMinor;
   return transactions.map((transaction) => (running = sumMoney([running, transaction.amountMinor])));
+}
+
+/** Normalize a register page request before calling the repository. */
+export function normalizeTransactionQuery(query: TransactionQuery = {}): Required<Pick<TransactionQuery, "offset" | "limit" | "newest">> & TransactionQuery {
+  const limit = Math.min(REGISTER_PAGE_SIZE_MAX, Math.max(1, Math.trunc(query.limit ?? REGISTER_PAGE_SIZE)));
+  const offset = Math.max(0, Math.trunc(query.offset ?? 0));
+  return { ...query, offset, limit, newest: Boolean(query.newest) };
 }
 
 export function reconciliationBalance(openingMinor: number, transactions: readonly Pick<Transaction, "amountMinor">[]): number {

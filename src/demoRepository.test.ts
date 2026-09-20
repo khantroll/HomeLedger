@@ -260,4 +260,39 @@ describe("finance repository contract", () => {
     expect(occurrences.map(item=>item.status)).toEqual(["posted","skipped"]);
     expect((await repository.listScheduledTransactions()).find(item=>item.id===id)?.archived).toBe(true);
   });
+
+  it("pages register history beyond the former 1000-row boundary with running prior balances", async () => {
+    const repository = new DemoFinanceRepository();
+    const account = await repository.createAccount({
+      name: "Deep History", type: "checking", currency: "USD",
+      openingBalanceMinor: 1_000_000, ownerLabel: "Household"
+    });
+    for (let index = 0; index < 1105; index += 1) {
+      const day = String((index % 28) + 1).padStart(2, "0");
+      const month = String((Math.floor(index / 28) % 12) + 1).padStart(2, "0");
+      const year = 2000 + Math.floor(index / (28 * 12));
+      await repository.createTransaction({
+        accountId: account.id,
+        postedDate: `${year}-${month}-${day}`,
+        payee: `History ${index}`,
+        category: "Archive",
+        amountMinor: -1,
+        status: index % 2 ? "cleared" : "pending",
+      });
+    }
+    const all = await repository.listTransactions(account.id);
+    expect(all).toHaveLength(1105);
+    const newest = await repository.listTransactionsPage({ accountId: account.id, limit: 100, newest: true });
+    expect(newest.totalCount).toBe(1105);
+    expect(newest.transactions).toHaveLength(100);
+    expect(newest.offset).toBe(1005);
+    expect(newest.priorBalanceMinor).toBe(1_000_000 - 1005);
+    expect(newest.transactions.at(-1)?.payee).toBe("History 1104");
+    const earlier = await repository.listTransactionsPage({ accountId: account.id, offset: 0, limit: 100 });
+    expect(earlier.transactions[0]?.payee).toBe("History 0");
+    expect(earlier.priorBalanceMinor).toBe(1_000_000);
+    const pending = await repository.listTransactionsPage({ accountId: account.id, status: "pending", newest: true, limit: 50 });
+    expect(pending.totalCount).toBeGreaterThan(500);
+    expect(pending.transactions.every((item) => item.status === "pending")).toBe(true);
+  });
 });
