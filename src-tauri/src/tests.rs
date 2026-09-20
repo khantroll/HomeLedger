@@ -31,7 +31,8 @@ fn migration_creates_local_ledger_tables() {
     let savings_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='savings_goals'",[],|row|row.get(0)).unwrap();
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
     let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns), (16, 2, 1, 1, 2, 2,1,2,1,2,5));
+    let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (17, 2, 1, 1, 2, 2,1,2,1,2,5,1));
 }
 
 #[test]
@@ -57,7 +58,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 16);
+    assert_eq!(version, 17);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -584,4 +585,58 @@ fn ai_credential_account_ids_are_strict_and_secrets_are_bounded() {
     assert!(super::validate_ai_credential_secret("").is_err());
     assert!(super::validate_ai_credential_secret("bad\u{0000}secret").is_err());
     assert!(super::validate_ai_credential_secret(&"x".repeat(4097)).is_err());
+}
+
+#[test]
+fn openai_urls_require_https_approved_host_and_v1_chat_path() {
+    assert_eq!(super::openai_chat_url("https://api.openai.com/v1").unwrap().as_str(), "https://api.openai.com/v1/chat/completions");
+    assert_eq!(super::openai_chat_url("https://api.openai.com/v1/chat/completions").unwrap().as_str(), "https://api.openai.com/v1/chat/completions");
+    assert!(super::openai_chat_url("http://api.openai.com/v1").is_err());
+    assert!(super::openai_chat_url("https://api.openai.com.evil/v1").is_err());
+    assert!(super::openai_chat_url("https://evil.example/v1").is_err());
+    assert!(super::openai_chat_url("https://api.openai.com/v2").is_err());
+    assert!(super::openai_chat_url("https://user:pass@api.openai.com/v1").is_err());
+    assert!(super::openai_chat_url("https://api.openai.com/v1?x=1").is_err());
+}
+
+#[test]
+fn openai_mocked_transport_requires_confirmation_and_preserves_reviewed_payload() {
+    let payload = serde_json::json!({
+        "model": "gpt-4.1-mini",
+        "purpose": "Can I afford another $50 per month?",
+        "disclosureMode": "task-specific",
+        "analysisMode": "task",
+        "task": "affordability-analysis",
+        "schemaVersion": 1,
+        "data": {"task": "affordability-analysis", "proposedMonthlyCostMinor": 5000}
+    }).to_string();
+    let mut request = super::OpenAiRequest {
+        endpoint: "https://api.openai.com/v1".into(),
+        model: "gpt-4.1-mini".into(),
+        payload: payload.clone(),
+        account_id: "cloud:openai:default".into(),
+        confirmed: false,
+    };
+    assert!(super::query_openai_with_transport(&request, "sk-test", |_,_,_| Ok(vec![])).unwrap_err().contains("confirmation"));
+    request.confirmed = true;
+    let answer = super::query_openai_with_transport(&request, "sk-test", |url, key, body| {
+        assert_eq!(url.as_str(), "https://api.openai.com/v1/chat/completions");
+        assert_eq!(key, "sk-test");
+        assert_eq!(body["model"], "gpt-4.1-mini");
+        assert_eq!(body["messages"][1]["content"], payload);
+        assert!(body["messages"][0]["content"].as_str().unwrap().contains("Affordability Analysis"));
+        Ok(br#"{"choices":[{"message":{"content":"Surplus remains positive. DELETE FROM accounts;"}}]}"#.to_vec())
+    }).unwrap();
+    assert_eq!(answer.answer, "Surplus remains positive. DELETE FROM accounts;");
+    assert!(super::openai_http_status_message(302).contains("redirect"));
+    assert!(super::openai_http_status_message(401).contains("authentication"));
+    assert!(super::parse_openai_chat_answer(br#"{"choices":[{"message":{"content":""}}]}"#).is_err());
+    assert!(super::build_openai_chat_body("other", &payload).is_err());
+    assert!(super::query_openai_with_transport(&super::OpenAiRequest {
+        endpoint: "https://api.openai.com/v1".into(),
+        model: "gpt-4.1-mini".into(),
+        payload: "x".repeat(256 * 1024 + 1),
+        account_id: "cloud:openai:default".into(),
+        confirmed: true,
+    }, "sk-test", |_,_,_| Ok(vec![])).unwrap_err().contains("256 KB"));
 }

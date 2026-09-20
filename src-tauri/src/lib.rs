@@ -23,19 +23,43 @@ const MAX_PDF_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CSV_EXPORT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_LOCAL_AI_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_LOCAL_AI_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_CLOUD_AI_PAYLOAD_BYTES: usize = 256 * 1024;
+const MAX_CLOUD_AI_RESPONSE_BYTES: usize = 1024 * 1024;
 const LOCAL_AI_SYSTEM_PROMPT: &str = "You are a read-only household-finance analyst. Explain patterns and offer clearly labeled suggestions using only the supplied context. Never claim to calculate authoritative ledger balances, never claim to change records, and never request credentials, account numbers, or additional unredacted financial files.";
+const OPENAI_AFFORDABILITY_SYSTEM_PROMPT: &str = "You are a read-only household-finance analyst for HomeLedger. Use only the supplied Affordability Analysis context. Explain the effect on monthly surplus, the projected low cash balance, relevant debt/savings/budget tradeoffs, tight periods or risks, and assumptions or limitations visible in the context. Do not recalculate authoritative balances HomeLedger already computed. Do not invent missing accounts, transactions, or credentials. Never claim to change records or execute actions. Treat your reply as advisory analysis only.";
 const AI_CREDENTIAL_SERVICE: &str = "HomeLedger AI Provider";
+const OPENAI_HOST: &str = "api.openai.com";
+const OPENAI_DEFAULT_ACCOUNT_ID: &str = "cloud:openai:default";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalAiRequest { endpoint: String, model: String, payload: String }
 
-#[derive(Serialize)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAiRequest {
+    endpoint: String,
+    model: String,
+    payload: String,
+    account_id: String,
+    confirmed: bool,
+}
+
+#[derive(Serialize, Debug)]
 struct LocalAiAnswer { answer: String }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AiCredentialStatus { account_id: String, configured: bool }
+
+#[derive(Clone, Copy)]
+struct AiAuditMeta<'a> {
+    task_type: &'a str,
+    provider: &'a str,
+    model: &'a str,
+    trust_classification: &'a str,
+    disclosure_mode: &'a str,
+}
 
 fn validate_ai_credential_account_id(account_id: &str) -> Result<&str, String> {
     let account_id = account_id.trim();
@@ -156,6 +180,229 @@ async fn query_local_ai(request:LocalAiRequest)->Result<LocalAiAnswer,String>{
     let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"The local AI provider returned invalid JSON".to_string())?;
     let answer=value.pointer("/choices/0/message/content").and_then(|item|item.as_str()).map(str::trim).filter(|item|!item.is_empty()).ok_or_else(||"The local AI provider returned no answer".to_string())?;
     Ok(LocalAiAnswer{answer:answer.to_string()})
+}
+
+fn openai_chat_url(endpoint: &str) -> Result<reqwest::Url, String> {
+    if endpoint.is_empty() || endpoint.len() > 2048 { return Err("The OpenAI endpoint is invalid".into()); }
+    let mut url = reqwest::Url::parse(endpoint).map_err(|_| "The OpenAI endpoint is invalid".to_string())?;
+    if url.scheme() != "https" { return Err("OpenAI endpoints must use HTTPS".into()); }
+    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return Err("OpenAI endpoint URLs cannot contain credentials, query strings, or fragments".into());
+    }
+    let host = url.host_str().ok_or_else(|| "The OpenAI endpoint is missing its host".to_string())?.to_ascii_lowercase();
+    if host != OPENAI_HOST { return Err("OpenAI requests are restricted to api.openai.com".into()); }
+    let base = url.path().trim_end_matches('/');
+    let path = if base.ends_with("/chat/completions") { base.to_string() }
+        else if base == "/v1" || base.ends_with("/v1") { format!("{base}/chat/completions") }
+        else { return Err("OpenAI endpoints must use the /v1 API root".into()); };
+    url.set_path(&path);
+    Ok(url)
+}
+
+fn openai_cloud_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(60))
+        .user_agent("HomeLedger-openai")
+        .build()
+        .map_err(|_| "Could not initialize the OpenAI client".to_string())
+}
+
+fn validate_openai_model(model: &str) -> Result<&str, String> {
+    let model = model.trim();
+    if model.is_empty() || model.len() > 200 || model.chars().any(char::is_control) {
+        return Err("The OpenAI model name is invalid".into());
+    }
+    Ok(model)
+}
+
+fn read_ai_provider_secret(account_id: &str) -> Result<String, String> {
+    let entry = ai_credential_entry(account_id)?;
+    match entry.get_password() {
+        Ok(secret) => Ok(secret),
+        Err(keyring::Error::NoEntry) => Err("OpenAI credentials are not configured in the OS vault".into()),
+        Err(_) => Err("Could not read the OpenAI credential from the OS vault".into()),
+    }
+}
+
+fn openai_http_status_message(status: u16) -> String {
+    match status {
+        301 | 302 | 303 | 307 | 308 => "OpenAI redirected the request and HomeLedger rejected the redirect".into(),
+        401 | 403 => "OpenAI authentication failed".into(),
+        429 => "OpenAI rate limit exceeded".into(),
+        _ => format!("OpenAI returned HTTP {status}"),
+    }
+}
+
+fn build_openai_chat_body(model: &str, payload: &str) -> Result<serde_json::Value, String> {
+    let context: serde_json::Value = serde_json::from_str(payload).map_err(|_| "The reviewed AI payload is not valid JSON".to_string())?;
+    if context.get("model").and_then(|value| value.as_str()) != Some(model) {
+        return Err("The reviewed AI payload does not match the selected model".into());
+    }
+    let system = if context.get("task").and_then(|value| value.as_str()) == Some("affordability-analysis") {
+        OPENAI_AFFORDABILITY_SYSTEM_PROMPT
+    } else {
+        LOCAL_AI_SYSTEM_PROMPT
+    };
+    Ok(serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": payload}
+        ],
+        "stream": false,
+        "temperature": 0.2
+    }))
+}
+
+fn parse_openai_chat_answer(bytes: &[u8]) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| "OpenAI returned invalid JSON".to_string())?;
+    let answer = value
+        .pointer("/choices/0/message/content")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| "OpenAI returned no answer".to_string())?;
+    Ok(answer.to_string())
+}
+
+async fn bounded_openai_response(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    let status = response.status().as_u16();
+    if status == 301 || status == 302 || status == 303 || status == 307 || status == 308 {
+        return Err(openai_http_status_message(status));
+    }
+    if !response.status().is_success() {
+        // Consume/drop body without logging; never surface provider body text.
+        let _ = response.bytes().await;
+        return Err(openai_http_status_message(status));
+    }
+    if response.content_length().is_some_and(|length| length > MAX_CLOUD_AI_RESPONSE_BYTES as u64) {
+        return Err("The OpenAI response exceeded the 1 MB limit".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "Could not read the OpenAI response".to_string())? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_CLOUD_AI_RESPONSE_BYTES {
+            return Err("The OpenAI response exceeded the 1 MB limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn record_ai_analysis_audit(connection: &Connection, meta: AiAuditMeta<'_>, success: bool, error_class: Option<&str>) -> Result<(), String> {
+    connection.execute(
+        "INSERT INTO ai_analysis_audit(id, recorded_at, task_type, provider, model, trust_classification, disclosure_mode, success, error_class) VALUES(?1, datetime('now'), ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            Uuid::new_v4().to_string(),
+            meta.task_type,
+            meta.provider,
+            meta.model,
+            meta.trust_classification,
+            meta.disclosure_mode,
+            if success { 1 } else { 0 },
+            error_class,
+        ],
+    ).map_err(|_| "Could not record the AI analysis audit entry".to_string())?;
+    Ok(())
+}
+
+fn openai_error_class(message: &str) -> &'static str {
+    if message.contains("authentication") { "auth" }
+    else if message.contains("timed out") { "timeout" }
+    else if message.contains("redirect") { "redirect" }
+    else if message.contains("exceeded") { "size" }
+    else if message.contains("invalid JSON") || message.contains("no answer") { "response" }
+    else if message.contains("credential") { "credential" }
+    else { "provider" }
+}
+
+#[cfg(test)]
+fn query_openai_with_transport<F>(
+    request: &OpenAiRequest,
+    api_key: &str,
+    fetch: F,
+) -> Result<LocalAiAnswer, String>
+where
+    F: FnOnce(reqwest::Url, &str, serde_json::Value) -> Result<Vec<u8>, String>,
+{
+    if !request.confirmed {
+        return Err("Cloud transmission requires explicit per-request confirmation".into());
+    }
+    let account_id = validate_ai_credential_account_id(&request.account_id)?;
+    if account_id != OPENAI_DEFAULT_ACCOUNT_ID && !account_id.starts_with("cloud:openai:") {
+        return Err("OpenAI credential account id is invalid".into());
+    }
+    let model = validate_openai_model(&request.model)?;
+    let url = openai_chat_url(&request.endpoint)?;
+    if request.payload.is_empty() || request.payload.len() > MAX_CLOUD_AI_PAYLOAD_BYTES {
+        return Err("The reviewed AI payload must be between 1 byte and 256 KB".into());
+    }
+    if api_key.is_empty() {
+        return Err("OpenAI credentials are not configured in the OS vault".into());
+    }
+    let body = build_openai_chat_body(model, &request.payload)?;
+    let bytes = fetch(url, api_key, body)?;
+    let answer = parse_openai_chat_answer(&bytes)?;
+    Ok(LocalAiAnswer { answer })
+}
+
+#[tauri::command]
+async fn query_openai_ai(request: OpenAiRequest, state: State<'_, DbState>) -> Result<LocalAiAnswer, String> {
+    let context: serde_json::Value = serde_json::from_str(&request.payload).unwrap_or(serde_json::Value::Null);
+    let task_type = context.get("task").and_then(|value| value.as_str()).unwrap_or("adhoc").to_string();
+    let disclosure_mode = context.get("disclosureMode").and_then(|value| value.as_str()).unwrap_or("task-specific").to_string();
+    let model_for_audit = request.model.trim().to_string();
+    let result = query_openai_ai_inner(request).await;
+    {
+        let meta = AiAuditMeta {
+            task_type: &task_type,
+            provider: "openai",
+            model: &model_for_audit,
+            trust_classification: "cloud",
+            disclosure_mode: &disclosure_mode,
+        };
+        let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+        match &result {
+            Ok(_) => record_ai_analysis_audit(&connection, meta, true, None)?,
+            Err(error) => record_ai_analysis_audit(&connection, meta, false, Some(openai_error_class(error)))?,
+        }
+    }
+    result
+}
+
+async fn query_openai_ai_inner(request: OpenAiRequest) -> Result<LocalAiAnswer, String> {
+    if !request.confirmed {
+        return Err("Cloud transmission requires explicit per-request confirmation".into());
+    }
+    let account_id = validate_ai_credential_account_id(&request.account_id)?.to_string();
+    if account_id != OPENAI_DEFAULT_ACCOUNT_ID && !account_id.starts_with("cloud:openai:") {
+        return Err("OpenAI credential account id is invalid".into());
+    }
+    let model = validate_openai_model(&request.model)?.to_string();
+    let url = openai_chat_url(&request.endpoint)?;
+    if request.payload.is_empty() || request.payload.len() > MAX_CLOUD_AI_PAYLOAD_BYTES {
+        return Err("The reviewed AI payload must be between 1 byte and 256 KB".into());
+    }
+    let body = build_openai_chat_body(&model, &request.payload)?;
+    let api_key = read_ai_provider_secret(&account_id)?;
+    let client = openai_cloud_client()?;
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() { "The OpenAI request timed out".to_string() }
+            else { "Could not connect to OpenAI".to_string() }
+        })?;
+    drop(api_key);
+    let bytes = bounded_openai_response(response).await?;
+    let answer = parse_openai_chat_answer(&bytes)?;
+    Ok(LocalAiAnswer { answer })
 }
 
 #[derive(Serialize)]
@@ -693,7 +940,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 16;
+const CURRENT_SCHEMA_VERSION: i64 = 17;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -809,6 +1056,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/016_statement_templates.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(16, 'source-aware statement templates')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 17 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/017_ai_analysis_audit.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(17, 'privacy-preserving AI analysis audit')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2315,6 +2568,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if catalog_tables!=2{return Err("The backup is missing shared category or payee tables".into());}
     }
+    if version >= 17 {
+        let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if audit_tables!=1{return Err("The backup is missing AI analysis audit".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -2415,7 +2672,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

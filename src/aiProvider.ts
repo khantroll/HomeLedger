@@ -22,7 +22,7 @@ export interface AiProviderDescriptor{
   model:string;
   apiFamily:AiApiFamily;
   requiresAuth:boolean;
-  /** Cloud/self-hosted transmission stays disabled until a later allow-listed adapter ships. */
+  /** Cloud transmission is enabled only for the first-class OpenAI adapter in this milestone. */
   transmissionEnabled:boolean;
   allowedDisclosureModes:readonly AiDisclosureMode[];
   allowsTaskContexts:boolean;
@@ -76,6 +76,7 @@ export function cloudProviderDescriptor(draft:CloudProviderDraft):AiProviderDesc
   const label=preset?.label??"Remote OpenAI-compatible";
   const apiFamily=preset?.apiFamily??"openai-chat-completions";
   const accountId=draft.accountId.trim()||preset?.accountId||`cloud:${draft.type}:custom`;
+  const openaiEnabled=draft.type==="openai";
   return{
     accountId,
     type:draft.type,
@@ -85,7 +86,7 @@ export function cloudProviderDescriptor(draft:CloudProviderDraft):AiProviderDesc
     model:draft.model.trim(),
     apiFamily,
     requiresAuth:true,
-    transmissionEnabled:false,
+    transmissionEnabled:openaiEnabled,
     allowedDisclosureModes:CLOUD_DISCLOSURE,
     allowsTaskContexts:true,
     allowsFullLocalContext:false
@@ -140,9 +141,9 @@ export function assertTransmissionAllowed(provider:AiProviderDescriptor):void{
   if(!validated.transmissionEnabled){
     throw new Error(`${validated.label} is configured but cloud transmission is not enabled yet`);
   }
-  if(validated.trust!=="local"){
-    throw new Error("Only verified local providers may transmit in this milestone");
-  }
+  if(validated.trust==="local")return;
+  if(validated.trust==="cloud"&&validated.type==="openai")return;
+  throw new Error("Only verified local providers and the OpenAI cloud adapter may transmit in this milestone");
 }
 
 export function providerAdapterContract():Readonly<{mayAccessRepository:false;mayMutateLedger:false;receivesOnlyReviewedPayload:true}>{

@@ -19,15 +19,15 @@ describe("AI Insights privacy review",()=>{
   it("builds a localhost aggregate preview without offering browser transmission",async()=>{
     const user=userEvent.setup();
     render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets}/>);
-    expect(screen.getByText(/Only the Privacy Firewall payload can be sent/i)).toBeTruthy();
+    expect(screen.getByText(/Local loopback and the OpenAI cloud adapter/i)).toBeTruthy();
     await user.click(screen.getByText(/Custom \/ ad-hoc question/i));
-    await user.type(screen.getByLabelText("Model name"),"qwen3.5:9b");
+    await user.type(screen.getByLabelText("Model name",{exact:true}),"qwen3.5:9b");
     await user.clear(screen.getByLabelText(/Analysis purpose/));
     await user.type(screen.getByLabelText(/Analysis purpose/),"Explain spending");
     await user.click(screen.getByRole("button",{name:/Build exact preview/}));
     expect(screen.getByText("http://127.0.0.1:11434/v1")).toBeTruthy();
     expect(screen.getAllByText("Aggregate Only").length).toBeGreaterThan(1);
-    expect((screen.getByRole("button",{name:/Send reviewed payload/}) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button",{name:/Send reviewed payload to local model/}) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/"spendingMinor": 1234/)).toBeTruthy();
     expect(screen.queryByText(/Neighborhood Market/)).toBeNull();
   });
@@ -35,7 +35,7 @@ describe("AI Insights privacy review",()=>{
   it("builds an affordability task preview without prohibited identity fields",async()=>{
     const user=userEvent.setup();
     render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets} today="2026-09-20"/>);
-    await user.type(screen.getByLabelText("Model name"),"qwen3.5:9b");
+    await user.type(screen.getByLabelText("Model name",{exact:true}),"qwen3.5:9b");
     await user.click(screen.getByRole("button",{name:/Build exact preview/}));
     expect(screen.getByText(/Task-specific Affordability Analysis/)).toBeTruthy();
     expect(screen.getByText(/"task": "affordability-analysis"/)).toBeTruthy();
@@ -43,7 +43,19 @@ describe("AI Insights privacy review",()=>{
     expect(screen.queryByText(/Household Checking/)).toBeNull();
     expect(screen.queryByText(/Neighborhood Market/)).toBeNull();
     expect(screen.getByText(/Cloud provider configuration/)).toBeTruthy();
-    expect(screen.getByText(/Credential state:/)).toBeTruthy();
+  });
+
+  it("requires OpenAI cloud confirmation before enabling send",async()=>{
+    const user=userEvent.setup();
+    render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets} today="2026-09-20"/>);
+    await user.click(screen.getByRole("button",{name:/Preview affordability for OpenAI/}));
+    expect(screen.getByText(/Destination is OpenAI \(cloud\)/i)).toBeTruthy();
+    expect(screen.getByText(/"task": "affordability-analysis"/)).toBeTruthy();
+    const send=screen.getByRole("button",{name:/Send reviewed payload to OpenAI/}) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    await user.click(screen.getByLabelText(/confirm sending it to OpenAI/i));
+    expect(send.disabled).toBe(true); // still disabled in browser/demo without native app
+    expect(screen.getByText(/will leave this device/i)).toBeTruthy();
   });
 
   it("rejects a remote endpoint before constructing a payload",async()=>{
@@ -54,7 +66,7 @@ describe("AI Insights privacy review",()=>{
     const endpoint=screen.getByLabelText(/Local endpoint/);
     await user.clear(endpoint);
     await user.type(endpoint,"http://api.example.com/v1");
-    await user.type(screen.getByLabelText("Model name"),"remote");
+    await user.type(screen.getByLabelText("Model name",{exact:true}),"remote");
     await user.clear(screen.getByLabelText(/Analysis purpose/));
     await user.type(screen.getByLabelText(/Analysis purpose/),"No disclosure");
     await user.click(screen.getByRole("button",{name:/Build exact preview/}));

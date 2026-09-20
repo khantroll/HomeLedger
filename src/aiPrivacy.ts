@@ -85,9 +85,9 @@ export function buildAiTaskFirewallPreview(input:{
   const provider=validateProviderEndpoint(input.provider);
   if(!provider.allowsTaskContexts)throw new Error(`${provider.label} does not permit task-specific contexts`);
   if(provider.trust!=="local"){
-    // Cloud/self-hosted may preview task contexts, but transmission remains fail-closed.
     if(provider.allowsFullLocalContext)throw new Error("Full local capability cannot be enabled for non-local providers");
   }
+  const leavesDevice=provider.trust!=="local";
   const taskPayload={
     model:provider.model,
     purpose:input.taskContext.question,
@@ -105,15 +105,27 @@ export function buildAiTaskFirewallPreview(input:{
     excludedSensitiveCategories:0,
     analysisMode:"task",
     taskKind:input.taskContext.task,
-    disclosureNotice:"Task-specific context uses deterministic HomeLedger aggregates and excludes account names, payees, memos, IDs, and import provenance."
+    disclosureNotice:leavesDevice
+      ?"Task-specific context uses deterministic HomeLedger aggregates. Sending this payload transmits sanitized financial facts to a cloud provider and leaves this device."
+      :"Task-specific context uses deterministic HomeLedger aggregates and excludes account names, payees, memos, IDs, and import provenance."
   });
 }
 
-export function prepareReviewedTransmission(provider:AiProviderDescriptor,preview:AiFirewallPreview):{endpoint:string;model:string;payload:string}{
+export function prepareReviewedTransmission(
+  provider:AiProviderDescriptor,
+  preview:AiFirewallPreview,
+  options:{explicitConfirmation?:boolean}={}
+):{endpoint:string;model:string;payload:string;accountId:string;trust:AiProviderDescriptor["trust"]}{
   assertTransmissionAllowed(provider);
   if(preview.destination!==provider.endpoint)throw new Error("Reviewed destination no longer matches the selected provider");
   if(!preview.transmissionEnabled)throw new Error("This provider is not enabled for transmission");
-  return{endpoint:preview.destination,model:provider.model,payload:preview.payload};
+  if(provider.trust==="cloud"&&!options.explicitConfirmation){
+    throw new Error("Cloud transmission requires explicit per-request confirmation");
+  }
+  if(provider.trust==="cloud"&&provider.type!=="openai"){
+    throw new Error("Only the OpenAI cloud adapter may transmit in this milestone");
+  }
+  return{endpoint:preview.destination,model:provider.model,payload:preview.payload,accountId:provider.accountId,trust:provider.trust};
 }
 
 function finalizePreview(input:{
