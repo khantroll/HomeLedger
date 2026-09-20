@@ -39,7 +39,7 @@ describe("AI provider trust and Privacy Firewall",()=>{
     }));
     expect(disclosureAllowedForTrust("cloud","full-local")).toBe(false);
     expect(()=>assertDisclosurePolicy(cloud,"full-local")).toThrow(/Full Local Context|does not permit/i);
-    expect(()=>assertTransmissionAllowed(cloud)).toThrow(/not enabled/i);
+    assertTransmissionAllowed(cloud);
     const task=buildAffordabilityAnalysisContext({
       question:"Can I afford another $50 per month?",
       currency:"USD",
@@ -52,9 +52,9 @@ describe("AI provider trust and Privacy Firewall",()=>{
       budgets:[]
     });
     const preview=buildAiTaskFirewallPreview({provider:cloud,taskContext:task});
-    expect(preview.transmissionEnabled).toBe(false);
+    expect(preview.transmissionEnabled).toBe(true);
     expect(preview.payload).toContain('"task": "affordability-analysis"');
-    expect(()=>prepareReviewedTransmission(cloud,preview)).toThrow(/not enabled/i);
+    expect(()=>prepareReviewedTransmission(cloud,preview)).toThrow(/confirmation/i);
   });
 
   it("fails closed for unsupported or untrusted remote endpoints",()=>{

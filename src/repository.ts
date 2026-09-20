@@ -110,10 +110,12 @@ export const pdfRepository:PdfRepository=isNativeApp?new TauriPdfRepository():ne
 
 export interface LocalAiQuery { endpoint:string;model:string;payload:string; }
 export interface LocalAiAnswer { answer:string; }
+export interface OpenAiQuery { endpoint:string;model:string;payload:string;accountId:string;confirmed:boolean; }
 export interface AiCredentialStatus { accountId:string;configured:boolean; }
 export interface AiRepository {
   testConnection(endpoint:string):Promise<void>;
   queryLocal(input:LocalAiQuery):Promise<LocalAiAnswer>;
+  queryOpenAi(input:OpenAiQuery):Promise<LocalAiAnswer>;
   credentialStatus(accountId:string):Promise<AiCredentialStatus>;
   saveCredential(accountId:string,secret:string):Promise<AiCredentialStatus>;
   clearCredential(accountId:string):Promise<AiCredentialStatus>;
@@ -121,6 +123,7 @@ export interface AiRepository {
 class TauriAiRepository implements AiRepository {
   testConnection(endpoint:string):Promise<void>{return invoke("test_local_ai",{endpoint});}
   queryLocal(input:LocalAiQuery):Promise<LocalAiAnswer>{return invoke("query_local_ai",{request:input});}
+  queryOpenAi(input:OpenAiQuery):Promise<LocalAiAnswer>{return invoke("query_openai_ai",{request:input});}
   credentialStatus(accountId:string):Promise<AiCredentialStatus>{return invoke("ai_provider_credential_status",{accountId});}
   saveCredential(accountId:string,secret:string):Promise<AiCredentialStatus>{return invoke("set_ai_provider_credential",{accountId,secret});}
   clearCredential(accountId:string):Promise<AiCredentialStatus>{return invoke("clear_ai_provider_credential",{accountId});}
@@ -128,6 +131,7 @@ class TauriAiRepository implements AiRepository {
 class UnavailableAiRepository implements AiRepository {
   testConnection():Promise<void>{return Promise.reject(new Error("Local AI connections are available in the native desktop app"));}
   queryLocal():Promise<LocalAiAnswer>{return Promise.reject(new Error("Local AI connections are available in the native desktop app"));}
+  queryOpenAi():Promise<LocalAiAnswer>{return Promise.reject(new Error("OpenAI cloud analysis is available in the native desktop app"));}
   credentialStatus():Promise<AiCredentialStatus>{return Promise.reject(new Error("AI credential vault access is available in the native desktop app"));}
   saveCredential():Promise<AiCredentialStatus>{return Promise.reject(new Error("AI credential vault access is available in the native desktop app"));}
   clearCredential():Promise<AiCredentialStatus>{return Promise.reject(new Error("AI credential vault access is available in the native desktop app"));}
