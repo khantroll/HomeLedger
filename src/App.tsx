@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeft, ArrowLeftRight, BarChart3, Bot, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingUp, WalletCards, X } from "lucide-react";
-import { formatMoney, parseMoney, sumMoney, type Account, type AccountType, type ScheduledOccurrence, type ScheduledTransaction, type Transaction } from "./domain";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
+import { formatMoney, parseMoney, sumMoney, type Account, type AccountType, type BudgetMonth, type ScheduledOccurrence, type ScheduledTransaction, type Transaction } from "./domain";
 import { financeRepository as repository, isNativeApp } from "./repository";
 import { ImportPage } from "./ImportPage";
 import { BackupPage } from "./BackupPage";
@@ -17,6 +17,8 @@ import { ReportsPage } from "./ReportsPage";
 import { DebtPage } from "./DebtPage";
 import { AccountRegister, type RegisterDialogRequest } from "./AccountRegister";
 import { addDaysIso, formatDate, occurrenceDisplayState, occurrenceStateLabel, todayIso } from "./scheduledPresentation";
+import {calculateCashFlowForecast,forecastMonths} from "./forecastMath";
+import "./overviewCommand.css";
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -35,6 +37,7 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [scheduledTemplates, setScheduledTemplates] = useState<ScheduledTransaction[]>([]);
   const [scheduledOccurrences, setScheduledOccurrences] = useState<ScheduledOccurrence[]>([]);
+  const [overviewBudgets, setOverviewBudgets] = useState<BudgetMonth[]>([]);
   const [active, setActive] = useState("Overview");
   const [registerAccountId, setRegisterAccountId] = useState<string>();
   const [registerToken, setRegisterToken] = useState(0);
@@ -44,12 +47,13 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextAccounts, nextTransactions, nextTemplates] = await Promise.all([
+      const today = todayIso();
+      const [nextAccounts, nextTransactions, nextTemplates, nextBudgets] = await Promise.all([
         repository.listAccounts(true),
         repository.listTransactions(),
         repository.listScheduledTransactions(),
+        Promise.all(forecastMonths(today,30).map(month=>repository.getBudgetMonth(month))),
       ]);
-      const today = todayIso();
       const fromDate = addDaysIso(today, -90);
       const toDate = addDaysIso(today, 90);
       await repository.generateScheduledOccurrences({ fromDate, toDate });
@@ -58,12 +62,19 @@ export default function App() {
       setTransactions(nextTransactions);
       setScheduledTemplates(nextTemplates);
       setScheduledOccurrences(nextOccurrences);
+      setOverviewBudgets(nextBudgets);
       setRegisterToken((value) => value + 1);
       setError("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   }, []);
+
+  const loadOccurrenceMonth = useCallback(async (fromDate:string,toDate:string) => {
+    await repository.generateScheduledOccurrences({fromDate,toDate});
+    const rows=await repository.listScheduledOccurrences({fromDate,toDate});
+    setScheduledOccurrences(current=>[...current.filter(item=>item.dueDate<fromDate||item.dueDate>toDate),...rows].sort((a,b)=>a.dueDate.localeCompare(b.dueDate)));
+  },[]);
 
   useEffect(() => {
     void refresh();
@@ -144,7 +155,7 @@ export default function App() {
           ) : active === "Budget" ? (
             <BudgetPage transactions={transactions} accounts={activeAccounts} />
           ) : active === "Bills" ? (
-            <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} />
+            <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} onMonthChange={loadOccurrenceMonth} />
           ) : active === "Forecast" ? (
             <ForecastPage accounts={activeAccounts} templates={scheduledTemplates} />
           ) : active === "Debt" ? (
@@ -205,7 +216,8 @@ export default function App() {
                 <Summary label="Net worth" value={formatMoney(assets + liabilities)} detail="Based on tracked accounts" />
                 <Summary label="Needs review" value={String(reviewCount)} detail="Transactions requiring attention" tone="warning" />
               </div>
-              <UpcomingScheduled accounts={activeAccounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} />
+              <OverviewCommandCenter accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} onNavigate={openNav}/>
+              <UpcomingScheduled accounts={activeAccounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} onOpenBills={()=>openNav("Bills")} />
               <section className="panel overview-accounts">
                 <div className="panel-heading">
                   <div>
@@ -484,28 +496,29 @@ export function UpcomingScheduled({
   accounts,
   templates,
   occurrences,
+  onOpenBills,
 }: {
   accounts: Account[];
   templates: ScheduledTransaction[];
   occurrences: ScheduledOccurrence[];
+  onOpenBills?:()=>void;
 }) {
   const today = todayIso();
   const rows = occurrences
     .filter(
       (item) =>
         item.status === "expected" &&
-        templates.some((template) => template.id === item.scheduledTransactionId && !template.archived && template.kind === "transaction"),
+        templates.some((template) => template.id === item.scheduledTransactionId && template.enabled && !template.archived),
     )
-    .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-    .slice(0, 5);
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   return (
     <section className="panel upcoming-widget">
       <div className="panel-heading">
         <div>
           <h2>Upcoming</h2>
-          <p>Next scheduled bills and deposits</p>
+          <p>All expected bills, deposits, and transfers in the planning window</p>
         </div>
-        <CalendarDays size={18} />
+        {onOpenBills?<button onClick={onOpenBills}><CalendarDays size={14}/> Open calendar</button>:<CalendarDays size={18} />}
       </div>
       {rows.length === 0 ? (
         <div className="empty-state">No scheduled events in the next 90 days.</div>
@@ -514,6 +527,7 @@ export function UpcomingScheduled({
           {rows.map((occurrence) => {
             const template = templates.find((item) => item.id === occurrence.scheduledTransactionId)!;
             const account = accounts.find((item) => item.id === template.accountId);
+            const destination = accounts.find((item) => item.id === template.transferAccountId);
             const state = occurrenceDisplayState(occurrence, today);
             return (
               <div className="upcoming-row" key={occurrence.id}>
@@ -521,10 +535,10 @@ export function UpcomingScheduled({
                 <div>
                   <strong>{template.payee}</strong>
                   <small>
-                    {account?.name} · {template.category}
+                    {template.kind==="transfer"?<><ArrowLeftRight size={10}/> {account?.name} → {destination?.name}</>:<>{account?.name} · {template.category}</>}
                   </small>
                 </div>
-                <span className={template.amountMinor < 0 ? "amount negative" : "amount positive"}>
+                <span className={template.kind==="transfer"?"amount":template.amountMinor < 0 ? "amount negative" : "amount positive"}>
                   {formatMoney(template.amountMinor, account?.currency)}
                 </span>
                 <span className={`occurrence-state ${state}`}>{occurrenceStateLabel(occurrence, today)}</span>
@@ -535,6 +549,22 @@ export function UpcomingScheduled({
       )}
     </section>
   );
+}
+
+export function OverviewCommandCenter({accounts,transactions,templates,occurrences,budgets,onNavigate,today=todayIso()}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];budgets:BudgetMonth[];onNavigate:(label:string)=>void;today?:string}){
+  const activeTemplates=new Map(templates.filter(item=>item.enabled&&!item.archived).map(item=>[item.id,item]));
+  const overdue=occurrences.filter(item=>item.status==="expected"&&item.dueDate<today&&activeTemplates.has(item.scheduledTransactionId));
+  const autoPost=occurrences.filter(item=>item.status==="expected"&&item.dueDate<=today&&activeTemplates.get(item.scheduledTransactionId)?.autoPost);
+  const reviewCount=transactions.filter(item=>item.status==="review").length;
+  const currency=accounts.find(item=>["checking","savings","cash"].includes(item.type))?.currency??accounts[0]?.currency??"USD";
+  const currentBudget=budgets.find(item=>item.month===today.slice(0,7));
+  const forecast=calculateCashFlowForecast({today,horizonDays:30,currency,scenario:"expected",accounts,templates,occurrences,budgets});
+  return <section className="panel command-center"><div className="panel-heading"><div><h2>Money to manage</h2><p>The next actions and pressure points across your ledger</p></div></div><div className="command-grid">
+    <button onClick={()=>onNavigate("Bills")}><span className="command-icon warning"><AlertTriangle size={16}/></span><span><small>Overdue / auto-post</small><strong>{overdue.length} / {autoPost.length}</strong><em>{overdue.length?`${overdue.length} item${overdue.length===1?" needs":"s need"} attention`:"Nothing overdue"}</em></span></button>
+    <button onClick={()=>onNavigate("Forecast")}><span className={`command-icon ${forecast.lowestBalanceMinor<0?"negative":"positive"}`}><TrendingDown size={16}/></span><span><small>30-day low point</small><strong>{formatMoney(forecast.lowestBalanceMinor,currency)}</strong><em>{formatDate(forecast.lowestBalanceDate)}</em></span></button>
+    <button onClick={()=>onNavigate("Budget")}><span className={`command-icon ${(currentBudget?.availableMinor??0)<0?"negative":"positive"}`}><Tags size={16}/></span><span><small>Budget remaining</small><strong>{currentBudget?formatMoney(currentBudget.availableMinor,currency):"No plan"}</strong><em>{currentBudget?`${formatMoney(currentBudget.spentMinor,currency)} spent this month`:"Create this month’s budget"}</em></span></button>
+    <button onClick={()=>onNavigate("Transactions")}><span className={`command-icon ${reviewCount?"warning":"positive"}`}><ReceiptText size={16}/></span><span><small>Needs review</small><strong>{reviewCount}</strong><em>{reviewCount?"Open the all-accounts register":"Transactions are categorized"}</em></span></button>
+  </div></section>;
 }
 
 function AccountDialog({ account, onClose, onSaved }: { account?: Account; onClose: () => void; onSaved: () => Promise<void> }) {
