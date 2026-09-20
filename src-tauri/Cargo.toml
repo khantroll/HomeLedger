@@ -1,6 +1,6 @@
 [package]
 name = "homeledger"
-version = "0.35.0"
+version = "0.36.0"
 description = "Privacy-first local household finance"
 authors = ["HomeLedger contributors"]
 edition = "2021"
@@ -23,3 +23,4 @@ base64 = "0.22"
 tauri-plugin-dialog = "2"
 calamine = { version = "0.36.1", features = ["chrono"] }
 pdf-extract = "=0.12.1"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }

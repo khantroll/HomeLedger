@@ -12,7 +12,8 @@ const provider={kind:"ollama" as const,endpoint:"http://127.0.0.1:11434/v1",mode
 describe("AI Privacy Firewall",()=>{
   it("accepts loopback providers and rejects remote or credential-bearing destinations",()=>{
     expect(validateLocalAiProvider(provider).endpoint).toBe("http://127.0.0.1:11434/v1");
-    expect(()=>validateLocalAiProvider({...provider,endpoint:"https://api.example.com/v1"})).toThrow(/localhost/);
+    expect(()=>validateLocalAiProvider({...provider,endpoint:"https://localhost:11434/v1"})).toThrow(/HTTP/);
+    expect(()=>validateLocalAiProvider({...provider,endpoint:"http://api.example.com/v1"})).toThrow(/localhost/);
     expect(()=>validateLocalAiProvider({...provider,endpoint:"http://key@localhost:11434/v1"})).toThrow(/credentials/);
   });
   it("builds aggregate-only cloud-safe data without ledger identifiers or descriptions",()=>{
@@ -29,6 +30,6 @@ describe("AI Privacy Firewall",()=>{
   it("requires custom fields and confines full context to verified localhost",()=>{
     expect(()=>buildAiFirewallPreview({provider,purpose:"Custom",mode:"custom",accounts,transactions,customFields:[]})).toThrow(/one custom/);
     const full=buildAiFirewallPreview({provider,purpose:"Local detail",mode:"full-local",accounts,transactions});expect(full.payload).toContain("Neighborhood Market");expect(full.payload).not.toContain("bank-secret");
-    expect(()=>buildAiFirewallPreview({provider:{...provider,endpoint:"https://api.openai.com/v1"},purpose:"No",mode:"full-local",accounts,transactions})).toThrow(/localhost/);
+    expect(()=>buildAiFirewallPreview({provider:{...provider,endpoint:"http://api.openai.com/v1"},purpose:"No",mode:"full-local",accounts,transactions})).toThrow(/localhost/);
   });
 });

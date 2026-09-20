@@ -107,3 +107,16 @@ class UnavailablePdfRepository implements PdfRepository {
 }
 
 export const pdfRepository:PdfRepository=isNativeApp?new TauriPdfRepository():new UnavailablePdfRepository();
+
+export interface LocalAiQuery { endpoint:string;model:string;payload:string; }
+export interface LocalAiAnswer { answer:string; }
+export interface AiRepository { testConnection(endpoint:string):Promise<void>;queryLocal(input:LocalAiQuery):Promise<LocalAiAnswer>; }
+class TauriAiRepository implements AiRepository {
+  testConnection(endpoint:string):Promise<void>{return invoke("test_local_ai",{endpoint});}
+  queryLocal(input:LocalAiQuery):Promise<LocalAiAnswer>{return invoke("query_local_ai",{request:input});}
+}
+class UnavailableAiRepository implements AiRepository {
+  testConnection():Promise<void>{return Promise.reject(new Error("Local AI connections are available in the native desktop app"));}
+  queryLocal():Promise<LocalAiAnswer>{return Promise.reject(new Error("Local AI connections are available in the native desktop app"));}
+}
+export const aiRepository:AiRepository=isNativeApp?new TauriAiRepository():new UnavailableAiRepository();

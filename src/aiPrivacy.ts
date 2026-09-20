@@ -34,7 +34,7 @@ export const LOCAL_PROVIDER_PRESETS:Record<Exclude<LocalAiProviderKind,"openai-c
 export function validateLocalAiProvider(provider:LocalAiProviderConfig):LocalAiProviderConfig{
   const model=provider.model.trim();if(!model)throw new Error("Choose or enter a local model name");
   let url:URL;try{url=new URL(provider.endpoint.trim());}catch{throw new Error("Enter a valid local provider URL");}
-  if(!["http:","https:"].includes(url.protocol))throw new Error("Local AI endpoints must use HTTP or HTTPS");
+  if(url.protocol!=="http:")throw new Error("Local AI endpoints must use HTTP in this milestone");
   const host=url.hostname.toLowerCase();
   if(!["localhost","127.0.0.1","::1","[::1]"].includes(host))throw new Error("This milestone permits localhost AI endpoints only");
   if(url.username||url.password||url.search||url.hash)throw new Error("Local AI endpoint URLs cannot contain credentials, query strings, or fragments");
