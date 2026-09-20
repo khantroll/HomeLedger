@@ -228,6 +228,11 @@ struct ImportProfile {
     name: String,
     account_id: Option<String>,
     header_signature: String,
+    source_kind: String,
+    source_signature: Option<String>,
+    pdf_layout: Option<String>,
+    workbook_sheet_name: Option<String>,
+    workbook_header_row: Option<i64>,
     date_column: i64,
     payee_column: i64,
     amount_column: i64,
@@ -243,6 +248,11 @@ struct ImportProfileRequest {
     name: String,
     account_id: Option<String>,
     header_signature: String,
+    source_kind: String,
+    source_signature: Option<String>,
+    pdf_layout: Option<String>,
+    workbook_sheet_name: Option<String>,
+    workbook_header_row: Option<i64>,
     date_column: i64,
     payee_column: i64,
     amount_column: i64,
@@ -547,7 +557,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 15;
+const CURRENT_SCHEMA_VERSION: i64 = 16;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
@@ -657,6 +667,12 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/015_shared_categories_payees.sql")).map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(15, 'shared categories and payees')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 16 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/016_statement_templates.sql")).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(16, 'source-aware statement templates')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1212,14 +1228,22 @@ fn clean_import_profile(request:ImportProfileRequest,id:String)->Result<ImportPr
     if request.amount_column<0&&request.debit_column<0&&request.credit_column<0{return Err("An amount or debit/credit column is required".into());}
     for column in [request.date_column,request.payee_column,request.amount_column,request.debit_column,request.credit_column]{if column>1000{return Err("Import profile column is out of range".into());}}
     if !["mdy","dmy"].contains(&request.date_order.as_str())||!["dot","comma"].contains(&request.number_format.as_str()){return Err("Import profile locale settings are invalid".into());}
-    Ok(ImportProfile{id,name:clean_required(request.name,"Profile name",80)?,account_id:clean_optional(request.account_id,80)?,header_signature,date_column:request.date_column,payee_column:request.payee_column,amount_column:request.amount_column,debit_column:request.debit_column,credit_column:request.credit_column,date_order:request.date_order,number_format:request.number_format})
+    if !["delimited","workbook","pdf","ocr"].contains(&request.source_kind.as_str()){return Err("Import profile source kind is invalid".into());}
+    let source_signature=clean_optional(request.source_signature,200)?;
+    let pdf_layout=clean_optional(request.pdf_layout,40)?;
+    if pdf_layout.as_ref().is_some_and(|layout|!["signed-last","signed-before-balance","expenses-last","expenses-before-balance"].contains(&layout.as_str())){return Err("Import profile PDF layout is invalid".into());}
+    if request.source_kind=="pdf"||request.source_kind=="ocr" {if source_signature.is_none()||pdf_layout.is_none(){return Err("PDF and OCR templates require a source signature and statement layout".into());}}
+    let workbook_sheet_name=clean_optional(request.workbook_sheet_name,200)?;
+    if request.workbook_header_row.is_some_and(|row|!(0..=10000).contains(&row)){return Err("Workbook header row is out of range".into());}
+    if request.source_kind=="workbook"&&(source_signature.is_none()||workbook_sheet_name.is_none()||request.workbook_header_row.is_none()){return Err("Workbook templates require a source signature, worksheet, and header row".into());}
+    Ok(ImportProfile{id,name:clean_required(request.name,"Template name",80)?,account_id:clean_optional(request.account_id,80)?,header_signature,source_kind:request.source_kind,source_signature,pdf_layout,workbook_sheet_name,workbook_header_row:request.workbook_header_row,date_column:request.date_column,payee_column:request.payee_column,amount_column:request.amount_column,debit_column:request.debit_column,credit_column:request.credit_column,date_order:request.date_order,number_format:request.number_format})
 }
 
 #[tauri::command]
 fn list_import_profiles(state:State<DbState>)->Result<Vec<ImportProfile>,String>{
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
-    let mut statement=connection.prepare("SELECT id,name,account_id,header_signature,date_column,payee_column,amount_column,debit_column,credit_column,date_order,number_format FROM import_profiles ORDER BY modified_at DESC,name").map_err(|e|e.to_string())?;
-    let rows=statement.query_map([],|row|Ok(ImportProfile{id:row.get(0)?,name:row.get(1)?,account_id:row.get(2)?,header_signature:row.get(3)?,date_column:row.get(4)?,payee_column:row.get(5)?,amount_column:row.get(6)?,debit_column:row.get(7)?,credit_column:row.get(8)?,date_order:row.get(9)?,number_format:row.get(10)?})).map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT id,name,account_id,header_signature,source_kind,source_signature,pdf_layout,workbook_sheet_name,workbook_header_row,date_column,payee_column,amount_column,debit_column,credit_column,date_order,number_format FROM import_profiles ORDER BY modified_at DESC,name").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],|row|Ok(ImportProfile{id:row.get(0)?,name:row.get(1)?,account_id:row.get(2)?,header_signature:row.get(3)?,source_kind:row.get(4)?,source_signature:row.get(5)?,pdf_layout:row.get(6)?,workbook_sheet_name:row.get(7)?,workbook_header_row:row.get(8)?,date_column:row.get(9)?,payee_column:row.get(10)?,amount_column:row.get(11)?,debit_column:row.get(12)?,credit_column:row.get(13)?,date_order:row.get(14)?,number_format:row.get(15)?})).map_err(|e|e.to_string())?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
@@ -1233,7 +1257,7 @@ fn save_import_profile(request:ImportProfileRequest,state:State<DbState>)->Resul
     }
     let existing_id:Option<String>=connection.query_row("SELECT id FROM import_profiles WHERE name=?1 AND header_signature=?2",params![profile.name,profile.header_signature],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
     let id=existing_id.unwrap_or_else(||profile.id.clone());
-    connection.execute("INSERT INTO import_profiles(id,name,account_id,header_signature,date_column,payee_column,amount_column,debit_column,credit_column,date_order,number_format) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(name,header_signature) DO UPDATE SET account_id=excluded.account_id,date_column=excluded.date_column,payee_column=excluded.payee_column,amount_column=excluded.amount_column,debit_column=excluded.debit_column,credit_column=excluded.credit_column,date_order=excluded.date_order,number_format=excluded.number_format,modified_at=CURRENT_TIMESTAMP",params![id,profile.name,profile.account_id,profile.header_signature,profile.date_column,profile.payee_column,profile.amount_column,profile.debit_column,profile.credit_column,profile.date_order,profile.number_format]).map_err(|e|e.to_string())?;
+    connection.execute("INSERT INTO import_profiles(id,name,account_id,header_signature,source_kind,source_signature,pdf_layout,workbook_sheet_name,workbook_header_row,date_column,payee_column,amount_column,debit_column,credit_column,date_order,number_format) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(name,header_signature) DO UPDATE SET account_id=excluded.account_id,source_kind=excluded.source_kind,source_signature=excluded.source_signature,pdf_layout=excluded.pdf_layout,workbook_sheet_name=excluded.workbook_sheet_name,workbook_header_row=excluded.workbook_header_row,date_column=excluded.date_column,payee_column=excluded.payee_column,amount_column=excluded.amount_column,debit_column=excluded.debit_column,credit_column=excluded.credit_column,date_order=excluded.date_order,number_format=excluded.number_format,modified_at=CURRENT_TIMESTAMP",params![id,profile.name,profile.account_id,profile.header_signature,profile.source_kind,profile.source_signature,profile.pdf_layout,profile.workbook_sheet_name,profile.workbook_header_row,profile.date_column,profile.payee_column,profile.amount_column,profile.debit_column,profile.credit_column,profile.date_order,profile.number_format]).map_err(|e|e.to_string())?;
     Ok(ImportProfile{id,..profile})
 }
 

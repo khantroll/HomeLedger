@@ -30,7 +30,8 @@ fn migration_creates_local_ledger_tables() {
     let debt_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('debt_plan_settings','debt_terms')",[],|row|row.get(0)).unwrap();
     let savings_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='savings_goals'",[],|row|row.get(0)).unwrap();
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables), (15, 2, 1, 1, 2, 2,1,2,1,2));
+    let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns), (16, 2, 1, 1, 2, 2,1,2,1,2,5));
 }
 
 #[test]
@@ -56,7 +57,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, 16);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -471,7 +472,7 @@ fn backup_validation_accepts_supported_pre_savings_schema() {
 fn backup_validation_accepts_supported_pre_catalog_schema() {
     let mut connection = Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
-    connection.execute_batch("DROP TABLE categories; DROP TABLE payees; DELETE FROM schema_migrations WHERE version=15;").unwrap();
+    connection.execute_batch("DROP TABLE categories; DROP TABLE payees; DELETE FROM schema_migrations WHERE version>=15;").unwrap();
     validate_backup_database(&connection).unwrap();
 }
 
