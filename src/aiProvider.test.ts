@@ -93,7 +93,19 @@ describe("AI provider trust and Privacy Firewall",()=>{
       endpoint:"https://generativelanguage.googleapis.com/v1beta",
       model:"gemini-2.0-flash",
       accountId:"cloud:gemini:default"
+    }))).not.toThrow();
+    expect(()=>assertTransmissionAllowed(cloudProviderDescriptor({
+      type:"mistral",
+      endpoint:"https://api.mistral.ai/v1",
+      model:"mistral-small",
+      accountId:"cloud:mistral:default"
     }))).toThrow(/not enabled/i);
+    expect(()=>validateProviderEndpoint(cloudProviderDescriptor({
+      type:"gemini",
+      endpoint:"https://generativelanguage.googleapis.com/v1",
+      model:"gemini-2.0-flash",
+      accountId:"cloud:gemini:default"
+    }))).toThrow(/v1beta/i);
     expect(()=>validateLocalAiProvider({...local,endpoint:"http://api.example.com/v1"})).toThrow(/loopback|localhost/i);
   });
 

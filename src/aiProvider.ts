@@ -10,10 +10,10 @@ export type AiProviderType=
   |"mistral"
   |"openai-compatible-remote"
   |"self-hosted-openai-compatible";
-export type EnabledCloudProviderType=Extract<AiProviderType,"openai"|"anthropic">;
+export type EnabledCloudProviderType=Extract<AiProviderType,"openai"|"anthropic"|"gemini">;
 export type AiApiFamily="openai-chat-completions"|"anthropic-messages"|"google-generative-ai";
 
-export const ENABLED_CLOUD_PROVIDERS=new Set<EnabledCloudProviderType>(["openai","anthropic"]);
+export const ENABLED_CLOUD_PROVIDERS=new Set<EnabledCloudProviderType>(["openai","anthropic","gemini"]);
 
 export function isEnabledCloudProvider(type:AiProviderType):type is EnabledCloudProviderType{
   return ENABLED_CLOUD_PROVIDERS.has(type as EnabledCloudProviderType);
@@ -46,7 +46,7 @@ export interface CloudProviderDraft{
 export const CLOUD_PROVIDER_PRESETS:Record<Exclude<CloudProviderDraft["type"],"openai-compatible-remote">,{label:string;endpoint:string;apiFamily:AiApiFamily;accountId:string;defaultModel:string}>={
   openai:{label:"OpenAI",endpoint:"https://api.openai.com/v1",apiFamily:"openai-chat-completions",accountId:"cloud:openai:default",defaultModel:"gpt-4.1-mini"},
   anthropic:{label:"Anthropic",endpoint:"https://api.anthropic.com",apiFamily:"anthropic-messages",accountId:"cloud:anthropic:default",defaultModel:"claude-sonnet-4-5"},
-  gemini:{label:"Gemini",endpoint:"https://generativelanguage.googleapis.com/v1beta",apiFamily:"google-generative-ai",accountId:"cloud:gemini:default",defaultModel:""},
+  gemini:{label:"Gemini",endpoint:"https://generativelanguage.googleapis.com/v1beta",apiFamily:"google-generative-ai",accountId:"cloud:gemini:default",defaultModel:"gemini-2.0-flash"},
   mistral:{label:"Mistral",endpoint:"https://api.mistral.ai/v1",apiFamily:"openai-chat-completions",accountId:"cloud:mistral:default",defaultModel:""}
 };
 

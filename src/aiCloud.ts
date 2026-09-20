@@ -8,6 +8,10 @@ export const ANTHROPIC_ACCOUNT_ID="cloud:anthropic:default";
 export const ANTHROPIC_ENDPOINT="https://api.anthropic.com";
 export const ANTHROPIC_DEFAULT_MODEL="claude-sonnet-4-5";
 
+export const GEMINI_ACCOUNT_ID="cloud:gemini:default";
+export const GEMINI_ENDPOINT="https://generativelanguage.googleapis.com/v1beta";
+export const GEMINI_DEFAULT_MODEL="gemini-2.0-flash";
+
 export interface CloudTransmissionGate{
   providerLabel:string;
   previewPayload:string;

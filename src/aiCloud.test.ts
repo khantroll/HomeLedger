@@ -4,6 +4,8 @@ import {
   ANTHROPIC_ACCOUNT_ID,
   ANTHROPIC_ENDPOINT,
   CLOUD_ADAPTER_CAPABILITIES,
+  GEMINI_ACCOUNT_ID,
+  GEMINI_ENDPOINT,
   OPENAI_ACCOUNT_ID,
   OPENAI_ENDPOINT,
   presentAiAdviceText
@@ -40,7 +42,7 @@ function affordabilityContext(){
 }
 
 describe("provider-neutral cloud adapters",()=>{
-  it("sends the same AffordabilityAnalysisContext through OpenAI and Anthropic without financial transforms",()=>{
+  it("sends the same AffordabilityAnalysisContext through OpenAI, Anthropic, and Gemini without financial transforms",()=>{
     const task=affordabilityContext();
     const openai=validateProviderEndpoint(cloudProviderDescriptor({
       type:"openai",endpoint:OPENAI_ENDPOINT,model:"gpt-4.1-mini",accountId:OPENAI_ACCOUNT_ID
@@ -48,24 +50,33 @@ describe("provider-neutral cloud adapters",()=>{
     const anthropic=validateProviderEndpoint(cloudProviderDescriptor({
       type:"anthropic",endpoint:ANTHROPIC_ENDPOINT,model:"claude-sonnet-4-5",accountId:ANTHROPIC_ACCOUNT_ID
     }));
+    const gemini=validateProviderEndpoint(cloudProviderDescriptor({
+      type:"gemini",endpoint:GEMINI_ENDPOINT,model:"gemini-2.0-flash",accountId:GEMINI_ACCOUNT_ID
+    }));
     expect(isEnabledCloudProvider("openai")).toBe(true);
     expect(isEnabledCloudProvider("anthropic")).toBe(true);
+    expect(isEnabledCloudProvider("gemini")).toBe(true);
     assertTransmissionAllowed(openai);
     assertTransmissionAllowed(anthropic);
+    assertTransmissionAllowed(gemini);
     const openPreview=buildAiTaskFirewallPreview({provider:openai,taskContext:task});
     const anthropicPreview=buildAiTaskFirewallPreview({provider:anthropic,taskContext:task});
+    const geminiPreview=buildAiTaskFirewallPreview({provider:gemini,taskContext:task});
     const openData=JSON.parse(openPreview.payload).data;
     const anthropicData=JSON.parse(anthropicPreview.payload).data;
+    const geminiData=JSON.parse(geminiPreview.payload).data;
     expect(openData).toEqual(anthropicData);
+    expect(openData).toEqual(geminiData);
     expect(openData).toEqual(task);
     expect(openPreview.payload).not.toContain("Jeffrey");
     expect(anthropicPreview.payload).not.toContain("Neighborhood Market");
-    expect(()=>prepareReviewedTransmission(anthropic,anthropicPreview)).toThrow(/confirmation/i);
-    assertCloudSendConfirmation({providerLabel:"Anthropic",previewPayload:anthropicPreview.payload,confirmed:true});
-    const request=prepareReviewedTransmission(anthropic,anthropicPreview,{explicitConfirmation:true});
-    expect(request.payload).toBe(anthropicPreview.payload);
-    expect(request.type).toBe("anthropic");
-    expect(request.accountId).toBe(ANTHROPIC_ACCOUNT_ID);
+    expect(geminiPreview.payload).not.toContain("bank-secret");
+    expect(()=>prepareReviewedTransmission(gemini,geminiPreview)).toThrow(/confirmation/i);
+    assertCloudSendConfirmation({providerLabel:"Gemini",previewPayload:geminiPreview.payload,confirmed:true});
+    const request=prepareReviewedTransmission(gemini,geminiPreview,{explicitConfirmation:true});
+    expect(request.payload).toBe(geminiPreview.payload);
+    expect(request.type).toBe("gemini");
+    expect(request.accountId).toBe(GEMINI_ACCOUNT_ID);
   });
 
   it("keeps model advice inert and adapters mutation-free",()=>{
@@ -76,21 +87,21 @@ describe("provider-neutral cloud adapters",()=>{
     expect(CLOUD_ADAPTER_CAPABILITIES.mayAccessRepository).toBe(false);
     expect(providerAdapterContract().mayAccessRepository).toBe(false);
     const source=readFileSync(new URL("./../src-tauri/src/lib.rs",import.meta.url),"utf8");
-    expect(source).toMatch(/query_anthropic_ai/);
-    expect(source).toMatch(/anthropic_messages_url/);
-    expect(source).toMatch(/x-api-key/);
-    expect(source).toMatch(/anthropic-version/);
+    expect(source).toMatch(/query_gemini_ai/);
+    expect(source).toMatch(/gemini_generate_content_url/);
+    expect(source).toMatch(/x-goog-api-key/);
     expect(source).toMatch(/no_proxy\(\)/);
     expect(source).toMatch(/Policy::none\(\)/);
     expect(source).toMatch(/ai_analysis_audit/);
     expect(source).not.toMatch(/get_ai_provider_credential/);
-    const queryFn=source.match(/async fn query_anthropic_ai_inner\([\s\S]*?\n\}/)?.[0]??"";
+    const queryFn=source.match(/async fn query_gemini_ai_inner\([\s\S]*?\n\}/)?.[0]??"";
     expect(queryFn).not.toContain("DbState");
     expect(queryFn).not.toContain("list_accounts");
     expect(queryFn).not.toContain("Authorization");
-    expect(queryFn).toContain("x-api-key");
+    expect(queryFn).toContain("x-goog-api-key");
+    expect(queryFn).not.toContain("?key=");
     expect(()=>assertTransmissionAllowed(cloudProviderDescriptor({
-      type:"gemini",endpoint:"https://generativelanguage.googleapis.com/v1beta",model:"gemini",accountId:"cloud:gemini:default"
+      type:"mistral",endpoint:"https://api.mistral.ai/v1",model:"mistral-small",accountId:"cloud:mistral:default"
     }))).toThrow(/not enabled/i);
   });
 });

@@ -328,11 +328,11 @@ export function AiInsightsPage({
       </section>
     </div>
     <section className="panel ai-cloud-config">
-      <div className="panel-heading"><div><h2>Cloud provider configuration</h2><p>OpenAI and Anthropic enabled with OS vault credentials</p></div><KeyRound size={18}/></div>
+      <div className="panel-heading"><div><h2>Cloud provider configuration</h2><p>OpenAI, Anthropic, and Gemini enabled with OS vault credentials</p></div><KeyRound size={18}/></div>
       <form className="ai-form" onSubmit={saveCloudCredential}>
-        <label>Cloud provider<select value={cloudType} onChange={event=>changeCloudType(event.target.value as CloudProviderDraft["type"])}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini (not enabled)</option><option value="mistral">Mistral (not enabled)</option><option value="openai-compatible-remote">Remote OpenAI-compatible (blocked)</option></select></label>
+        <label>Cloud provider<select value={cloudType} onChange={event=>changeCloudType(event.target.value as CloudProviderDraft["type"])}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini</option><option value="mistral">Mistral (not enabled)</option><option value="openai-compatible-remote">Remote OpenAI-compatible (blocked)</option></select></label>
         <label>HTTPS endpoint<input value={cloudEndpoint} onChange={event=>setCloudEndpoint(event.target.value)} inputMode="url" spellCheck={false} disabled={cloudType!=="openai-compatible-remote"}/><small>Approved hosts only. Arbitrary URLs fail closed.</small></label>
-        <label>Cloud model name<input value={cloudModel} onChange={event=>{setCloudModel(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}} placeholder={cloudType==="anthropic"?"claude-sonnet-4-5":"gpt-4.1-mini"}/></label>
+        <label>Cloud model name<input value={cloudModel} onChange={event=>{setCloudModel(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}} placeholder={cloudType==="anthropic"?"claude-sonnet-4-5":cloudType==="gemini"?"gemini-2.0-flash":"gpt-4.1-mini"}/></label>
         <label>API credential<input type="password" value={cloudSecret} onChange={event=>setCloudSecret(event.target.value)} autoComplete="off" spellCheck={false} placeholder={cloudConfigured?"Configured — enter a new value to replace":"Stored only in the OS credential vault"}/><small>HomeLedger never writes API credentials to SQLite, browser storage, config files, logs, backups, exports, or AI payloads. After save, the secret is not readable from the UI.</small></label>
         <div className="ai-cloud-status"><strong>Credential state:</strong> {cloudConfigured?"Configured":"Not configured"} <span>Account id: {cloudAccountId}</span></div>
         {cloudNotice&&<p className="success-banner ai-inline-notice" role="status">{cloudNotice}</p>}
@@ -342,7 +342,7 @@ export function AiInsightsPage({
           <button type="button" disabled={cloudBusy||!cloudEnabled} onClick={previewCloudTask}><Eye size={15}/> Preview affordability for {cloudLabel}</button>
         </div>
         {!isNativeApp&&<small className="ai-native-note">OS credential vault access and cloud transmission require the native desktop application.</small>}
-        <div className="ai-warning"><LockKeyhole/><span>Cloud requests use native HTTPS adapters only, never browser networking. Each send requires exact payload review and explicit confirmation. Gemini, Mistral, and arbitrary remote endpoints remain disabled.</span></div>
+        <div className="ai-warning"><LockKeyhole/><span>Cloud requests use native HTTPS adapters only, never browser networking. Each send requires exact payload review and explicit confirmation. Mistral and arbitrary remote endpoints remain disabled.</span></div>
       </form>
     </section>
   </div>;
