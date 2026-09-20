@@ -673,6 +673,7 @@ fn list_accounts(include_archived: Option<bool>, state: State<DbState>) -> Resul
 #[tauri::command]
 fn list_categories(state: State<DbState>) -> Result<Vec<String>, String> {
     let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    refresh_label_memory(&connection)?;
     let mut statement = connection.prepare("SELECT name FROM categories WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE, id").map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -681,9 +682,29 @@ fn list_categories(state: State<DbState>) -> Result<Vec<String>, String> {
 #[tauri::command]
 fn list_payees(state: State<DbState>) -> Result<Vec<String>, String> {
     let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    refresh_label_memory(&connection)?;
     let mut statement = connection.prepare("SELECT name FROM payees WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE, id").map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+fn refresh_label_memory(connection: &Connection) -> Result<(), String> {
+    connection.execute_batch(
+        "INSERT OR IGNORE INTO categories(id, name)
+         SELECT 'category-' || lower(hex(randomblob(16))), trim(category) FROM (
+           SELECT category FROM transactions
+           UNION SELECT category FROM transaction_splits
+           UNION SELECT category FROM scheduled_transactions WHERE kind = 'transaction'
+           UNION SELECT category FROM budget_categories
+           UNION SELECT category FROM merchant_rules WHERE category IS NOT NULL
+         ) WHERE trim(category) <> '' AND category <> 'Split transaction' AND category NOT LIKE 'Transfer:%';
+         INSERT OR IGNORE INTO payees(id, name)
+         SELECT 'payee-' || lower(hex(randomblob(16))), trim(payee) FROM (
+           SELECT payee FROM transactions
+           UNION SELECT payee FROM scheduled_transactions
+           UNION SELECT rename_to AS payee FROM merchant_rules WHERE rename_to IS NOT NULL
+         ) WHERE trim(payee) <> '';"
+    ).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
