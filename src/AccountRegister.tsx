@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowLeftRight, ChevronLeft, Scale, Search } from "lucide-react";
+import { ArrowLeftRight, ChevronLeft, Download, Scale, Search } from "lucide-react";
 import {
   REGISTER_PAGE_SIZE,
   formatMoney,
@@ -8,7 +8,8 @@ import {
   type TransactionStatus,
   type TransactionStatusFilter,
 } from "./domain";
-import { financeRepository as repository } from "./repository";
+import { csvExportRepository,financeRepository as repository } from "./repository";
+import {buildRegisterCsv,exportFileName,loadAllRegisterTransactions} from "./csvExport";
 import {
   filteredBalanceUnavailableReason,
   mergeOlderRegisterPage,
@@ -17,6 +18,7 @@ import {
   registerShowsLedgerBalance,
 } from "./registerMath";
 import "./register.css";
+import "./registerExport.css";
 
 export type RegisterDialogRequest =
   | { kind: "transaction"; transaction?: Transaction; accountId?: string }
@@ -55,6 +57,8 @@ export function AccountRegister({
   const [priorBalanceMinor, setPriorBalanceMinor] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [exporting,setExporting]=useState(false);
+  const [exportNotice,setExportNotice]=useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -152,6 +156,17 @@ export function AccountRegister({
   function applySearch(event: FormEvent) {
     event.preventDefault();
     setSearch(draftSearch.trim());
+  }
+
+  async function exportRegister(){
+    setExporting(true);setExportNotice("");setError("");
+    try{
+      const rows=await loadAllRegisterTransactions(repository,{accountId:accountId||undefined,status,fromDate:fromDate||undefined,toDate:toDate||undefined,search:search||undefined});
+      const prefix=`HomeLedger-${selectedAccount?.name??"all-accounts"}-register`;
+      const saved=await csvExportRepository.saveCsv(buildRegisterCsv(rows,accounts),exportFileName(prefix,fromDate||undefined,toDate||undefined));
+      if(saved)setExportNotice(`Exported ${rows.length.toLocaleString()} matching transaction${rows.length===1?"":"s"}.`);
+    }catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
+    finally{setExporting(false);}
   }
 
   if (!accounts.length) {
@@ -267,6 +282,7 @@ export function AccountRegister({
           {error}
         </div>
       )}
+      {exportNotice&&<div className="success-banner" role="status">{exportNotice}</div>}
 
       <section className="panel register-ledger">
         <div className="panel-heading">
@@ -281,12 +297,12 @@ export function AccountRegister({
               {balanceHiddenReason ? ` · ${balanceHiddenReason}` : showLedgerBalance ? " · Balance is true ledger balance" : ""}
             </p>
           </div>
-          {hasOlder && (
-            <button disabled={loadingOlder} onClick={() => void loadOlder()}>
+          <div className="register-heading-actions"><button disabled={loading||exporting||totalCount===0} onClick={()=>void exportRegister()}><Download size={13}/>{exporting?"Preparing export…":"Export matching CSV"}</button>{hasOlder && (
+            <button disabled={loadingOlder||exporting} onClick={() => void loadOlder()}>
               <ChevronLeft size={13} />
               {loadingOlder ? "Loading earlier…" : "Load earlier history"}
             </button>
-          )}
+          )}</div>
         </div>
         {loading ? (
           <div className="empty-state">Loading register…</div>

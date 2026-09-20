@@ -159,4 +159,16 @@ describe("AccountRegister", () => {
     expect(screen.getByRole("button", { name: "+ New transaction" })).toBeTruthy();
     expect(screen.getByText(/Choose one account to transfer, reconcile, or see running balances/)).toBeTruthy();
   });
+
+  it("exports every transaction matching the active register filters",async()=>{
+    const user=userEvent.setup(),save=vi.spyOn(repositoryModule.csvExportRepository,"saveCsv").mockResolvedValue(true);
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()}/>);
+    await screen.findByText("Utility");
+    await user.selectOptions(screen.getByLabelText("Filter register by status"),"review");
+    await user.type(screen.getByLabelText("Search register"),"Warehouse");await user.click(screen.getByRole("button",{name:"Search"}));
+    await user.click(screen.getByRole("button",{name:"Export matching CSV"}));
+    expect(save).toHaveBeenCalledWith(expect.stringContaining('"Warehouse Club"'),expect.stringMatching(/^HomeLedger-Household-Checking-register.*\.csv$/));
+    expect(repositoryModule.financeRepository.listTransactionsPage).toHaveBeenLastCalledWith(expect.objectContaining({offset:0,limit:500,newest:false,status:"review",search:"Warehouse"}));
+    expect((await screen.findByRole("status")).textContent).toContain("Exported 3 matching transactions");
+  });
 });

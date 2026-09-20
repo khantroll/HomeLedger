@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import {afterEach,describe,expect,it} from "vitest";
+import {afterEach,describe,expect,it,vi} from "vitest";
 import {cleanup,render,screen} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {ReportsPage} from "./ReportsPage";
 import type {Account,Transaction} from "./domain";
+import {csvExportRepository} from "./repository";
 
-afterEach(cleanup);
+afterEach(()=>{cleanup();vi.restoreAllMocks();});
 const accounts:Account[]=[{id:"checking",name:"Checking",type:"checking",currency:"USD",balanceMinor:100000,ownerLabel:"Household"},{id:"card",name:"Card",type:"credit",currency:"USD",balanceMinor:-5000,ownerLabel:"Household"}];
 const transactions:Transaction[]=[
   {id:"pay",accountId:"checking",postedDate:"2026-09-01",payee:"Payroll",category:"Income",amountMinor:200000,status:"cleared",source:"manual"},
@@ -27,5 +28,11 @@ describe("ReportsPage",()=>{
   it("supports a custom date range with visible validation",async()=>{
     const user=userEvent.setup();render(<ReportsPage accounts={accounts} transactions={transactions} today="2026-09-19"/>);
     await user.selectOptions(screen.getByLabelText("Period"),"custom");const from=screen.getByLabelText("From");await user.clear(from);await user.type(from,"2026-09-20");expect(screen.getByRole("alert").textContent).toContain("after");
+  });
+  it("exports the active report through the local CSV save service",async()=>{
+    const user=userEvent.setup(),save=vi.spyOn(csvExportRepository,"saveCsv").mockResolvedValue(true);render(<ReportsPage accounts={accounts} transactions={transactions} today="2026-09-19"/>);
+    await user.selectOptions(screen.getByLabelText("Account"),"checking");await user.click(screen.getByRole("button",{name:"Export CSV"}));
+    expect(save).toHaveBeenCalledWith(expect.stringContaining('"Account","Checking"'),"HomeLedger-report-2026-07-01-to-2026-09-19.csv");
+    expect((await screen.findByRole("status")).textContent).toContain("Report CSV saved");
   });
 });

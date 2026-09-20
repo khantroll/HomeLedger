@@ -545,3 +545,12 @@ fn transaction_pages_expose_history_beyond_the_old_thousand_row_cap() {
     ).unwrap();
     assert_eq!(pending.prior_balance_minor, Some(true_prior));
 }
+
+#[test]
+fn csv_export_validation_restricts_size_content_and_filename() {
+    super::validate_csv_export("\u{feff}\"Date\"\r\n", "HomeLedger-report.csv").unwrap();
+    assert!(super::validate_csv_export("", "HomeLedger-report.csv").is_err());
+    assert!(super::validate_csv_export("date\0value", "HomeLedger-report.csv").is_err());
+    assert!(super::validate_csv_export("date,value", "../report.csv").is_err());
+    assert!(super::validate_csv_export("date,value", "report.txt").is_err());
+}
