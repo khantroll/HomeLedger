@@ -6,6 +6,8 @@ HomeLedger is a privacy-first, local household finance desktop application inspi
 
 ## Current status
 
+Milestone 5 now begins with a non-networked AI Insights and Privacy Firewall foundation. It configures Ollama, LM Studio, or another OpenAI-compatible loopback endpoint in memory; rejects non-local destinations; and constructs an exact reviewable payload using Aggregate Only, Redacted Transactions, Custom field selection, or Full Local Context modes. Cloud providers, credential entry, request transmission, and AI ledger mutation remain disabled. Internal/provider identifiers and import provenance are always excluded, while non-full modes minimize transaction data with stable aliases, month-only dates, amount bands, and sensitive-category removal.
+
 Structured statement import now supports MT940 and ISO 20022 CAMT.052/.053/.054 alongside the existing formats. Account, currency, date-range, provider-reference, and closing-balance metadata are retained when supplied. Unsafe multi-account, mixed-currency, aggregated, malformed, or incomplete structured statements are rejected as a complete file rather than partially imported.
 
 Account lifecycle management supports editing identity, institution, type, owner, and currency; explicit ordering; review indicators; and guarded archive/restore while retaining historical reporting. Currency relabeling is blocked once activity or planning data exists, and archival is blocked while unresolved transactions or active planning dependencies remain.

@@ -15,6 +15,7 @@ import { BudgetPage } from "./BudgetPage";
 import { ForecastPage } from "./ForecastPage";
 import { ReportsPage } from "./ReportsPage";
 import { DebtPage } from "./DebtPage";
+import { AiInsightsPage } from "./AiInsightsPage";
 import { AccountRegister, type RegisterDialogRequest } from "./AccountRegister";
 import { addDaysIso, formatDate, occurrenceDisplayState, occurrenceStateLabel, todayIso } from "./scheduledPresentation";
 import {calculateCashFlowForecast,forecastMonths} from "./forecastMath";
@@ -116,7 +117,7 @@ export default function App() {
             <button key={label} className={active === label ? "active" : ""} onClick={() => openNav(label)}>
               <Icon size={17} />
               <span>{label}</span>
-              {!["Overview", "Accounts", "Transactions", "Imports", "Rules", "Budget", "Bills", "Forecast", "Debt", "Reports", "Settings"].includes(label) && <em>Planned</em>}
+              {!["Overview", "Accounts", "Transactions", "Imports", "Rules", "Budget", "Bills", "Forecast", "Debt", "Reports", "AI Insights", "Settings"].includes(label) && <em>Planned</em>}
             </button>
           ))}
         </nav>
@@ -165,7 +166,7 @@ export default function App() {
           ) : active === "Settings" ? (
             <BackupPage onRestored={refresh} />
           ) : active === "AI Insights" ? (
-            <Planned title={active} />
+            <AiInsightsPage accounts={activeAccounts} transactions={transactions} />
           ) : active === "Transactions" ? (
             <>
               <StorageNotice />
@@ -459,17 +460,6 @@ function Summary({ label, value, detail, tone = "" }: { label: string; value: st
       <strong>{value}</strong>
       <small>{detail}</small>
     </article>
-  );
-}
-function Planned({ title }: { title: string }) {
-  return (
-    <section className="planned panel">
-      <div className="planned-icon">
-        <WalletCards />
-      </div>
-      <h2>{title} is planned</h2>
-      <p>This area will be implemented as a tested vertical slice after the local ledger foundation is complete.</p>
-    </section>
   );
 }
 function Empty({ text }: { text: string }) {
