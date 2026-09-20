@@ -34,6 +34,8 @@ const ANTHROPIC_HOST: &str = "api.anthropic.com";
 const ANTHROPIC_DEFAULT_ACCOUNT_ID: &str = "cloud:anthropic:default";
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_MAX_TOKENS: u32 = 2048;
+const GEMINI_HOST: &str = "generativelanguage.googleapis.com";
+const GEMINI_DEFAULT_ACCOUNT_ID: &str = "cloud:gemini:default";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +54,16 @@ struct OpenAiRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AnthropicRequest {
+    endpoint: String,
+    model: String,
+    payload: String,
+    account_id: String,
+    confirmed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiRequest {
     endpoint: String,
     model: String,
     payload: String,
@@ -236,8 +248,8 @@ fn read_ai_provider_secret(account_id: &str) -> Result<String, String> {
     let entry = ai_credential_entry(account_id)?;
     match entry.get_password() {
         Ok(secret) => Ok(secret),
-        Err(keyring::Error::NoEntry) => Err("OpenAI credentials are not configured in the OS vault".into()),
-        Err(_) => Err("Could not read the OpenAI credential from the OS vault".into()),
+        Err(keyring::Error::NoEntry) => Err("Cloud AI credentials are not configured in the OS vault".into()),
+        Err(_) => Err("Could not read the cloud AI credential from the OS vault".into()),
     }
 }
 
@@ -606,6 +618,200 @@ async fn query_anthropic_ai_inner(request: AnthropicRequest) -> Result<LocalAiAn
     drop(api_key);
     let bytes = bounded_anthropic_response(response).await?;
     let answer = parse_anthropic_messages_answer(&bytes)?;
+    Ok(LocalAiAnswer { answer })
+}
+
+fn gemini_generate_content_url(endpoint: &str, model: &str) -> Result<reqwest::Url, String> {
+    if endpoint.is_empty() || endpoint.len() > 2048 { return Err("The Gemini endpoint is invalid".into()); }
+    let mut url = reqwest::Url::parse(endpoint).map_err(|_| "The Gemini endpoint is invalid".to_string())?;
+    if url.scheme() != "https" { return Err("Gemini endpoints must use HTTPS".into()); }
+    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return Err("Gemini endpoint URLs cannot contain credentials, query strings, or fragments".into());
+    }
+    let host = url.host_str().ok_or_else(|| "The Gemini endpoint is missing its host".to_string())?.to_ascii_lowercase();
+    if host != GEMINI_HOST { return Err("Gemini requests are restricted to generativelanguage.googleapis.com".into()); }
+    let model = validate_gemini_model(model)?;
+    let base = url.path().trim_end_matches('/');
+    let expected_suffix = format!("/models/{model}:generateContent");
+    let path = if base.ends_with(&expected_suffix) { base.to_string() }
+        else if base == "/v1beta" || base.ends_with("/v1beta") { format!("{base}/models/{model}:generateContent") }
+        else { return Err("Gemini endpoints must use the /v1beta API root".into()); };
+    url.set_path(&path);
+    Ok(url)
+}
+
+fn gemini_cloud_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(60))
+        .user_agent("HomeLedger-gemini")
+        .build()
+        .map_err(|_| "Could not initialize the Gemini client".to_string())
+}
+
+fn validate_gemini_model(model: &str) -> Result<&str, String> {
+    let model = model.trim();
+    if model.is_empty() || model.len() > 200 {
+        return Err("The Gemini model name is invalid".into());
+    }
+    if !model.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')) {
+        return Err("The Gemini model name is invalid".into());
+    }
+    Ok(model)
+}
+
+fn gemini_http_status_message(status: u16) -> String {
+    match status {
+        301 | 302 | 303 | 307 | 308 => "Gemini redirected the request and HomeLedger rejected the redirect".into(),
+        401 | 403 => "Gemini authentication failed".into(),
+        429 => "Gemini rate limit exceeded".into(),
+        _ => format!("Gemini returned HTTP {status}"),
+    }
+}
+
+fn build_gemini_generate_content_body(model: &str, payload: &str) -> Result<serde_json::Value, String> {
+    let context: serde_json::Value = serde_json::from_str(payload).map_err(|_| "The reviewed AI payload is not valid JSON".to_string())?;
+    if context.get("model").and_then(|value| value.as_str()) != Some(model) {
+        return Err("The reviewed AI payload does not match the selected model".into());
+    }
+    let system = if context.get("task").and_then(|value| value.as_str()) == Some("affordability-analysis") {
+        CLOUD_AFFORDABILITY_SYSTEM_PROMPT
+    } else {
+        LOCAL_AI_SYSTEM_PROMPT
+    };
+    Ok(serde_json::json!({
+        "systemInstruction": {
+            "parts": [{"text": system}]
+        },
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": payload}]
+        }],
+        "generationConfig": {
+            "temperature": 0.2
+        }
+    }))
+}
+
+fn parse_gemini_generate_content_answer(bytes: &[u8]) -> Result<String, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| "Gemini returned invalid JSON".to_string())?;
+    let answer = value
+        .pointer("/candidates/0/content/parts/0/text")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| "Gemini returned no answer".to_string())?;
+    Ok(answer.to_string())
+}
+
+async fn bounded_gemini_response(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    let status = response.status().as_u16();
+    if status == 301 || status == 302 || status == 303 || status == 307 || status == 308 {
+        return Err(gemini_http_status_message(status));
+    }
+    if !response.status().is_success() {
+        let _ = response.bytes().await;
+        return Err(gemini_http_status_message(status));
+    }
+    if response.content_length().is_some_and(|length| length > MAX_CLOUD_AI_RESPONSE_BYTES as u64) {
+        return Err("The Gemini response exceeded the 1 MB limit".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "Could not read the Gemini response".to_string())? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_CLOUD_AI_RESPONSE_BYTES {
+            return Err("The Gemini response exceeded the 1 MB limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+fn query_gemini_with_transport<F>(
+    request: &GeminiRequest,
+    api_key: &str,
+    fetch: F,
+) -> Result<LocalAiAnswer, String>
+where
+    F: FnOnce(reqwest::Url, &str, serde_json::Value) -> Result<Vec<u8>, String>,
+{
+    if !request.confirmed {
+        return Err("Cloud transmission requires explicit per-request confirmation".into());
+    }
+    let account_id = validate_ai_credential_account_id(&request.account_id)?;
+    if account_id != GEMINI_DEFAULT_ACCOUNT_ID && !account_id.starts_with("cloud:gemini:") {
+        return Err("Gemini credential account id is invalid".into());
+    }
+    let model = validate_gemini_model(&request.model)?;
+    let url = gemini_generate_content_url(&request.endpoint, model)?;
+    if request.payload.is_empty() || request.payload.len() > MAX_CLOUD_AI_PAYLOAD_BYTES {
+        return Err("The reviewed AI payload must be between 1 byte and 256 KB".into());
+    }
+    if api_key.is_empty() {
+        return Err("Gemini credentials are not configured in the OS vault".into());
+    }
+    let body = build_gemini_generate_content_body(model, &request.payload)?;
+    let bytes = fetch(url, api_key, body)?;
+    let answer = parse_gemini_generate_content_answer(&bytes)?;
+    Ok(LocalAiAnswer { answer })
+}
+
+#[tauri::command]
+async fn query_gemini_ai(request: GeminiRequest, state: State<'_, DbState>) -> Result<LocalAiAnswer, String> {
+    let context: serde_json::Value = serde_json::from_str(&request.payload).unwrap_or(serde_json::Value::Null);
+    let task_type = context.get("task").and_then(|value| value.as_str()).unwrap_or("adhoc").to_string();
+    let disclosure_mode = context.get("disclosureMode").and_then(|value| value.as_str()).unwrap_or("task-specific").to_string();
+    let model_for_audit = request.model.trim().to_string();
+    let result = query_gemini_ai_inner(request).await;
+    {
+        let meta = AiAuditMeta {
+            task_type: &task_type,
+            provider: "gemini",
+            model: &model_for_audit,
+            trust_classification: "cloud",
+            disclosure_mode: &disclosure_mode,
+        };
+        let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+        match &result {
+            Ok(_) => record_ai_analysis_audit(&connection, meta, true, None)?,
+            Err(error) => record_ai_analysis_audit(&connection, meta, false, Some(cloud_ai_error_class(error)))?,
+        }
+    }
+    result
+}
+
+async fn query_gemini_ai_inner(request: GeminiRequest) -> Result<LocalAiAnswer, String> {
+    if !request.confirmed {
+        return Err("Cloud transmission requires explicit per-request confirmation".into());
+    }
+    let account_id = validate_ai_credential_account_id(&request.account_id)?.to_string();
+    if account_id != GEMINI_DEFAULT_ACCOUNT_ID && !account_id.starts_with("cloud:gemini:") {
+        return Err("Gemini credential account id is invalid".into());
+    }
+    let model = validate_gemini_model(&request.model)?.to_string();
+    let url = gemini_generate_content_url(&request.endpoint, &model)?;
+    if request.payload.is_empty() || request.payload.len() > MAX_CLOUD_AI_PAYLOAD_BYTES {
+        return Err("The reviewed AI payload must be between 1 byte and 256 KB".into());
+    }
+    let body = build_gemini_generate_content_body(&model, &request.payload)?;
+    let api_key = read_ai_provider_secret(&account_id)?;
+    let client = gemini_cloud_client()?;
+    let response = client
+        .post(url)
+        .header("x-goog-api-key", api_key.as_str())
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() { "The Gemini request timed out".to_string() }
+            else { "Could not connect to Gemini".to_string() }
+        })?;
+    drop(api_key);
+    let bytes = bounded_gemini_response(response).await?;
+    let answer = parse_gemini_generate_content_answer(&bytes)?;
     Ok(LocalAiAnswer { answer })
 }
 
@@ -2876,7 +3082,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

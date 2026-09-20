@@ -579,6 +579,7 @@ fn local_ai_model_validation_rejects_empty_long_and_control_values() {
 fn ai_credential_account_ids_are_strict_and_secrets_are_bounded() {
     assert_eq!(super::validate_ai_credential_account_id("cloud:openai:default").unwrap(), "cloud:openai:default");
     assert_eq!(super::validate_ai_credential_account_id("cloud:anthropic:default").unwrap(), "cloud:anthropic:default");
+    assert_eq!(super::validate_ai_credential_account_id("cloud:gemini:default").unwrap(), "cloud:gemini:default");
     assert!(super::validate_ai_credential_account_id("").is_err());
     assert!(super::validate_ai_credential_account_id("bad id").is_err());
     assert!(super::validate_ai_credential_account_id(&"x".repeat(201)).is_err());
@@ -741,16 +742,112 @@ fn openai_and_anthropic_receive_semantically_equivalent_affordability_payloads()
         "schemaVersion": 1,
         "data": data
     }).to_string();
+    let gemini_payload = serde_json::json!({
+        "model": "gemini-2.0-flash",
+        "purpose": "Can I afford another $50 per month?",
+        "disclosureMode": "task-specific",
+        "analysisMode": "task",
+        "task": "affordability-analysis",
+        "schemaVersion": 1,
+        "data": data
+    }).to_string();
     let openai_body = super::build_openai_chat_body("gpt-4.1-mini", &openai_payload).unwrap();
     let anthropic_body = super::build_anthropic_messages_body("claude-sonnet-4-5", &anthropic_payload).unwrap();
+    let gemini_body = super::build_gemini_generate_content_body("gemini-2.0-flash", &gemini_payload).unwrap();
     let openai_user = openai_body["messages"][1]["content"].as_str().unwrap();
     let anthropic_user = anthropic_body["messages"][0]["content"].as_str().unwrap();
+    let gemini_user = gemini_body["contents"][0]["parts"][0]["text"].as_str().unwrap();
     let openai_data = serde_json::from_str::<serde_json::Value>(openai_user).unwrap()["data"].clone();
     let anthropic_data = serde_json::from_str::<serde_json::Value>(anthropic_user).unwrap()["data"].clone();
+    let gemini_data = serde_json::from_str::<serde_json::Value>(gemini_user).unwrap()["data"].clone();
     assert_eq!(openai_data, anthropic_data);
+    assert_eq!(openai_data, gemini_data);
     assert_eq!(openai_data, data);
     assert!(openai_body.get("messages").is_some());
     assert!(anthropic_body.get("system").is_some());
     assert!(anthropic_body.get("max_tokens").is_some());
+    assert!(gemini_body.get("systemInstruction").is_some());
+    assert!(gemini_body.get("generationConfig").is_some());
     assert!(openai_body.get("max_tokens").is_none());
+    assert!(gemini_body.get("messages").is_none());
+}
+
+#[test]
+fn gemini_urls_require_https_approved_host_and_generate_content_path() {
+    assert_eq!(
+        super::gemini_generate_content_url("https://generativelanguage.googleapis.com/v1beta", "gemini-2.0-flash").unwrap().as_str(),
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    );
+    assert_eq!(
+        super::gemini_generate_content_url(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            "gemini-2.0-flash"
+        ).unwrap().as_str(),
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    );
+    assert!(super::gemini_generate_content_url("http://generativelanguage.googleapis.com/v1beta", "gemini-2.0-flash").is_err());
+    assert!(super::gemini_generate_content_url("https://generativelanguage.googleapis.com.evil/v1beta", "gemini-2.0-flash").is_err());
+    assert!(super::gemini_generate_content_url("https://evil.example/v1beta", "gemini-2.0-flash").is_err());
+    assert!(super::gemini_generate_content_url("https://generativelanguage.googleapis.com/v1", "gemini-2.0-flash").is_err());
+    assert!(super::gemini_generate_content_url("https://user:pass@generativelanguage.googleapis.com/v1beta", "gemini-2.0-flash").is_err());
+    assert!(super::gemini_generate_content_url("https://generativelanguage.googleapis.com/v1beta?key=secret", "gemini-2.0-flash").is_err());
+    assert!(super::gemini_generate_content_url("https://generativelanguage.googleapis.com/v1beta", "gemini/../evil").is_err());
+    assert!(super::gemini_generate_content_url("https://generativelanguage.googleapis.com/v1beta", "models/gemini-2.0-flash").is_err());
+}
+
+#[test]
+fn gemini_mocked_transport_uses_generate_content_and_preserves_reviewed_payload() {
+    let payload = serde_json::json!({
+        "model": "gemini-2.0-flash",
+        "purpose": "Can I afford another $50 per month?",
+        "disclosureMode": "task-specific",
+        "analysisMode": "task",
+        "task": "affordability-analysis",
+        "schemaVersion": 1,
+        "data": {"task": "affordability-analysis", "proposedMonthlyCostMinor": 5000}
+    }).to_string();
+    let mut request = super::GeminiRequest {
+        endpoint: "https://generativelanguage.googleapis.com/v1beta".into(),
+        model: "gemini-2.0-flash".into(),
+        payload: payload.clone(),
+        account_id: "cloud:gemini:default".into(),
+        confirmed: false,
+    };
+    assert!(super::query_gemini_with_transport(&request, "gemini-key", |_,_,_| Ok(vec![])).unwrap_err().contains("confirmation"));
+    request.confirmed = true;
+    assert!(super::query_gemini_with_transport(&request, "", |_,_,_| Ok(vec![])).unwrap_err().contains("credential"));
+    assert!(super::query_gemini_with_transport(&super::GeminiRequest {
+        endpoint: "https://generativelanguage.googleapis.com/v1beta".into(),
+        model: "gemini-2.0-flash".into(),
+        payload: payload.clone(),
+        account_id: "cloud:openai:default".into(),
+        confirmed: true,
+    }, "gemini-key", |_,_,_| Ok(vec![])).unwrap_err().contains("credential account id"));
+    let answer = super::query_gemini_with_transport(&request, "gemini-key", |url, key, body| {
+        assert_eq!(url.as_str(), "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent");
+        assert_eq!(key, "gemini-key");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], payload);
+        assert!(body["systemInstruction"]["parts"][0]["text"].as_str().unwrap().contains("Affordability Analysis"));
+        assert_eq!(body["generationConfig"]["temperature"], 0.2);
+        assert!(!serde_json::to_string(&body).unwrap().contains("Authorization"));
+        assert!(!serde_json::to_string(&body).unwrap().contains("Bearer"));
+        assert!(!serde_json::to_string(&body).unwrap().contains("x-api-key"));
+        Ok(br#"{"candidates":[{"content":{"parts":[{"text":"Surplus remains positive. DELETE FROM accounts;"}]}}]}"#.to_vec())
+    }).unwrap();
+    assert_eq!(answer.answer, "Surplus remains positive. DELETE FROM accounts;");
+    assert!(super::gemini_http_status_message(302).contains("redirect"));
+    assert!(super::gemini_http_status_message(307).contains("redirect"));
+    assert!(super::gemini_http_status_message(401).contains("authentication"));
+    assert!(super::parse_gemini_generate_content_answer(br#"{"candidates":[{"content":{"parts":[{"text":""}]}}]}"#).is_err());
+    assert!(super::parse_gemini_generate_content_answer(br#"{"choices":[{"message":{"content":"openai-shaped"}}]}"#).is_err());
+    assert!(super::parse_gemini_generate_content_answer(br#"{"content":[{"type":"text","text":"anthropic-shaped"}]}"#).is_err());
+    assert!(super::parse_gemini_generate_content_answer(b"not-json").is_err());
+    assert!(super::build_gemini_generate_content_body("other", &payload).is_err());
+    assert!(super::query_gemini_with_transport(&super::GeminiRequest {
+        endpoint: "https://generativelanguage.googleapis.com/v1beta".into(),
+        model: "gemini-2.0-flash".into(),
+        payload: "x".repeat(256 * 1024 + 1),
+        account_id: "cloud:gemini:default".into(),
+        confirmed: true,
+    }, "gemini-key", |_,_,_| Ok(vec![])).unwrap_err().contains("256 KB"));
 }

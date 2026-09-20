@@ -110,7 +110,7 @@ export const pdfRepository:PdfRepository=isNativeApp?new TauriPdfRepository():ne
 
 export interface LocalAiQuery { endpoint:string;model:string;payload:string; }
 export interface LocalAiAnswer { answer:string; }
-export interface CloudAiQuery { provider:"openai"|"anthropic";endpoint:string;model:string;payload:string;accountId:string;confirmed:boolean; }
+export interface CloudAiQuery { provider:"openai"|"anthropic"|"gemini";endpoint:string;model:string;payload:string;accountId:string;confirmed:boolean; }
 export interface AiCredentialStatus { accountId:string;configured:boolean; }
 export interface AiRepository {
   testConnection(endpoint:string):Promise<void>;
@@ -126,6 +126,7 @@ class TauriAiRepository implements AiRepository {
   queryCloud(input:CloudAiQuery):Promise<LocalAiAnswer>{
     if(input.provider==="openai")return invoke("query_openai_ai",{request:{endpoint:input.endpoint,model:input.model,payload:input.payload,accountId:input.accountId,confirmed:input.confirmed}});
     if(input.provider==="anthropic")return invoke("query_anthropic_ai",{request:{endpoint:input.endpoint,model:input.model,payload:input.payload,accountId:input.accountId,confirmed:input.confirmed}});
+    if(input.provider==="gemini")return invoke("query_gemini_ai",{request:{endpoint:input.endpoint,model:input.model,payload:input.payload,accountId:input.accountId,confirmed:input.confirmed}});
     return Promise.reject(new Error("Unsupported cloud AI provider"));
   }
   credentialStatus(accountId:string):Promise<AiCredentialStatus>{return invoke("ai_provider_credential_status",{accountId});}

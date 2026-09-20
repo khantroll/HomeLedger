@@ -45,7 +45,7 @@ describe("AI Insights privacy review",()=>{
     expect(screen.getByText(/Cloud provider configuration/)).toBeTruthy();
   });
 
-  it("requires cloud confirmation before enabling OpenAI or Anthropic send",async()=>{
+  it("requires cloud confirmation before enabling OpenAI, Anthropic, or Gemini send",async()=>{
     const user=userEvent.setup();
     render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets} today="2026-09-20"/>);
     await user.click(screen.getByRole("button",{name:/Preview affordability for OpenAI/}));
@@ -59,8 +59,12 @@ describe("AI Insights privacy review",()=>{
     await user.selectOptions(screen.getByLabelText("Cloud provider"),"anthropic");
     await user.click(screen.getByRole("button",{name:/Preview affordability for Anthropic/}));
     expect(screen.getByText(/Destination is Anthropic \(cloud\)/i)).toBeTruthy();
-    expect(screen.getByText(/"task": "affordability-analysis"/)).toBeTruthy();
     expect((screen.getByRole("button",{name:/Send reviewed payload to Anthropic/}) as HTMLButtonElement).disabled).toBe(true);
+    await user.selectOptions(screen.getByLabelText("Cloud provider"),"gemini");
+    await user.click(screen.getByRole("button",{name:/Preview affordability for Gemini/}));
+    expect(screen.getByText(/Destination is Gemini \(cloud\)/i)).toBeTruthy();
+    expect(screen.getByText(/"task": "affordability-analysis"/)).toBeTruthy();
+    expect((screen.getByRole("button",{name:/Send reviewed payload to Gemini/}) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("rejects a remote endpoint before constructing a payload",async()=>{
