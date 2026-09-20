@@ -66,20 +66,23 @@ fn validate_local_ai_model(model:&str)->Result<&str,String>{let model=model.trim
 
 #[tauri::command]
 async fn test_local_ai(endpoint:String)->Result<(),String>{
-    let url=local_ai_url(&endpoint,"models")?,client=local_ai_client()?;
+    let url=local_ai_url(&endpoint,"models")?;
+    let client=local_ai_client()?;
     let response=client.get(url).send().await.map_err(|error|if error.is_timeout(){"The local AI connection timed out".to_string()}else{"Could not connect to the local AI provider".to_string()})?;
     let _=bounded_local_ai_response(response).await?;Ok(())
 }
 
 #[tauri::command]
 async fn query_local_ai(request:LocalAiRequest)->Result<LocalAiAnswer,String>{
-    let model=validate_local_ai_model(&request.model)?,url=local_ai_url(&request.endpoint,"chat/completions")?;
+    let model=validate_local_ai_model(&request.model)?;
+    let url=local_ai_url(&request.endpoint,"chat/completions")?;
     if request.payload.is_empty()||request.payload.len()>MAX_LOCAL_AI_PAYLOAD_BYTES{return Err("The reviewed AI payload must be between 1 byte and 256 KB".into());}
     let context:serde_json::Value=serde_json::from_str(&request.payload).map_err(|_|"The reviewed AI payload is not valid JSON".to_string())?;
     if context.get("model").and_then(|value|value.as_str())!=Some(model){return Err("The reviewed AI payload does not match the selected model".into());}
     let body=serde_json::json!({"model":model,"messages":[{"role":"system","content":LOCAL_AI_SYSTEM_PROMPT},{"role":"user","content":request.payload}],"stream":false,"temperature":0.2});
     let response=local_ai_client()?.post(url).json(&body).send().await.map_err(|error|if error.is_timeout(){"The local AI request timed out".to_string()}else{"Could not connect to the local AI provider".to_string()})?;
-    let bytes=bounded_local_ai_response(response).await?,value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"The local AI provider returned invalid JSON".to_string())?;
+    let bytes=bounded_local_ai_response(response).await?;
+    let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"The local AI provider returned invalid JSON".to_string())?;
     let answer=value.pointer("/choices/0/message/content").and_then(|item|item.as_str()).map(str::trim).filter(|item|!item.is_empty()).ok_or_else(||"The local AI provider returned no answer".to_string())?;
     Ok(LocalAiAnswer{answer:answer.to_string()})
 }
