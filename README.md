@@ -6,6 +6,8 @@ HomeLedger is a privacy-first, local household finance desktop application inspi
 
 ## Current status
 
+Structured statement import now supports MT940 and ISO 20022 CAMT.052/.053/.054 alongside the existing formats. Account, currency, date-range, provider-reference, and closing-balance metadata are retained when supplied. Unsafe multi-account, mixed-currency, aggregated, malformed, or incomplete structured statements are rejected as a complete file rather than partially imported.
+
 Account lifecycle management supports editing identity, institution, type, owner, and currency; explicit ordering; review indicators; and guarded archive/restore while retaining historical reporting. Currency relabeling is blocked once activity or planning data exists, and archival is blocked while unresolved transactions or active planning dependencies remain.
 
 Shared category and payee memory now backfills existing ledger and planning labels, remembers new labels locally, and provides one autocomplete catalog across transaction, split, scheduled-item, merchant-rule, and budget editors. Colon-delimited category names such as `Food: Groceries` provide a lightweight hierarchy without changing historical transaction text.
@@ -43,7 +45,7 @@ The current milestone makes no network calls and contains no real financial data
 
 Encrypted `.hlb` backups use AES-256-GCM with authenticated metadata and a PBKDF2-SHA-256 password-derived key. The password is never written to disk or sent to a service, and there is no password recovery. Restore validates authenticated encryption, the SQLite header and integrity check, supported schema version, required tables, and foreign-key relationships before replacing the ledger. A temporary rollback snapshot is used if replacement fails and is removed when the operation completes.
 
-CSV, TSV, OFX, QFX, and QIF files are parsed in application memory. The original file is not copied into the database; only approved normalized transaction fields, categories and splits when supplied, provider transaction ID when supplied, and the source filename are retained. OFX/QFX support covers bank and credit-card statements. QIF support covers bank, cash, and credit-card transactions; QIF does not carry a currency, so amounts use the selected local account's currency. Investment transactions are rejected explicitly rather than misinterpreted.
+CSV, TSV, OFX, QFX, QIF, MT940, and CAMT files are parsed in application memory. The original file is not copied into the database; only approved normalized transaction fields, categories and splits when supplied, provider transaction ID when supplied, and the source filename are retained. OFX/QFX support covers bank and credit-card statements. QIF support covers bank, cash, and credit-card transactions; QIF does not carry a currency, so amounts use the selected local account's currency. MT940 and CAMT support one bank account and one currency per import. Investment transactions are rejected explicitly rather than misinterpreted.
 
 Merchant rules are local, deterministic, and evaluated by priority. They can match normalized payee text exactly, by prefix, or by containment; optionally scope themselves to expenses or income; and rename or categorize matching imports. An explicit source category or split allocation always wins over a rule. HomeLedger stores the original payee alongside a rule-renamed payee for auditability, and the native import command reapplies the rules inside the same database transaction instead of trusting browser preview data.
 
