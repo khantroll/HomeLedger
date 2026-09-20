@@ -121,14 +121,30 @@ describe("Spending Change Analysis task context",()=>{
       question:"What changed compared with last month?",
       currency:"USD",
       asOfDate:"2026-09-30",
-      analysisPeriod:{fromDate:"2026-09-01",toDate:"2026-09-30"},
+      analysisPeriod:{fromDate:"2026-09-01",toDate:"2026-09-15"},
       comparisonPeriod:{fromDate:"2026-08-01",toDate:"2026-08-31"},
       accounts,
       transactions:spendingTx,
       templates
     });
     expect(context.comparisonPeriod.alignment).toBe("custom");
-    expect(context.analysisPeriod.isPartialMonth).toBe(false);
-    expect(context.periodLimitations.comparisonUsesEquivalentDays).toBe(false);
+    expect(context.periodLimitations.note).toMatch(/different lengths/i);
+  });
+
+  it("recognizes default-equivalent periods even when supplied explicitly",()=>{
+    const defaults=defaultSpendingChangePeriods("2026-09-20");
+    const context=buildSpendingChangeAnalysisContext({
+      question:"Why was this month expensive?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      analysisPeriod:defaults.analysis,
+      comparisonPeriod:defaults.comparison,
+      accounts,
+      transactions:spendingTx,
+      templates
+    });
+    expect(context.comparisonPeriod.alignment).toBe("equivalent-prior-days");
+    expect(context.periodLimitations.comparisonUsesEquivalentDays).toBe(true);
+    expect(context.periodLimitations.note).toMatch(/same number of days/i);
   });
 });

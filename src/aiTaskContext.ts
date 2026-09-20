@@ -402,7 +402,6 @@ export function buildSpendingChangeAnalysisContext(input:SpendingChangeAnalysisI
   const defaults=defaultSpendingChangePeriods(asOfDate);
   const analysisSpec=input.analysisPeriod??defaults.analysis;
   const comparisonSpec=input.comparisonPeriod??defaults.comparison;
-  const customPeriods=Boolean(input.analysisPeriod||input.comparisonPeriod);
   validatePeriod(analysisSpec,"Analysis");
   validatePeriod(comparisonSpec,"Comparison");
   if(analysisSpec.fromDate>asOfDate)throw new Error("Analysis period cannot start after the as-of date");
@@ -418,9 +417,12 @@ export function buildSpendingChangeAnalysisContext(input:SpendingChangeAnalysisI
   });
 
   const analysisPeriod=periodFacts(analysisSpec);
-  const comparisonAlignment=customPeriods
-    ?"custom" as const
-    :defaults.alignment;
+  const matchesDefault=
+    analysisSpec.fromDate===defaults.analysis.fromDate
+    &&analysisSpec.toDate===defaults.analysis.toDate
+    &&comparisonSpec.fromDate===defaults.comparison.fromDate
+    &&comparisonSpec.toDate===defaults.comparison.toDate;
+  const comparisonAlignment=matchesDefault?defaults.alignment:"custom" as const;
   const comparisonPeriod={...periodFacts(comparisonSpec),alignment:comparisonAlignment};
 
   const spendingChangeMinor=safeAdd(analysisReport.spendingMinor,-comparisonReport.spendingMinor);
