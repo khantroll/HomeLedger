@@ -3,6 +3,7 @@ import { classifyDuplicates } from "./duplicateDetection";
 import type { ImportTransactionRow, Transaction } from "./domain";
 
 export interface OfxStatement {
+  format?: "OFX/QFX" | "MT940" | "CAMT";
   accountIdMasked: string;
   accountType: "bank" | "credit-card";
   currency: string;
@@ -40,6 +41,7 @@ export function parseOfx(text: string): OfxStatement {
   });
   const ledger = field(content.match(/<LEDGERBAL>([\s\S]*?)(?:<\/LEDGERBAL>|(?=<AVAILBAL>|<\/STMTRS>|<\/CCSTMTRS>))/i)?.[1] || "", "BALAMT");
   return {
+    format: "OFX/QFX",
     accountIdMasked: accountId ? `••••${accountId.slice(-4)}` : "Not supplied",
     accountType,
     currency,
