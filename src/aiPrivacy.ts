@@ -1,8 +1,18 @@
 import type {Account,Transaction} from "./domain";
+import {
+  assertDisclosurePolicy,
+  assertTransmissionAllowed,
+  localProviderDescriptor,
+  type AiProviderDescriptor,
+  validateProviderEndpoint
+} from "./aiProvider";
+import type {AiTaskContext} from "./aiTaskContext";
+import {serializeAiTaskContext} from "./aiTaskContext";
 
 export type LocalAiProviderKind="ollama"|"lm-studio"|"openai-compatible-local";
 export type AiDisclosureMode="aggregate"|"redacted"|"custom"|"full-local";
 export type CustomDisclosureField="accountType"|"month"|"amountBand"|"merchantAlias"|"categoryAlias";
+export type AiAnalysisMode="task"|"adhoc";
 
 export interface LocalAiProviderConfig{kind:LocalAiProviderKind;endpoint:string;model:string;}
 export interface AiFirewallInput{
@@ -17,11 +27,15 @@ export interface AiFirewallPreview{
   destination:string;
   providerLabel:string;
   modeLabel:string;
-  verifiedLocalhost:true;
+  trust:AiProviderDescriptor["trust"];
+  verifiedLocalhost:boolean;
+  transmissionEnabled:boolean;
   payload:string;
   recordCount:number;
   excludedSensitiveCategories:number;
   notices:string[];
+  analysisMode:AiAnalysisMode;
+  taskKind?:string;
 }
 
 const SENSITIVE_CATEGORY=/(?:health|medical|therapy|counsel|relig|legal|gambl|adult|substance|disability)/i;
@@ -33,18 +47,15 @@ export const LOCAL_PROVIDER_PRESETS:Record<Exclude<LocalAiProviderKind,"openai-c
 
 export function validateLocalAiProvider(provider:LocalAiProviderConfig):LocalAiProviderConfig{
   const model=provider.model.trim();if(!model)throw new Error("Choose or enter a local model name");
-  let url:URL;try{url=new URL(provider.endpoint.trim());}catch{throw new Error("Enter a valid local provider URL");}
-  if(url.protocol!=="http:")throw new Error("Local AI endpoints must use HTTP in this milestone");
-  const host=url.hostname.toLowerCase();
-  if(!["localhost","127.0.0.1","::1","[::1]"].includes(host))throw new Error("This milestone permits localhost AI endpoints only");
-  if(url.username||url.password||url.search||url.hash)throw new Error("Local AI endpoint URLs cannot contain credentials, query strings, or fragments");
-  const endpoint=url.toString().replace(/\/$/,"");
-  return{kind:provider.kind,endpoint,model};
+  const descriptor=validateProviderEndpoint(localProviderDescriptor({...provider,model}));
+  return{kind:provider.kind,endpoint:descriptor.endpoint,model:descriptor.model};
 }
 
 export function buildAiFirewallPreview(input:AiFirewallInput):AiFirewallPreview{
   const provider=validateLocalAiProvider(input.provider),purpose=input.purpose.trim();
   if(!purpose)throw new Error("Describe the question or analysis purpose before building a payload");
+  const descriptor=localProviderDescriptor(provider);
+  assertDisclosurePolicy(descriptor,input.mode);
   const accountMap=new Map(input.accounts.map(account=>[account.id,account]));
   const transactions=input.transactions.filter(item=>accountMap.has(item.accountId)&&!item.transferLinkId&&item.source!=="transfer"&&item.source!=="adjustment");
   const sensitiveCount=transactions.filter(item=>SENSITIVE_CATEGORY.test(item.category)).length;
@@ -55,10 +66,89 @@ export function buildAiFirewallPreview(input:AiFirewallInput):AiFirewallPreview{
     const fields=new Set(input.customFields??[]);if(!fields.size)throw new Error("Select at least one custom disclosure field");
     data=transactions.map(item=>customTransaction(item,accountMap.get(item.accountId)!,fields));
   }else data=transactions.map(item=>fullLocalTransaction(item,accountMap.get(item.accountId)!));
-  const envelope={model:provider.model,purpose,disclosureMode:input.mode,data};
-  const providerLabel=provider.kind==="ollama"?"Ollama":provider.kind==="lm-studio"?"LM Studio":"Local OpenAI-compatible";
-  const disclosureNotice=input.mode==="full-local"?"Full local context includes ledger descriptions and is restricted to this verified localhost destination.":input.mode==="aggregate"?"Only aggregate totals, counts, currencies, and a month range are included.":input.mode==="redacted"?"Transaction dates use months, amounts use $10 bands, and names use stable aliases.":"Only the selected minimized fields are included.";
-  return{destination:provider.endpoint,providerLabel,modeLabel:modeLabel(input.mode),verifiedLocalhost:true,payload:JSON.stringify(envelope,null,2),recordCount,excludedSensitiveCategories:input.mode==="full-local"?0:sensitiveCount,notices:["Preview only: no network request has been made.","Internal record IDs, provider transaction IDs, import provenance, and authentication data are never included.",disclosureNotice]};
+  const envelope={model:provider.model,purpose,disclosureMode:input.mode,analysisMode:"adhoc" as const,data};
+  return finalizePreview({
+    provider:descriptor,
+    modeLabel:modeLabel(input.mode),
+    payload:JSON.stringify(envelope,null,2),
+    recordCount,
+    excludedSensitiveCategories:input.mode==="full-local"?0:sensitiveCount,
+    analysisMode:"adhoc",
+    disclosureNotice:input.mode==="full-local"?"Full local context includes ledger descriptions and is restricted to this verified localhost destination.":input.mode==="aggregate"?"Only aggregate totals, counts, currencies, and a month range are included.":input.mode==="redacted"?"Transaction dates use months, amounts use $10 bands, and names use stable aliases.":"Only the selected minimized fields are included."
+  });
+}
+
+export function buildAiTaskFirewallPreview(input:{
+  provider:AiProviderDescriptor;
+  taskContext:AiTaskContext;
+}):AiFirewallPreview{
+  const provider=validateProviderEndpoint(input.provider);
+  if(!provider.allowsTaskContexts)throw new Error(`${provider.label} does not permit task-specific contexts`);
+  if(provider.trust!=="local"){
+    // Cloud/self-hosted may preview task contexts, but transmission remains fail-closed.
+    if(provider.allowsFullLocalContext)throw new Error("Full local capability cannot be enabled for non-local providers");
+  }
+  const taskPayload={
+    model:provider.model,
+    purpose:input.taskContext.question,
+    disclosureMode:"task-specific",
+    analysisMode:"task" as const,
+    task:input.taskContext.task,
+    schemaVersion:input.taskContext.schemaVersion,
+    data:input.taskContext
+  };
+  return finalizePreview({
+    provider,
+    modeLabel:"Task-specific Affordability Analysis",
+    payload:JSON.stringify(taskPayload,null,2),
+    recordCount:0,
+    excludedSensitiveCategories:0,
+    analysisMode:"task",
+    taskKind:input.taskContext.task,
+    disclosureNotice:"Task-specific context uses deterministic HomeLedger aggregates and excludes account names, payees, memos, IDs, and import provenance."
+  });
+}
+
+export function prepareReviewedTransmission(provider:AiProviderDescriptor,preview:AiFirewallPreview):{endpoint:string;model:string;payload:string}{
+  assertTransmissionAllowed(provider);
+  if(preview.destination!==provider.endpoint)throw new Error("Reviewed destination no longer matches the selected provider");
+  if(!preview.transmissionEnabled)throw new Error("This provider is not enabled for transmission");
+  return{endpoint:preview.destination,model:provider.model,payload:preview.payload};
+}
+
+function finalizePreview(input:{
+  provider:AiProviderDescriptor;
+  modeLabel:string;
+  payload:string;
+  recordCount:number;
+  excludedSensitiveCategories:number;
+  analysisMode:AiAnalysisMode;
+  taskKind?:string;
+  disclosureNotice:string;
+}):AiFirewallPreview{
+  const notices=[
+    "Preview only: no network request has been made.",
+    "Internal record IDs, provider transaction IDs, import provenance, and authentication data are never included.",
+    input.disclosureNotice,
+    `Provider trust: ${input.provider.trust}.`,
+    input.provider.transmissionEnabled
+      ?"Transmission requires an explicit send after this exact preview."
+      :"Configured for review only: remote/cloud transmission is disabled in this milestone."
+  ];
+  return{
+    destination:input.provider.endpoint,
+    providerLabel:input.provider.label,
+    modeLabel:input.modeLabel,
+    trust:input.provider.trust,
+    verifiedLocalhost:input.provider.trust==="local",
+    transmissionEnabled:input.provider.transmissionEnabled,
+    payload:input.payload,
+    recordCount:input.recordCount,
+    excludedSensitiveCategories:input.excludedSensitiveCategories,
+    notices,
+    analysisMode:input.analysisMode,
+    taskKind:input.taskKind
+  };
 }
 
 function aggregateData(accounts:readonly Account[],transactions:readonly Transaction[]){
@@ -76,3 +166,5 @@ function alias(prefix:string,value:string):string{return`${prefix}-${fnv1a(value
 function fnv1a(value:string):number{let hash=0x811c9dc5;for(let index=0;index<value.length;index++){hash^=value.charCodeAt(index);hash=Math.imul(hash,0x01000193);}return hash>>>0;}
 function safeAdd(left:number,right:number):number{const result=left+right;if(!Number.isSafeInteger(result))throw new Error("AI aggregate total is too large");return result;}
 function modeLabel(mode:AiDisclosureMode):string{return mode==="aggregate"?"Aggregate Only":mode==="redacted"?"Redacted Transactions":mode==="custom"?"Custom field selection":"Full Local Context";}
+
+export{serializeAiTaskContext};

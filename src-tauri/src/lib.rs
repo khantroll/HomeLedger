@@ -24,6 +24,7 @@ const MAX_CSV_EXPORT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_LOCAL_AI_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_LOCAL_AI_RESPONSE_BYTES: usize = 1024 * 1024;
 const LOCAL_AI_SYSTEM_PROMPT: &str = "You are a read-only household-finance analyst. Explain patterns and offer clearly labeled suggestions using only the supplied context. Never claim to calculate authoritative ledger balances, never claim to change records, and never request credentials, account numbers, or additional unredacted financial files.";
+const AI_CREDENTIAL_SERVICE: &str = "HomeLedger AI Provider";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +32,76 @@ struct LocalAiRequest { endpoint: String, model: String, payload: String }
 
 #[derive(Serialize)]
 struct LocalAiAnswer { answer: String }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiCredentialStatus { account_id: String, configured: bool }
+
+fn validate_ai_credential_account_id(account_id: &str) -> Result<&str, String> {
+    let account_id = account_id.trim();
+    if account_id.is_empty() || account_id.len() > 200 {
+        return Err("Provider credential account id is invalid".into());
+    }
+    if !account_id.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ':' | '_' | '.' | '/' | '-')) {
+        return Err("Provider credential account id contains unsupported characters".into());
+    }
+    if !account_id.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric()) {
+        return Err("Provider credential account id is invalid".into());
+    }
+    Ok(account_id)
+}
+
+fn validate_ai_credential_secret(secret: &str) -> Result<&str, String> {
+    if secret.is_empty() || secret.len() > 4096 {
+        return Err("API credential length is invalid".into());
+    }
+    if secret.chars().any(|ch| ch.is_control() && ch != '\t') {
+        return Err("API credential contains control characters".into());
+    }
+    Ok(secret)
+}
+
+fn ai_credential_entry(account_id: &str) -> Result<keyring::Entry, String> {
+    let account_id = validate_ai_credential_account_id(account_id)?;
+    keyring::Entry::new(AI_CREDENTIAL_SERVICE, account_id).map_err(|_| "Could not open the OS credential vault".to_string())
+}
+
+#[tauri::command]
+fn set_ai_provider_credential(account_id: String, secret: String) -> Result<AiCredentialStatus, String> {
+    let account_id = validate_ai_credential_account_id(&account_id)?.to_string();
+    let secret = validate_ai_credential_secret(&secret)?;
+    let entry = ai_credential_entry(&account_id)?;
+    entry.set_password(secret).map_err(|_| "Could not store the AI provider credential in the OS vault".to_string())?;
+    // Never return or log the secret. Drop the local binding after store.
+    Ok(AiCredentialStatus { account_id, configured: true })
+}
+
+#[tauri::command]
+fn clear_ai_provider_credential(account_id: String) -> Result<AiCredentialStatus, String> {
+    let account_id = validate_ai_credential_account_id(&account_id)?.to_string();
+    let entry = ai_credential_entry(&account_id)?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(AiCredentialStatus { account_id, configured: false }),
+        Err(keyring::Error::NoEntry) => Ok(AiCredentialStatus { account_id, configured: false }),
+        Err(_) => Err("Could not clear the AI provider credential from the OS vault".into()),
+    }
+}
+
+#[tauri::command]
+fn ai_provider_credential_status(account_id: String) -> Result<AiCredentialStatus, String> {
+    let account_id = validate_ai_credential_account_id(&account_id)?.to_string();
+    let entry = ai_credential_entry(&account_id)?;
+    let configured = match entry.get_password() {
+        Ok(secret) => {
+            // Immediately drop the secret; frontend never receives it.
+            drop(secret);
+            true
+        }
+        Err(keyring::Error::NoEntry) => false,
+        Err(_) => return Err("Could not read AI credential status from the OS vault".into()),
+    };
+    Ok(AiCredentialStatus { account_id, configured })
+}
 
 fn local_ai_url(endpoint: &str, route: &str) -> Result<reqwest::Url, String> {
     if endpoint.is_empty() || endpoint.len() > 2048 { return Err("The local AI endpoint is invalid".into()); }
@@ -2344,7 +2415,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

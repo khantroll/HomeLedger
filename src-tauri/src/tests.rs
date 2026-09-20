@@ -573,3 +573,15 @@ fn local_ai_model_validation_rejects_empty_long_and_control_values() {
     assert!(super::validate_local_ai_model(&"x".repeat(201)).is_err());
     assert!(super::validate_local_ai_model("model\nname").is_err());
 }
+
+#[test]
+fn ai_credential_account_ids_are_strict_and_secrets_are_bounded() {
+    assert_eq!(super::validate_ai_credential_account_id("cloud:openai:default").unwrap(), "cloud:openai:default");
+    assert!(super::validate_ai_credential_account_id("").is_err());
+    assert!(super::validate_ai_credential_account_id("bad id").is_err());
+    assert!(super::validate_ai_credential_account_id(&"x".repeat(201)).is_err());
+    assert_eq!(super::validate_ai_credential_secret("sk-test").unwrap(), "sk-test");
+    assert!(super::validate_ai_credential_secret("").is_err());
+    assert!(super::validate_ai_credential_secret("bad\u{0000}secret").is_err());
+    assert!(super::validate_ai_credential_secret(&"x".repeat(4097)).is_err());
+}
