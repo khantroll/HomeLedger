@@ -175,7 +175,7 @@ export default function App() {
                 <div className="accounts-page">
                   <div className="register-back">
                     <button onClick={() => setRegisterAccountId(undefined)}>
-                      <ArrowLeft size={13} /> Back to accounts
+                      <ArrowLeft size={13} /> Back to account list
                     </button>
                   </div>
                   <AccountRegister

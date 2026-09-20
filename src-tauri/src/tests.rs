@@ -469,4 +469,26 @@ fn transaction_pages_expose_history_beyond_the_old_thousand_row_cap() {
     }, false).unwrap();
     assert_eq!(earliest.prior_balance_minor, Some(500000));
     assert_eq!(earliest.transactions[0].payee, "History 0");
+
+    let pending = list_transactions_page_inner(&connection, TransactionQuery {
+        account_id: Some("a".into()),
+        offset: 0,
+        limit: 20,
+        from_date: None,
+        to_date: None,
+        status: Some("pending".into()),
+        search: None,
+        newest: true,
+    }, false).unwrap();
+    let first_pending = pending.transactions.first().unwrap();
+    let created_at: String = connection.query_row("SELECT created_at FROM transactions WHERE id=?1", rusqlite::params![first_pending.id], |row| row.get(0)).unwrap();
+    let true_prior: i64 = connection.query_row(
+        "SELECT 500000 + COALESCE(SUM(amount_minor),0) FROM transactions
+         WHERE account_id='a' AND (
+           posted_date < ?1 OR (posted_date = ?1 AND created_at < ?2) OR (posted_date = ?1 AND created_at = ?2 AND id < ?3)
+         )",
+        rusqlite::params![first_pending.posted_date, created_at, first_pending.id],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(pending.prior_balance_minor, Some(true_prior));
 }

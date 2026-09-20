@@ -69,7 +69,12 @@ export interface TransactionPage {
   totalCount: number;
   offset: number;
   limit: number;
-  /** Opening balance plus amounts of matching rows before this page. Set when `accountId` is provided. */
+  /**
+   * True ledger balance immediately before the first returned row:
+   * opening balance plus every account transaction that sorts earlier.
+   * Present when `accountId` is set. Meaningful for the Balance column only when
+   * the query is contiguous (status=all and no search); date filters remain contiguous.
+   */
   priorBalanceMinor?: number;
 }
 

@@ -3,13 +3,19 @@ import { ArrowLeftRight, ChevronLeft, Scale, Search } from "lucide-react";
 import {
   REGISTER_PAGE_SIZE,
   formatMoney,
-  runningBalances,
   type Account,
   type Transaction,
   type TransactionStatus,
   type TransactionStatusFilter,
 } from "./domain";
 import { financeRepository as repository } from "./repository";
+import {
+  filteredBalanceUnavailableReason,
+  mergeOlderRegisterPage,
+  nextOlderRegisterOffset,
+  registerRunningBalances,
+  registerShowsLedgerBalance,
+} from "./registerMath";
 import "./register.css";
 
 export type RegisterDialogRequest =
@@ -66,7 +72,8 @@ export function AccountRegister({
   }, [accountId, accounts, locked]);
 
   const selectedAccount = accounts.find((item) => item.id === accountId);
-  const showRunningBalance = Boolean(selectedAccount);
+  const showLedgerBalance = Boolean(selectedAccount) && registerShowsLedgerBalance({ status, search });
+  const balanceHiddenReason = selectedAccount ? filteredBalanceUnavailableReason({ status, search }) : undefined;
 
   const loadNewest = useCallback(async () => {
     if (locked && !accountId) return;
@@ -104,20 +111,24 @@ export function AccountRegister({
     setLoadingOlder(true);
     setError("");
     try {
-      const nextOffset = Math.max(0, offset - REGISTER_PAGE_SIZE);
+      const { offset: nextOffset, limit } = nextOlderRegisterOffset(offset);
       const page = await repository.listTransactionsPage({
         accountId: accountId || undefined,
         offset: nextOffset,
-        limit: offset - nextOffset,
+        limit,
         status,
         fromDate: fromDate || undefined,
         toDate: toDate || undefined,
         search: search || undefined,
       });
-      setTransactions((current) => [...page.transactions, ...current]);
-      setOffset(page.offset);
-      setPriorBalanceMinor(page.priorBalanceMinor ?? 0);
-      setTotalCount(page.totalCount);
+      const merged = mergeOlderRegisterPage(
+        { transactions, offset, priorBalanceMinor, totalCount },
+        page,
+      );
+      setTransactions(merged.transactions);
+      setOffset(merged.offset);
+      setPriorBalanceMinor(merged.priorBalanceMinor);
+      setTotalCount(merged.totalCount);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -126,8 +137,8 @@ export function AccountRegister({
   }
 
   const balances = useMemo(
-    () => (showRunningBalance ? runningBalances(priorBalanceMinor, transactions) : []),
-    [priorBalanceMinor, showRunningBalance, transactions],
+    () => (showLedgerBalance ? registerRunningBalances(priorBalanceMinor, transactions) : []),
+    [priorBalanceMinor, showLedgerBalance, transactions],
   );
 
   const hasOlder = offset > 0;
@@ -171,23 +182,24 @@ export function AccountRegister({
           ) : (
             <div>
               <h2>All accounts</h2>
-              <p>Browse every ledger entry. Choose one account to see running balances.</p>
+              <p>Browse every ledger entry. Choose one account to transfer, reconcile, or see running balances.</p>
             </div>
           )}
         </div>
         <div className="register-actions">
-          <button
-            disabled={!selectedAccount || accounts.length < 2}
-            onClick={() => selectedAccount && onRequestDialog({ kind: "transfer", accountId: selectedAccount.id })}
-          >
-            <ArrowLeftRight size={13} /> Transfer
-          </button>
-          <button
-            disabled={!selectedAccount}
-            onClick={() => selectedAccount && onRequestDialog({ kind: "reconciliation", account: selectedAccount })}
-          >
-            <Scale size={13} /> Reconcile
-          </button>
+          {selectedAccount ? (
+            <>
+              <button
+                disabled={accounts.length < 2}
+                onClick={() => onRequestDialog({ kind: "transfer", accountId: selectedAccount.id })}
+              >
+                <ArrowLeftRight size={13} /> Transfer
+              </button>
+              <button onClick={() => onRequestDialog({ kind: "reconciliation", account: selectedAccount })}>
+                <Scale size={13} /> Reconcile
+              </button>
+            </>
+          ) : null}
           <button
             className="primary-action"
             disabled={!accounts.length}
@@ -239,7 +251,7 @@ export function AccountRegister({
           <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} aria-label="Filter through date" />
         </label>
         <form className="register-search" onSubmit={applySearch}>
-          <Search size={14} />
+          <Search size={14} aria-hidden="true" />
           <input
             value={draftSearch}
             onChange={(event) => setDraftSearch(event.target.value)}
@@ -266,6 +278,7 @@ export function AccountRegister({
                 : totalCount === 0
                   ? "No matching transactions"
                   : `Showing ${offset + 1}–${shownThrough} of ${totalCount}`}
+              {balanceHiddenReason ? ` · ${balanceHiddenReason}` : showLedgerBalance ? " · Balance is true ledger balance" : ""}
             </p>
           </div>
           {hasOlder && (
@@ -294,7 +307,7 @@ export function AccountRegister({
                   <th>Category</th>
                   <th>Status</th>
                   <th>Amount</th>
-                  {showRunningBalance && <th>Balance</th>}
+                  {showLedgerBalance && <th>Balance</th>}
                   <th></th>
                 </tr>
               </thead>
@@ -328,7 +341,7 @@ export function AccountRegister({
                       <td className={transaction.amountMinor < 0 ? "amount negative" : "amount positive"}>
                         {formatMoney(transaction.amountMinor, currency)}
                       </td>
-                      {showRunningBalance && (
+                      {showLedgerBalance && (
                         <td className={balances[index] < 0 ? "amount negative" : "amount"}>
                           {formatMoney(balances[index], currency)}
                         </td>

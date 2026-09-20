@@ -70,7 +70,16 @@ export class DemoFinanceRepository implements FinanceRepository {
     let priorBalanceMinor: number | undefined;
     if (normalized.accountId) {
       const opening = this.openingBalances.get(normalized.accountId) ?? 0;
-      priorBalanceMinor = sumMoney([opening, ...matched.slice(0, offset).map(item => item.amountMinor)]);
+      const accountRows = this.transactions
+        .filter((item) => item.accountId === normalized.accountId)
+        .sort((a, b) => a.postedDate.localeCompare(b.postedDate) || a.id.localeCompare(b.id));
+      if (transactions.length) {
+        const first = transactions[0];
+        const earlier = accountRows.filter((item) => item.postedDate < first.postedDate || (item.postedDate === first.postedDate && item.id < first.id));
+        priorBalanceMinor = sumMoney([opening, ...earlier.map((item) => item.amountMinor)]);
+      } else {
+        priorBalanceMinor = sumMoney([opening, ...accountRows.map((item) => item.amountMinor)]);
+      }
     }
     return structuredClone({ transactions, totalCount, offset, limit: normalized.limit, priorBalanceMinor });
   }

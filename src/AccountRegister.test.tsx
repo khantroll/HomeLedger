@@ -101,10 +101,20 @@ describe("AccountRegister", () => {
   it("loads earlier history beyond the current page", async () => {
     const user = userEvent.setup();
     const older = Array.from({ length: 100 }, (_, index) =>
-      tx({ id: `old-${index}`, postedDate: `2025-01-${String((index % 28) + 1).padStart(2, "0")}`, payee: `Older ${index}`, amountMinor: -100 }),
+      tx({
+        id: `old-${String(index).padStart(3, "0")}`,
+        postedDate: `2025-${String(Math.floor(index / 28) + 1).padStart(2, "0")}-${String((index % 28) + 1).padStart(2, "0")}`,
+        payee: `Older ${index}`,
+        amountMinor: -100,
+      }),
     );
     const newer = Array.from({ length: 100 }, (_, index) =>
-      tx({ id: `new-${index}`, postedDate: `2026-06-${String((index % 28) + 1).padStart(2, "0")}`, payee: `Newer ${index}`, amountMinor: -100 }),
+      tx({
+        id: `new-${String(index).padStart(3, "0")}`,
+        postedDate: `2026-${String(Math.floor(index / 28) + 1).padStart(2, "0")}-${String((index % 28) + 1).padStart(2, "0")}`,
+        payee: `Newer ${index}`,
+        amountMinor: -100,
+      }),
     );
     const list = vi.spyOn(repositoryModule.financeRepository, "listTransactionsPage").mockImplementation(async (query = {}) => {
       if (query.newest) {
@@ -128,5 +138,25 @@ describe("AccountRegister", () => {
     expect(within(accountFilter).getByRole("option", { name: "All accounts" })).toBeTruthy();
     await userEvent.selectOptions(accountFilter, "savings");
     expect(repositoryModule.financeRepository.listTransactionsPage).toHaveBeenLastCalledWith(expect.objectContaining({ accountId: "savings", newest: true }));
+  });
+
+  it("hides the Balance column under status filters that skip ledger rows", async () => {
+    const user = userEvent.setup();
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    expect(await screen.findByRole("columnheader", { name: "Balance" })).toBeTruthy();
+    await user.selectOptions(screen.getByLabelText("Filter register by status"), "review");
+    expect(await screen.findByText(/Running balance hides while a status filter is active/)).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Balance" })).toBeNull();
+  });
+
+  it("hides Transfer and Reconcile in the global all-accounts view", async () => {
+    render(<AccountRegister accounts={accounts} onRequestDialog={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "All accounts" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reconcile" })).toBeNull();
+    const toolbar = screen.getByRole("heading", { name: "All accounts" }).closest(".register-toolbar");
+    expect(toolbar).toBeTruthy();
+    expect(within(toolbar as HTMLElement).queryByRole("button", { name: /^Transfer$/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "+ New transaction" })).toBeTruthy();
+    expect(screen.getByText(/Choose one account to transfer, reconcile, or see running balances/)).toBeTruthy();
   });
 });

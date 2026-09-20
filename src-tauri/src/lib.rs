@@ -831,16 +831,28 @@ fn list_transactions_page_inner(connection: &Connection, request: TransactionQue
     }
     let prior_balance_minor = if let Some(account_id) = account_id {
         let opening: i64 = connection.query_row("SELECT opening_balance_minor FROM accounts WHERE id = ?1", params![account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
-        let prior_amounts: i64 = connection.query_row(
-            &format!("SELECT COALESCE(SUM(amount_minor), 0) FROM (
-                SELECT amount_minor FROM transactions WHERE {filter_sql}
-                ORDER BY posted_date ASC, created_at ASC, id ASC
-                LIMIT ?7
-             )"),
-            params![account_id, from_date, to_date, status, search, reconciliation_candidates, offset],
-            |row| row.get(0),
-        ).map_err(|e| e.to_string())?;
-        Some(opening.checked_add(prior_amounts).ok_or("Prior balance exceeds safe integer range")?)
+        if let Some(first) = items.first() {
+            let created_at: String = connection.query_row("SELECT created_at FROM transactions WHERE id = ?1", params![first.id], |row| row.get(0)).map_err(|e| e.to_string())?;
+            let earlier: i64 = connection.query_row(
+                "SELECT COALESCE(SUM(amount_minor), 0) FROM transactions
+                 WHERE account_id = ?1
+                   AND (
+                     posted_date < ?2
+                     OR (posted_date = ?2 AND created_at < ?3)
+                     OR (posted_date = ?2 AND created_at = ?3 AND id < ?4)
+                   )",
+                params![account_id, first.posted_date, created_at, first.id],
+                |row| row.get(0),
+            ).map_err(|e| e.to_string())?;
+            Some(opening.checked_add(earlier).ok_or("Prior balance exceeds safe integer range")?)
+        } else {
+            let all_amounts: i64 = connection.query_row(
+                "SELECT COALESCE(SUM(amount_minor), 0) FROM transactions WHERE account_id = ?1",
+                params![account_id],
+                |row| row.get(0),
+            ).map_err(|e| e.to_string())?;
+            Some(opening.checked_add(all_amounts).ok_or("Prior balance exceeds safe integer range")?)
+        }
     } else {
         None
     };

@@ -46,6 +46,7 @@ describe("App navigation shell", () => {
     expect(screen.getByText(/Select an account to open its Money-style register/)).toBeTruthy();
     await user.click(screen.getAllByRole("button", { name: "Open register" })[0]);
     expect(await screen.findByRole("heading", { name: "Household Checking" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Back to account list/ })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Register" })).toBeTruthy();
     expect(screen.getByText("Payroll")).toBeTruthy();
 
