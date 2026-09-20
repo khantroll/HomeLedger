@@ -19,7 +19,7 @@ describe("AI Insights privacy review",()=>{
   it("builds a localhost aggregate preview without offering browser transmission",async()=>{
     const user=userEvent.setup();
     render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets}/>);
-    expect(screen.getByText(/Local loopback and the OpenAI cloud adapter/i)).toBeTruthy();
+    expect(screen.getByText(/Local loopback and enabled cloud adapters/i)).toBeTruthy();
     await user.click(screen.getByText(/Custom \/ ad-hoc question/i));
     await user.type(screen.getByLabelText("Model name",{exact:true}),"qwen3.5:9b");
     await user.clear(screen.getByLabelText(/Analysis purpose/));
@@ -45,7 +45,7 @@ describe("AI Insights privacy review",()=>{
     expect(screen.getByText(/Cloud provider configuration/)).toBeTruthy();
   });
 
-  it("requires OpenAI cloud confirmation before enabling send",async()=>{
+  it("requires cloud confirmation before enabling OpenAI or Anthropic send",async()=>{
     const user=userEvent.setup();
     render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets} today="2026-09-20"/>);
     await user.click(screen.getByRole("button",{name:/Preview affordability for OpenAI/}));
@@ -54,8 +54,13 @@ describe("AI Insights privacy review",()=>{
     const send=screen.getByRole("button",{name:/Send reviewed payload to OpenAI/}) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     await user.click(screen.getByLabelText(/confirm sending it to OpenAI/i));
-    expect(send.disabled).toBe(true); // still disabled in browser/demo without native app
+    expect(send.disabled).toBe(true);
     expect(screen.getByText(/will leave this device/i)).toBeTruthy();
+    await user.selectOptions(screen.getByLabelText("Cloud provider"),"anthropic");
+    await user.click(screen.getByRole("button",{name:/Preview affordability for Anthropic/}));
+    expect(screen.getByText(/Destination is Anthropic \(cloud\)/i)).toBeTruthy();
+    expect(screen.getByText(/"task": "affordability-analysis"/)).toBeTruthy();
+    expect((screen.getByRole("button",{name:/Send reviewed payload to Anthropic/}) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("rejects a remote endpoint before constructing a payload",async()=>{

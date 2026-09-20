@@ -115,17 +115,22 @@ export function prepareReviewedTransmission(
   provider:AiProviderDescriptor,
   preview:AiFirewallPreview,
   options:{explicitConfirmation?:boolean}={}
-):{endpoint:string;model:string;payload:string;accountId:string;trust:AiProviderDescriptor["trust"]}{
+):{endpoint:string;model:string;payload:string;accountId:string;trust:AiProviderDescriptor["trust"];type:AiProviderDescriptor["type"];providerLabel:string}{
   assertTransmissionAllowed(provider);
   if(preview.destination!==provider.endpoint)throw new Error("Reviewed destination no longer matches the selected provider");
   if(!preview.transmissionEnabled)throw new Error("This provider is not enabled for transmission");
   if(provider.trust==="cloud"&&!options.explicitConfirmation){
     throw new Error("Cloud transmission requires explicit per-request confirmation");
   }
-  if(provider.trust==="cloud"&&provider.type!=="openai"){
-    throw new Error("Only the OpenAI cloud adapter may transmit in this milestone");
-  }
-  return{endpoint:preview.destination,model:provider.model,payload:preview.payload,accountId:provider.accountId,trust:provider.trust};
+  return{
+    endpoint:preview.destination,
+    model:provider.model,
+    payload:preview.payload,
+    accountId:provider.accountId,
+    trust:provider.trust,
+    type:provider.type,
+    providerLabel:provider.label
+  };
 }
 
 function finalizePreview(input:{

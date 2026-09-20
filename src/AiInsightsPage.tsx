@@ -17,12 +17,14 @@ import {
 import {
   CLOUD_PROVIDER_PRESETS,
   cloudProviderDescriptor,
+  isEnabledCloudProvider,
   localProviderDescriptor,
   validateProviderEndpoint,
-  type CloudProviderDraft
+  type CloudProviderDraft,
+  type EnabledCloudProviderType
 } from "./aiProvider";
 import {buildAffordabilityAnalysisContext} from "./aiTaskContext";
-import {assertOpenAiSendConfirmation,OPENAI_DEFAULT_MODEL,presentAiAdviceText} from "./aiOpenAi";
+import {assertCloudSendConfirmation,presentAiAdviceText} from "./aiCloud";
 import {validateCredentialAccountId,validateCredentialSecret} from "./aiCredentials";
 import {aiRepository,financeRepository as repository,isNativeApp} from "./repository";
 import {addDaysIso,todayIso} from "./scheduledPresentation";
@@ -77,7 +79,7 @@ export function AiInsightsPage({
 
   const [cloudType,setCloudType]=useState<CloudProviderDraft["type"]>("openai");
   const [cloudEndpoint,setCloudEndpoint]=useState(CLOUD_PROVIDER_PRESETS.openai.endpoint);
-  const [cloudModel,setCloudModel]=useState(OPENAI_DEFAULT_MODEL);
+  const [cloudModel,setCloudModel]=useState(CLOUD_PROVIDER_PRESETS.openai.defaultModel);
   const [cloudSecret,setCloudSecret]=useState("");
   const [cloudConfigured,setCloudConfigured]=useState(false);
   const [cloudNotice,setCloudNotice]=useState("");
@@ -86,6 +88,8 @@ export function AiInsightsPage({
   const payloadSize=useMemo(()=>preview?new TextEncoder().encode(preview.payload).byteLength:0,[preview]);
   const cloudAccountId=cloudType==="openai-compatible-remote"?`cloud:openai-compatible-remote:custom`:CLOUD_PROVIDER_PRESETS[cloudType].accountId;
   const previewIsCloud=preview?.trust==="cloud";
+  const cloudEnabled=isEnabledCloudProvider(cloudType);
+  const cloudLabel=cloudType==="openai-compatible-remote"?"Remote OpenAI-compatible":CLOUD_PROVIDER_PRESETS[cloudType].label;
 
   useEffect(()=>{setPreview(null);setAnswer("");setCloudConfirm(false);},[accounts,transactions,templates,occurrences,budgets]);
   useEffect(()=>{if(currencies.length&&!currencies.includes(currency))setCurrency(currencies[0]);},[currencies,currency]);
@@ -138,7 +142,10 @@ export function AiInsightsPage({
 
   function changeCloudType(next:CloudProviderDraft["type"]){
     setCloudType(next);
-    if(next!=="openai-compatible-remote")setCloudEndpoint(CLOUD_PROVIDER_PRESETS[next].endpoint);
+    if(next!=="openai-compatible-remote"){
+      setCloudEndpoint(CLOUD_PROVIDER_PRESETS[next].endpoint);
+      setCloudModel(CLOUD_PROVIDER_PRESETS[next].defaultModel);
+    }
     setCloudSecret("");setCloudNotice("");setPreview(null);setAnswer("");setCloudConfirm(false);
   }
 
@@ -174,16 +181,18 @@ export function AiInsightsPage({
     setSending(true);setError("");setAnswer("");
     try{
       if(preview.trust==="cloud"){
-        assertOpenAiSendConfirmation({previewPayload:preview.payload,confirmed:cloudConfirm});
+        assertCloudSendConfirmation({providerLabel:preview.providerLabel,previewPayload:preview.payload,confirmed:cloudConfirm});
+        if(!isEnabledCloudProvider(cloudType))throw new Error(`${cloudLabel} cloud transmission is not enabled yet`);
         const provider=validateProviderEndpoint(cloudProviderDescriptor({
-          type:"openai",
+          type:cloudType,
           endpoint:cloudEndpoint,
           model:cloudModel.trim(),
           accountId:cloudAccountId
         }));
         const request=prepareReviewedTransmission(provider,preview,{explicitConfirmation:true});
         if(request.payload!==preview.payload)throw new Error("Reviewed payload no longer matches the transmission request");
-        const result=await aiRepository.queryOpenAi({
+        const result=await aiRepository.queryCloud({
+          provider:request.type as EnabledCloudProviderType,
           endpoint:request.endpoint,
           model:request.model,
           payload:request.payload,
@@ -218,7 +227,7 @@ export function AiInsightsPage({
       const status=await aiRepository.saveCredential(accountId,secret);
       setCloudConfigured(status.configured);
       setCloudSecret("");
-      setCloudNotice(descriptor.type==="openai"
+      setCloudNotice(descriptor.transmissionEnabled
         ?`${descriptor.label} credential stored in the OS vault. Affordability analysis can be sent after exact payload review and explicit confirmation.`
         :`${descriptor.label} credential stored in the OS vault. Transmission remains disabled for this provider.`);
     }catch(reason){
@@ -240,15 +249,15 @@ export function AiInsightsPage({
   function previewCloudTask(){
     setError("");setAnswer("");setCloudConfirm(false);
     try{
-      if(cloudType!=="openai")throw new Error("Only the OpenAI cloud adapter can transmit in this milestone");
+      if(!isEnabledCloudProvider(cloudType))throw new Error(`${cloudLabel} cloud transmission is not enabled yet`);
       const provider=validateProviderEndpoint(cloudProviderDescriptor({
         type:cloudType,
         endpoint:cloudEndpoint,
-        model:cloudModel.trim()||OPENAI_DEFAULT_MODEL,
+        model:cloudModel.trim()||CLOUD_PROVIDER_PRESETS[cloudType].defaultModel||"cloud-model",
         accountId:cloudAccountId
       }));
       setPreview(buildAiTaskFirewallPreview({provider,taskContext:buildAffordabilityContext()}));
-      setCloudNotice("Review the exact payload. OpenAI transmission leaves this device and requires explicit confirmation.");
+      setCloudNotice(`Review the exact payload. ${provider.label} transmission leaves this device and requires explicit confirmation.`);
     }catch(reason){
       setPreview(null);
       setError(reason instanceof Error?reason.message:String(reason));
@@ -265,7 +274,7 @@ export function AiInsightsPage({
   }
 
   return <div className="ai-page">
-    <section className="ai-safety-banner"><ShieldCheck/><div><strong>Reviewed analysis</strong><span>Task contexts prefer deterministic HomeLedger facts. Local loopback and the OpenAI cloud adapter require exact Privacy Firewall review. AI answers cannot change ledger records.</span></div></section>
+    <section className="ai-safety-banner"><ShieldCheck/><div><strong>Reviewed analysis</strong><span>Task contexts prefer deterministic HomeLedger facts. Local loopback and enabled cloud adapters require exact Privacy Firewall review. AI answers cannot change ledger records.</span></div></section>
     <div className="ai-layout">
       <form className="panel ai-controls" onSubmit={submit}>
         <div className="panel-heading"><div><h2>Local model provider</h2><p>Configuration stays in memory and is not saved yet</p></div><Server size={18}/></div>
@@ -306,34 +315,34 @@ export function AiInsightsPage({
             <div><dt>Payload size</dt><dd>{payloadSize.toLocaleString()} bytes</dd></div>
             <div><dt>Localhost verified</dt><dd>{preview.verifiedLocalhost?"Yes":"No"}</dd></div>
           </dl>
-          {previewIsCloud&&<div className="ai-warning" role="status"><LockKeyhole/><span>Destination is OpenAI (cloud). The exact sanitized financial context shown below will leave this device if you confirm and send.</span></div>}
+          {previewIsCloud&&<div className="ai-warning" role="status"><LockKeyhole/><span>Destination is {preview.providerLabel} (cloud). The exact sanitized financial context shown below will leave this device if you confirm and send.</span></div>}
           {preview.excludedSensitiveCategories>0&&<div className="ai-sensitive-note">Removed or aliased {preview.excludedSensitiveCategories} sensitive-category record{preview.excludedSensitiveCategories===1?"":"s"}.</div>}
           <div className="ai-payload-heading"><strong>Exact payload</strong><span>Review every field below</span></div><pre>{preview.payload}</pre>
           <ul className="ai-notices">{preview.notices.map(notice=><li key={notice}>{notice}</li>)}<li>The native adapter adds a fixed read-only analyst instruction; it does not add ledger data.</li></ul>
-          {previewIsCloud&&preview.transmissionEnabled&&<label className="ai-confirm"><input type="checkbox" checked={cloudConfirm} onChange={event=>setCloudConfirm(event.target.checked)}/><span>I reviewed this exact payload and confirm sending it to OpenAI for analysis.</span></label>}
+          {previewIsCloud&&preview.transmissionEnabled&&<label className="ai-confirm"><input type="checkbox" checked={cloudConfirm} onChange={event=>setCloudConfirm(event.target.checked)}/><span>I reviewed this exact payload and confirm sending it to {preview.providerLabel} for analysis.</span></label>}
           {preview.transmissionEnabled
-            ?<button className="ai-send-button" disabled={!isNativeApp||sending||(previewIsCloud&&!cloudConfirm)} onClick={()=>void sendReviewed()}><Send size={14}/>{sending?"Waiting for model…":previewIsCloud?"Send reviewed payload to OpenAI":"Send reviewed payload to local model"}</button>
+            ?<button className="ai-send-button" disabled={!isNativeApp||sending||(previewIsCloud&&!cloudConfirm)} onClick={()=>void sendReviewed()}><Send size={14}/>{sending?"Waiting for model…":previewIsCloud?`Send reviewed payload to ${preview.providerLabel}`:"Send reviewed payload to local model"}</button>
             :<button className="ai-locked-button" type="button" disabled><LockKeyhole size={14}/> Cloud transmission disabled</button>}
-          {answer&&<article className="ai-answer" aria-live="polite"><div><Bot size={17}/><strong>{previewIsCloud?"AI-generated OpenAI analysis":"Local AI answer"}</strong></div><p>{answer}</p><small>AI-generated analysis/advice only — not a ledger fact. HomeLedger did not change or recalculate any ledger record. Model text is untrusted and cannot mutate data.</small></article>}
+          {answer&&<article className="ai-answer" aria-live="polite"><div><Bot size={17}/><strong>{previewIsCloud?`AI-generated ${preview.providerLabel} analysis`:"Local AI answer"}</strong></div><p>{answer}</p><small>AI-generated analysis/advice only — not a ledger fact. HomeLedger did not change or recalculate any ledger record. Model text is untrusted and cannot mutate data.</small></article>}
         </>}
       </section>
     </div>
     <section className="panel ai-cloud-config">
-      <div className="panel-heading"><div><h2>Cloud provider configuration</h2><p>OpenAI enabled with OS vault credentials — other clouds stay blocked</p></div><KeyRound size={18}/></div>
+      <div className="panel-heading"><div><h2>Cloud provider configuration</h2><p>OpenAI and Anthropic enabled with OS vault credentials</p></div><KeyRound size={18}/></div>
       <form className="ai-form" onSubmit={saveCloudCredential}>
-        <label>Cloud provider<select value={cloudType} onChange={event=>changeCloudType(event.target.value as CloudProviderDraft["type"])}><option value="openai">OpenAI</option><option value="anthropic">Anthropic (not enabled)</option><option value="gemini">Gemini (not enabled)</option><option value="mistral">Mistral (not enabled)</option><option value="openai-compatible-remote">Remote OpenAI-compatible (blocked)</option></select></label>
-        <label>HTTPS endpoint<input value={cloudEndpoint} onChange={event=>setCloudEndpoint(event.target.value)} inputMode="url" spellCheck={false} disabled={cloudType!=="openai-compatible-remote"}/><small>OpenAI is restricted to https://api.openai.com/v1. Arbitrary URLs fail closed.</small></label>
-        <label>Cloud model name<input value={cloudModel} onChange={event=>{setCloudModel(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}} placeholder="gpt-4.1-mini"/></label>
+        <label>Cloud provider<select value={cloudType} onChange={event=>changeCloudType(event.target.value as CloudProviderDraft["type"])}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Gemini (not enabled)</option><option value="mistral">Mistral (not enabled)</option><option value="openai-compatible-remote">Remote OpenAI-compatible (blocked)</option></select></label>
+        <label>HTTPS endpoint<input value={cloudEndpoint} onChange={event=>setCloudEndpoint(event.target.value)} inputMode="url" spellCheck={false} disabled={cloudType!=="openai-compatible-remote"}/><small>Approved hosts only. Arbitrary URLs fail closed.</small></label>
+        <label>Cloud model name<input value={cloudModel} onChange={event=>{setCloudModel(event.target.value);setPreview(null);setAnswer("");setCloudConfirm(false);}} placeholder={cloudType==="anthropic"?"claude-sonnet-4-5":"gpt-4.1-mini"}/></label>
         <label>API credential<input type="password" value={cloudSecret} onChange={event=>setCloudSecret(event.target.value)} autoComplete="off" spellCheck={false} placeholder={cloudConfigured?"Configured — enter a new value to replace":"Stored only in the OS credential vault"}/><small>HomeLedger never writes API credentials to SQLite, browser storage, config files, logs, backups, exports, or AI payloads. After save, the secret is not readable from the UI.</small></label>
         <div className="ai-cloud-status"><strong>Credential state:</strong> {cloudConfigured?"Configured":"Not configured"} <span>Account id: {cloudAccountId}</span></div>
         {cloudNotice&&<p className="success-banner ai-inline-notice" role="status">{cloudNotice}</p>}
         <div className="ai-control-actions">
           <button type="submit" disabled={!isNativeApp||cloudBusy||!cloudSecret}>{cloudBusy?"Saving…":cloudConfigured?"Replace credential in OS vault":"Save credential to OS vault"}</button>
           <button type="button" disabled={!isNativeApp||cloudBusy||!cloudConfigured} onClick={()=>void clearCloudCredential()}>Clear credential</button>
-          <button type="button" disabled={cloudBusy||cloudType!=="openai"} onClick={previewCloudTask}><Eye size={15}/> Preview affordability for OpenAI</button>
+          <button type="button" disabled={cloudBusy||!cloudEnabled} onClick={previewCloudTask}><Eye size={15}/> Preview affordability for {cloudLabel}</button>
         </div>
-        {!isNativeApp&&<small className="ai-native-note">OS credential vault access and OpenAI transmission require the native desktop application.</small>}
-        <div className="ai-warning"><LockKeyhole/><span>OpenAI requests use the native HTTPS adapter only, never browser networking. Each send requires exact payload review and explicit confirmation. Anthropic, Gemini, and arbitrary remote endpoints remain disabled.</span></div>
+        {!isNativeApp&&<small className="ai-native-note">OS credential vault access and cloud transmission require the native desktop application.</small>}
+        <div className="ai-warning"><LockKeyhole/><span>Cloud requests use native HTTPS adapters only, never browser networking. Each send requires exact payload review and explicit confirmation. Gemini, Mistral, and arbitrary remote endpoints remain disabled.</span></div>
       </form>
     </section>
   </div>;

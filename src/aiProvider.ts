@@ -10,7 +10,14 @@ export type AiProviderType=
   |"mistral"
   |"openai-compatible-remote"
   |"self-hosted-openai-compatible";
+export type EnabledCloudProviderType=Extract<AiProviderType,"openai"|"anthropic">;
 export type AiApiFamily="openai-chat-completions"|"anthropic-messages"|"google-generative-ai";
+
+export const ENABLED_CLOUD_PROVIDERS=new Set<EnabledCloudProviderType>(["openai","anthropic"]);
+
+export function isEnabledCloudProvider(type:AiProviderType):type is EnabledCloudProviderType{
+  return ENABLED_CLOUD_PROVIDERS.has(type as EnabledCloudProviderType);
+}
 
 export interface AiProviderDescriptor{
   /** Stable provider/account id used for credential vault lookup. Never a secret. */
@@ -22,7 +29,7 @@ export interface AiProviderDescriptor{
   model:string;
   apiFamily:AiApiFamily;
   requiresAuth:boolean;
-  /** Cloud transmission is enabled only for the first-class OpenAI adapter in this milestone. */
+  /** Cloud transmission is enabled only for first-class allow-listed adapters. */
   transmissionEnabled:boolean;
   allowedDisclosureModes:readonly AiDisclosureMode[];
   allowsTaskContexts:boolean;
@@ -36,11 +43,11 @@ export interface CloudProviderDraft{
   accountId:string;
 }
 
-export const CLOUD_PROVIDER_PRESETS:Record<Exclude<CloudProviderDraft["type"],"openai-compatible-remote">,{label:string;endpoint:string;apiFamily:AiApiFamily;accountId:string}>={
-  openai:{label:"OpenAI",endpoint:"https://api.openai.com/v1",apiFamily:"openai-chat-completions",accountId:"cloud:openai:default"},
-  anthropic:{label:"Anthropic",endpoint:"https://api.anthropic.com",apiFamily:"anthropic-messages",accountId:"cloud:anthropic:default"},
-  gemini:{label:"Gemini",endpoint:"https://generativelanguage.googleapis.com/v1beta",apiFamily:"google-generative-ai",accountId:"cloud:gemini:default"},
-  mistral:{label:"Mistral",endpoint:"https://api.mistral.ai/v1",apiFamily:"openai-chat-completions",accountId:"cloud:mistral:default"}
+export const CLOUD_PROVIDER_PRESETS:Record<Exclude<CloudProviderDraft["type"],"openai-compatible-remote">,{label:string;endpoint:string;apiFamily:AiApiFamily;accountId:string;defaultModel:string}>={
+  openai:{label:"OpenAI",endpoint:"https://api.openai.com/v1",apiFamily:"openai-chat-completions",accountId:"cloud:openai:default",defaultModel:"gpt-4.1-mini"},
+  anthropic:{label:"Anthropic",endpoint:"https://api.anthropic.com",apiFamily:"anthropic-messages",accountId:"cloud:anthropic:default",defaultModel:"claude-sonnet-4-5"},
+  gemini:{label:"Gemini",endpoint:"https://generativelanguage.googleapis.com/v1beta",apiFamily:"google-generative-ai",accountId:"cloud:gemini:default",defaultModel:""},
+  mistral:{label:"Mistral",endpoint:"https://api.mistral.ai/v1",apiFamily:"openai-chat-completions",accountId:"cloud:mistral:default",defaultModel:""}
 };
 
 const APPROVED_CLOUD_HOSTS=new Set([
@@ -76,7 +83,6 @@ export function cloudProviderDescriptor(draft:CloudProviderDraft):AiProviderDesc
   const label=preset?.label??"Remote OpenAI-compatible";
   const apiFamily=preset?.apiFamily??"openai-chat-completions";
   const accountId=draft.accountId.trim()||preset?.accountId||`cloud:${draft.type}:custom`;
-  const openaiEnabled=draft.type==="openai";
   return{
     accountId,
     type:draft.type,
@@ -86,7 +92,7 @@ export function cloudProviderDescriptor(draft:CloudProviderDraft):AiProviderDesc
     model:draft.model.trim(),
     apiFamily,
     requiresAuth:true,
-    transmissionEnabled:openaiEnabled,
+    transmissionEnabled:isEnabledCloudProvider(draft.type),
     allowedDisclosureModes:CLOUD_DISCLOSURE,
     allowsTaskContexts:true,
     allowsFullLocalContext:false
@@ -142,8 +148,8 @@ export function assertTransmissionAllowed(provider:AiProviderDescriptor):void{
     throw new Error(`${validated.label} is configured but cloud transmission is not enabled yet`);
   }
   if(validated.trust==="local")return;
-  if(validated.trust==="cloud"&&validated.type==="openai")return;
-  throw new Error("Only verified local providers and the OpenAI cloud adapter may transmit in this milestone");
+  if(validated.trust==="cloud"&&isEnabledCloudProvider(validated.type))return;
+  throw new Error("Only verified local providers and enabled first-class cloud adapters may transmit in this milestone");
 }
 
 export function providerAdapterContract():Readonly<{mayAccessRepository:false;mayMutateLedger:false;receivesOnlyReviewedPayload:true}>{
