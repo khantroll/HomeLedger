@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use calamine::{open_workbook_auto_from_rs, Data, DataType, Reader};
 use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, io::Cursor, path::Path, sync::Mutex, time::Duration};
+use std::{collections::HashSet, io::Cursor, path::{Path, PathBuf}, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -1355,6 +1355,100 @@ struct RestoreResult {
 const CURRENT_SCHEMA_VERSION: i64 = 17;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_RECOVERY_RETENTION: usize = 7;
+const MAX_RECOVERY_RETENTION: usize = 30;
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecoverySnapshotInfo {
+    file_name: String,
+    created_at: String,
+    reason: String,
+    schema_version: i64,
+    size_bytes: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupHealth {
+    last_successful_at: Option<String>,
+    last_reason: Option<String>,
+    last_error: Option<String>,
+    retention: usize,
+    snapshots: Vec<RecoverySnapshotInfo>,
+}
+
+fn recovery_dir(data_dir: &Path) -> PathBuf { data_dir.join("recovery") }
+fn recovery_settings_path(data_dir: &Path) -> PathBuf { recovery_dir(data_dir).join("settings.json") }
+
+fn recovery_retention(data_dir: &Path) -> usize {
+    std::fs::read_to_string(recovery_settings_path(data_dir)).ok()
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok())
+        .and_then(|v| v.get("retention").and_then(|n| n.as_u64()))
+        .map(|n| n.clamp(1, MAX_RECOVERY_RETENTION as u64) as usize)
+        .unwrap_or(DEFAULT_RECOVERY_RETENTION)
+}
+
+fn list_recovery_snapshots(data_dir: &Path) -> Result<Vec<RecoverySnapshotInfo>, String> {
+    let dir = recovery_dir(data_dir);
+    if !dir.exists() { return Ok(vec![]); }
+    let mut result = vec![];
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("db") { continue; }
+        let Some(file_name) = path.file_name().and_then(|x| x.to_str()).map(str::to_string) else { continue; };
+        if !file_name.starts_with("HomeLedger-recovery-") { continue; }
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+        let schema_version = connection.query_row("SELECT COALESCE(MAX(version),0) FROM schema_migrations", [], |row| row.get(0)).unwrap_or(0);
+        let parts: Vec<&str> = file_name.trim_end_matches(".db").split('-').collect();
+        let reason = if file_name.contains("-pre-migration-") { "pre-migration" } else { "automatic" }.to_string();
+        let created_at = parts.iter().skip(2).take(2).cloned().collect::<Vec<_>>().join("-");
+        result.push(RecoverySnapshotInfo { file_name, created_at, reason, schema_version, size_bytes: meta.len() });
+    }
+    result.sort_by(|a,b| b.file_name.cmp(&a.file_name));
+    Ok(result)
+}
+
+fn prune_recovery_snapshots(data_dir: &Path, retention: usize) -> Result<(), String> {
+    for snapshot in list_recovery_snapshots(data_dir)?.into_iter().skip(retention) {
+        let _ = std::fs::remove_file(recovery_dir(data_dir).join(snapshot.file_name));
+    }
+    Ok(())
+}
+
+fn create_recovery_snapshot(connection: &Connection, data_dir: &Path, reason: &str) -> Result<RecoverySnapshotInfo, String> {
+    let dir = recovery_dir(data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now();
+    let stamp = now.format("%Y%m%dT%H%M%S%.3fZ").to_string();
+    let safe_reason = if reason == "pre-migration" { "pre-migration" } else { "automatic" };
+    let file_name = format!("HomeLedger-recovery-{safe_reason}-{stamp}.db");
+    let path = dir.join(&file_name);
+    {
+        let mut destination = Connection::open(&path).map_err(|e| e.to_string())?;
+        copy_database(connection, &mut destination)?;
+    }
+    let check = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    validate_backup_database(&check)?;
+    let schema_version = check.query_row("SELECT COALESCE(MAX(version),0) FROM schema_migrations", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let size_bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    prune_recovery_snapshots(data_dir, recovery_retention(data_dir))?;
+    Ok(RecoverySnapshotInfo { file_name, created_at: now.to_rfc3339(), reason: safe_reason.into(), schema_version, size_bytes })
+}
+
+fn backup_health(data_dir: &Path) -> BackupHealth {
+    let snapshots = list_recovery_snapshots(data_dir).unwrap_or_default();
+    let latest = snapshots.first();
+    BackupHealth {
+        last_successful_at: latest.map(|x| x.created_at.clone()),
+        last_reason: latest.map(|x| x.reason.clone()),
+        last_error: None,
+        retention: recovery_retention(data_dir),
+        snapshots,
+    }
+}
 
 fn clean_required(value: String, field: &str, max: usize) -> Result<String, String> {
     let cleaned = value.trim().to_string();
@@ -3025,6 +3119,42 @@ fn restore_database_inner(connection: &mut Connection, bytes: &[u8]) -> Result<R
 }
 
 #[tauri::command]
+fn get_backup_health(app: AppHandle) -> Result<BackupHealth, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(backup_health(&data_dir))
+}
+
+#[tauri::command]
+fn set_recovery_retention(retention: usize, app: AppHandle) -> Result<BackupHealth, String> {
+    if !(1..=MAX_RECOVERY_RETENTION).contains(&retention) { return Err("Keep between 1 and 30 automatic recovery snapshots".into()); }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(recovery_dir(&data_dir)).map_err(|e| e.to_string())?;
+    std::fs::write(recovery_settings_path(&data_dir), serde_json::json!({"retention":retention}).to_string()).map_err(|e| e.to_string())?;
+    prune_recovery_snapshots(&data_dir, retention)?;
+    Ok(backup_health(&data_dir))
+}
+
+#[tauri::command]
+fn create_automatic_recovery_snapshot(state: State<DbState>, app: AppHandle) -> Result<BackupHealth, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    create_recovery_snapshot(&connection, &data_dir, "automatic")?;
+    Ok(backup_health(&data_dir))
+}
+
+#[tauri::command]
+fn restore_recovery_snapshot(file_name: String, state: State<DbState>, app: AppHandle) -> Result<RestoreResult, String> {
+    if file_name.contains('/') || file_name.contains('\\') || !file_name.starts_with("HomeLedger-recovery-") || !file_name.ends_with(".db") {
+        return Err("Invalid recovery snapshot name".into());
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = recovery_dir(&data_dir).join(file_name);
+    let bytes = std::fs::read(path).map_err(|e| format!("Could not read the recovery snapshot: {e}"))?;
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    restore_database_inner(&mut connection, &bytes)
+}
+
+#[tauri::command]
 fn export_backup_snapshot(state: State<DbState>) -> Result<String, String> {
     let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
     snapshot_database(&connection).map(|bytes| BASE64.encode(bytes))
@@ -3079,12 +3209,25 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
-            let mut connection = Connection::open(data_dir.join("homeledger.db"))?;
+            let db_path = data_dir.join("homeledger.db");
+            let existed = db_path.exists();
+            let mut connection = Connection::open(&db_path)?;
+            if existed {
+                let version: i64 = connection.query_row("SELECT COALESCE(MAX(version),0) FROM schema_migrations", [], |row| row.get(0)).unwrap_or(0);
+                if version > 0 && version < CURRENT_SCHEMA_VERSION {
+                    create_recovery_snapshot(&connection, &data_dir, "pre-migration").map_err(std::io::Error::other)?;
+                }
+            }
             apply_migrations(&mut connection).map_err(std::io::Error::other)?;
+            let should_snapshot = list_recovery_snapshots(&data_dir).ok().and_then(|v| v.first().cloned())
+                .and_then(|latest| chrono::DateTime::parse_from_rfc3339(&latest.created_at).ok())
+                .map(|created| chrono::Utc::now().signed_duration_since(created.with_timezone(&chrono::Utc)).num_hours() >= 24)
+                .unwrap_or(true);
+            if should_snapshot { create_recovery_snapshot(&connection, &data_dir, "automatic").map_err(std::io::Error::other)?; }
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }
