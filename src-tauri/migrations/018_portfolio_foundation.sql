@@ -1,4 +1,4 @@
-PRAGMA foreign_keys = OFF;
+PRAGMA defer_foreign_keys = ON;
 
 CREATE TABLE accounts_new (
   id TEXT PRIMARY KEY,
@@ -113,5 +113,3 @@ CREATE TABLE security_prices (
   UNIQUE(security_id, observed_at, source)
 );
 CREATE INDEX idx_security_prices_lookup ON security_prices(security_id, observed_at DESC);
-
-PRAGMA foreign_keys = ON;
