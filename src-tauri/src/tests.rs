@@ -1,6 +1,7 @@
 use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest, UpdateAccountRequest};
 use calamine::Data;
 use rusqlite::Connection;
+use crate::investment::{snapshot_inner, SCALE_E8};
 
 #[test]
 fn workbook_cells_become_stable_import_text() {
@@ -493,6 +494,67 @@ fn database_snapshot_restore_replaces_the_ledger_safely() {
     let original: i64 = connection.query_row("SELECT COUNT(*) FROM accounts WHERE id = 'original'", [], |row| row.get(0)).unwrap();
     let later: i64 = connection.query_row("SELECT COUNT(*) FROM accounts WHERE id = 'later'", [], |row| row.get(0)).unwrap();
     assert_eq!((original, later), (1, 0));
+}
+
+
+#[test]
+fn portfolio_snapshot_restore_preserves_revisions_allocations_prices_and_projection() {
+    let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',999999,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,opening_cash_minor,opening_date) VALUES('inv','brokerage','taxable',50000,'2026-01-01')",[]).unwrap();
+    connection.execute("INSERT INTO securities(id,security_type,name,symbol,currency) VALUES('sec','stock','Example','EX','USD')",[]).unwrap();
+    connection.execute("INSERT INTO investment_events(id,account_id,current_revision_id) VALUES('buy','inv','buy-r2'),('sell','inv','sell-r1')",[]).unwrap();
+    connection.execute("INSERT INTO investment_event_revisions(id,event_id,revision_number,event_type,trade_date,security_id,quantity_e8,cash_effect_minor,acquisition_funding_minor,status,source) VALUES('buy-r1','buy',1,'buy','2026-01-02','sec',?1,-10000,10000,'cleared','manual')",[SCALE_E8]).unwrap();
+    connection.execute("INSERT INTO investment_event_revisions(id,event_id,revision_number,supersedes_revision_id,event_type,trade_date,security_id,quantity_e8,cash_effect_minor,acquisition_funding_minor,status,source,correction_reason,corrected_at) VALUES('buy-r2','buy',2,'buy-r1','buy','2026-01-02','sec',?1,-12000,12000,'cleared','manual','Statement correction','2026-02-01')",[SCALE_E8]).unwrap();
+    connection.execute("INSERT INTO investment_event_revisions(id,event_id,revision_number,event_type,trade_date,security_id,quantity_e8,cash_effect_minor,status,source) VALUES('sell-r1','sell',1,'sell','2026-03-01','sec',?1,8000,'cleared','manual')",[SCALE_E8/2]).unwrap();
+    connection.execute("INSERT INTO investment_lot_allocations(sale_revision_id,acquisition_event_id,quantity_e8) VALUES('sell-r1','buy',?1)",[SCALE_E8/2]).unwrap();
+    connection.execute("INSERT INTO security_prices(id,security_id,observed_at,price_e8,currency,source) VALUES('price','sec','2026-03-01',20000000000,'USD','manual')",[]).unwrap();
+    let before=snapshot_inner(&connection,Some(&["inv".into()]),"2026-03-01").unwrap();
+    let bytes=snapshot_database(&connection).unwrap();
+    connection.execute_batch("DELETE FROM investment_lot_allocations; DELETE FROM investment_event_revisions; DELETE FROM investment_events; DELETE FROM security_prices; DELETE FROM investment_account_settings; DELETE FROM securities; DELETE FROM accounts;").unwrap();
+    restore_database_inner(&mut connection,&bytes).unwrap();
+    validate_backup_database(&connection).unwrap();
+    let after=snapshot_inner(&connection,Some(&["inv".into()]),"2026-03-01").unwrap();
+    assert_eq!(before.accounts[0].cash_minor,after.accounts[0].cash_minor);
+    assert_eq!(before.accounts[0].holdings[0].quantity_e8,after.accounts[0].holdings[0].quantity_e8);
+    assert_eq!(before.accounts[0].holdings[0].known_basis_minor,after.accounts[0].holdings[0].known_basis_minor);
+    assert_eq!(before.accounts[0].holdings[0].market_value_minor,after.accounts[0].holdings[0].market_value_minor);
+    assert_eq!(before.accounts[0].holdings[0].realized.calculable_gain_minor,after.accounts[0].holdings[0].realized.calculable_gain_minor);
+    let counts:(i64,i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM investment_event_revisions),(SELECT COUNT(*) FROM investment_lot_allocations),(SELECT COUNT(*) FROM security_prices)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    let reason:String=connection.query_row("SELECT correction_reason FROM investment_event_revisions WHERE id='buy-r2'",[],|r|r.get(0)).unwrap();
+    assert_eq!(counts,(3,1,1));assert_eq!(reason,"Statement correction");
+}
+
+#[test]
+fn ordinary_ledger_rejects_investment_asset_conversions() {
+    let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household'),('cash','Checking','checking','USD',0,'Household')",[]).unwrap();
+    let result=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Buy".into(),category:"Investment".into(),amount_minor:-10000,status:"cleared".into(),memo:None,splits:None});
+    assert!(result.unwrap_err().contains("investment event workflow"));
+    assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
+    let transfer=create_transfer_inner(&mut connection,TransferRequest{from_account_id:"cash".into(),to_account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Funding".into(),amount_minor:10000,status:"cleared".into(),memo:None});
+    assert!(transfer.unwrap_err().contains("investment cash transfers"));
+    assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
+}
+
+#[test]
+fn investment_net_worth_value_uses_intrinsic_cash_and_holdings_not_account_opening_balance() {
+    let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',999999,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,opening_cash_minor,opening_date) VALUES('inv','brokerage','taxable',10000,'2026-01-01')",[]).unwrap();
+    connection.execute("INSERT INTO securities(id,security_type,name,currency) VALUES('sec','stock','Example','USD')",[]).unwrap();
+    connection.execute("INSERT INTO investment_events(id,account_id,current_revision_id) VALUES('buy','inv','r')",[]).unwrap();
+    connection.execute("INSERT INTO investment_event_revisions(id,event_id,revision_number,event_type,trade_date,security_id,quantity_e8,cash_effect_minor,acquisition_funding_minor,status,source) VALUES('r','buy',1,'buy','2026-01-02','sec',?1,-5000,5000,'cleared','manual')",[SCALE_E8]).unwrap();
+    connection.execute("INSERT INTO security_prices(id,security_id,observed_at,price_e8,currency,source) VALUES('p','sec','2026-01-03',6000000000,'USD','manual')",[]).unwrap();
+    let p=snapshot_inner(&connection,Some(&["inv".into()]),"2026-01-03").unwrap();
+    assert_eq!(p.accounts[0].cash_minor,5000);assert_eq!(p.accounts[0].holdings_value_minor,Some(6000));assert_eq!(p.accounts[0].total_value_minor,Some(11000));
+}
+
+#[test]
+fn v18_backup_validation_rejects_missing_portfolio_tables() {
+    let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
+    connection.execute_batch("DROP TABLE security_prices").unwrap();
+    assert!(validate_backup_database(&connection).unwrap_err().contains("Portfolio Foundation tables"));
 }
 
 #[test]
