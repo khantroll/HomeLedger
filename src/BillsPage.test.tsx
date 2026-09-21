@@ -74,7 +74,7 @@ describe("BillsPage",()=>{
 
   it("opens the existing auto-post review from contextual navigation",()=>{
     render(<BillsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} onChanged={async()=>{}} today="2026-09-18" navigationFocus={{kind:"autoPost"}}/>);
-    expect(screen.getByRole("dialog",{name:/Review automatic posting/i})).toBeTruthy();
+    expect(screen.getByRole("dialog",{name:/Review auto-post queue/i})).toBeTruthy();
   });
 
   it("creates deposits using financial-language recurrence controls",async()=>{
