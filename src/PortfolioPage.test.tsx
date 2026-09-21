@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import type { Account } from "./domain";
+import type { Account, PortfolioSnapshot } from "./domain";
 
 vi.mock("./repository", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./repository")>();
@@ -74,7 +74,7 @@ describe("Portfolio native nullable snapshot boundary",()=>{
 
 
 describe("Investment account workspace",()=>{
- const snapshot={asOfDate:"2026-09-21",accounts:[{accountId:"inv",cashMinor:5000,holdingsValueMinor:12500,totalValueMinor:17500,holdings:[{accountId:"inv",securityId:"sec",quantityE8:100_000_000,knownBasisMinor:10000,unknownBasisQuantityE8:0,priceE8:125_000_000,priceObservedAt:"2026-09-20",marketValueMinor:12500,unrealizedGainMinor:2500,incompleteUnknownBasis:false,lots:[{acquisitionEventId:"buy",acquisitionDate:"2026-01-02",quantityE8:100_000_000,basisMinor:10000}],realized:{knownBasisQuantityE8:0,knownDisposedBasisMinor:0,calculableProceedsMinor:0,calculableGainMinor:0,unknownBasisQuantityE8:0,unknownBasisProceedsMinor:0,incompleteUnknownBasis:false}}]}]};
+ const snapshot:PortfolioSnapshot={asOfDate:"2026-09-21",accounts:[{accountId:"inv",cashMinor:5000,holdingsValueMinor:12500,totalValueMinor:17500,holdings:[{accountId:"inv",securityId:"sec",quantityE8:100_000_000,knownBasisMinor:10000,unknownBasisQuantityE8:0,priceE8:125_000_000,priceObservedAt:"2026-09-20",marketValueMinor:12500,unrealizedGainMinor:2500,incompleteUnknownBasis:false,lots:[{acquisitionEventId:"buy",acquisitionDate:"2026-01-02",quantityE8:100_000_000,basisMinor:10000}],realized:{knownBasisQuantityE8:0,knownDisposedBasisMinor:0,calculableProceedsMinor:0,calculableGainMinor:0,unknownBasisQuantityE8:0,unknownBasisProceedsMinor:0,incompleteUnknownBasis:false}}]}]};
  const security={id:"sec",securityType:"stock" as const,name:"Example Corp",symbol:"EXM",currency:"USD",archived:false};
  const buy={id:"r1",eventId:"e1",revisionNumber:1,accountId:"inv",eventType:"buy" as const,tradeDate:"2026-01-02",securityId:"sec",quantityE8:100_000_000,grossCashMinor:10000,cashEffectMinor:-10000,incomeMinor:0,acquisitionFundingMinor:10000,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const};
  const dividend={id:"r2",eventId:"e2",revisionNumber:1,accountId:"inv",eventType:"dividend" as const,tradeDate:"2026-06-01",securityId:"sec",cashEffectMinor:500,incomeMinor:500,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const};
