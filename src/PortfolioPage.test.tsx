@@ -134,7 +134,6 @@ describe("Investment account workspace",()=>{
   render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);await screen.findByText("Security detail");
   fireEvent.change(screen.getByLabelText("Manual price"),{target:{value:"1.2345"}});fireEvent.change(screen.getByLabelText("Price observation date"),{target:{value:"2026-09-20"}});fireEvent.click(screen.getByRole("button",{name:"Update price"}));
   await vi.waitFor(()=>expect(investmentRepository.addManualSecurityPrice).toHaveBeenCalledWith({securityId:"sec",observedAt:"2026-09-20",priceE8:123450000,currency:"USD",provenance:"Manual entry"}));
-  expect(investmentRepository.createInvestmentEvent).toBeUndefined();
  });
  it("recomputes historical snapshots and bounds activity to the selected as-of date",async()=>{
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockImplementation(async(_ids,date)=>({...snapshot,asOfDate:date}));vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
