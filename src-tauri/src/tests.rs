@@ -32,7 +32,7 @@ fn migration_creates_local_ledger_tables() {
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
     let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
     let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (17, 2, 1, 1, 2, 2,1,2,1,2,5,1));
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (18, 2, 1, 1, 2, 2,1,2,1,2,5,1));
 }
 
 #[test]
@@ -58,9 +58,61 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 17);
+    assert_eq!(version, 18);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
+}
+
+
+fn migrate_fixture_through_v17(connection: &mut Connection) {
+    connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, description TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);").unwrap();
+    let migrations = [
+        (1, include_str!("../migrations/001_initial.sql")),
+        (2, include_str!("../migrations/002_import_history.sql")),
+        (3, include_str!("../migrations/003_external_transaction_ids.sql")),
+        (4, include_str!("../migrations/004_database_identity.sql")),
+        (5, include_str!("../migrations/005_split_order.sql")),
+        (6, include_str!("../migrations/006_reconciliations.sql")),
+        (7, include_str!("../migrations/007_merchant_rules.sql")),
+        (8, include_str!("../migrations/008_import_profiles.sql")),
+        (9, include_str!("../migrations/009_import_profile_locales.sql")),
+        (10, include_str!("../migrations/010_scheduled_transactions.sql")),
+        (11, include_str!("../migrations/011_budgets.sql")),
+        (12, include_str!("../migrations/012_scheduled_auto_post.sql")),
+        (13, include_str!("../migrations/013_debt_plans.sql")),
+        (14, include_str!("../migrations/014_savings_goals.sql")),
+        (15, include_str!("../migrations/015_shared_categories_payees.sql")),
+        (16, include_str!("../migrations/016_statement_templates.sql")),
+        (17, include_str!("../migrations/017_ai_analysis_audit.sql")),
+    ];
+    for (version, sql) in migrations {
+        connection.execute_batch(sql).unwrap();
+        connection.execute("INSERT INTO schema_migrations(version,description) VALUES(?1,'fixture')",[version]).unwrap();
+    }
+}
+
+#[test]
+fn migration_upgrades_populated_v17_without_breaking_account_foreign_keys() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    migrate_fixture_through_v17(&mut connection);
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',10000,'Household'),('b','Loan','loan','USD',-5000,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO import_batches(id,account_id,source_name) VALUES('ib','a','fixture.csv')",[]).unwrap();
+    connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,source,import_batch_id) VALUES('t','a','2026-01-01','Payee','Category',-100,'cleared','import','ib')",[]).unwrap();
+    connection.execute("INSERT INTO reconciliations(id,account_id,statement_end_date,opening_balance_minor,closing_balance_minor) VALUES('rec','a','2026-01-31',10000,9900)",[]).unwrap();
+    connection.execute("INSERT INTO import_profiles(id,name,account_id,header_signature,date_column,payee_column,amount_column,debit_column,credit_column) VALUES('profile','Profile','a','sig',0,1,2,-1,-1)",[]).unwrap();
+    connection.execute("INSERT INTO scheduled_transactions(id,kind,account_id,transfer_account_id,payee,category,amount_minor,status,frequency,anchor_date) VALUES('sched','transfer','a','b','Transfer','Transfer',100,'cleared','monthly','2026-01-01')",[]).unwrap();
+    connection.execute("INSERT INTO debt_terms(account_id,annual_rate_bps,minimum_payment_minor) VALUES('b',500,100)",[]).unwrap();
+    connection.execute("INSERT INTO savings_goals(id,name,account_id,target_minor,target_date) VALUES('goal','Goal','a',50000,'2027-01-01')",[]).unwrap();
+
+    apply_migrations(&mut connection).unwrap();
+
+    let version:i64=connection.query_row("SELECT MAX(version) FROM schema_migrations",[],|r|r.get(0)).unwrap();
+    let fk_count:i64=connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get(0)).unwrap();
+    let related:(i64,i64,i64,i64,i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions WHERE account_id='a'),(SELECT COUNT(*) FROM import_batches WHERE account_id='a'),(SELECT COUNT(*) FROM reconciliations WHERE account_id='a'),(SELECT COUNT(*) FROM import_profiles WHERE account_id='a'),(SELECT COUNT(*) FROM debt_terms WHERE account_id='b'),(SELECT COUNT(*) FROM savings_goals WHERE account_id='a')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household')",[]).unwrap();
+    assert_eq!(version,18);
+    assert_eq!(fk_count,0);
+    assert_eq!(related,(1,1,1,1,1,1));
 }
 
 #[test]
