@@ -14,7 +14,7 @@ describe("Overview attention center",()=>{
       {id:"rent",kind:"transaction",accountId:"checking",payee:"Rent",category:"Housing",amountMinor:-250000,status:"pending",frequency:"monthly",anchorDate:"2026-09-01",enabled:true,autoPost:false},
       {id:"utility",kind:"transaction",accountId:"checking",payee:"Utility",category:"Utilities",amountMinor:-1000,status:"pending",frequency:"monthly",anchorDate:"2026-09-20",enabled:true,autoPost:true},
     ];
-    const occurrences:ScheduledOccurrence[]=[{id:"late",scheduledTransactionId:"rent",dueDate:"2026-09-01",status:"expected"},{id:"auto",scheduledTransactionId:"utility",dueDate:"2026-09-20",status:"expected"}];
+    const occurrences:ScheduledOccurrence[]=[{id:"late",scheduledTransactionId:"rent",dueDate:"2026-09-01",status:"expected"},{id:"auto",scheduledTransactionId:"utility",dueDate:"2026-09-20",status:"expected"},{id:"future-rent",scheduledTransactionId:"rent",dueDate:"2026-09-25",status:"expected"}];
     const transactions:Transaction[]=[{id:"review",accountId:"checking",postedDate:"2026-09-10",payee:"Unknown",category:"Uncategorized",amountMinor:-1000,status:"review"}];
     const budgets:BudgetMonth[]=[{month:"2026-09",plannedMinor:50000,spentMinor:70000,carryInMinor:0,availableMinor:-20000,lines:[{id:"food",category:"Food",rolloverEnabled:false,plannedMinor:50000,spentMinor:70000,carryInMinor:0,availableMinor:-20000}]}];
     const onNavigate=vi.fn(),user=userEvent.setup();
