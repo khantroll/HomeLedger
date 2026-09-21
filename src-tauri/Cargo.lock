@@ -1435,7 +1435,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "homeledger"
-version = "0.45.0"
+version = "0.46.0"
 dependencies = [
  "base64 0.22.1",
  "calamine",
@@ -1832,7 +1832,7 @@ dependencies = [
  "log",
  "thiserror 1.0.69",
  "walkdir",
- "windows-sys 0.45.0",
+ "windows-sys 0.46.0",
 ]
 
 [[package]]
@@ -4683,7 +4683,7 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
-version = "0.45.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75283be5efb2831d37ea142365f009c02ec203cd29a3ebecbc093d52315b66d0"
 dependencies = [
