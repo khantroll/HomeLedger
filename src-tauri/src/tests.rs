@@ -532,7 +532,7 @@ fn ordinary_ledger_rejects_investment_asset_conversions() {
     let result=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Buy".into(),category:"Investment".into(),amount_minor:-10000,status:"cleared".into(),memo:None,splits:None});
     assert!(matches!(result,Err(ref e) if e.contains("investment event workflow")));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
-    let transfer=create_transfer_inner(&mut connection,TransferRequest{from_account_id:"cash".into(),to_account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Funding".into(),amount_minor:10000,status:"cleared".into(),memo:None});
+    let transfer=create_transfer_inner(&mut connection,TransferRequest{from_account_id:"cash".into(),to_account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Funding".into(),amount_minor:10000,status:"cleared".into(),memo:None,splits:None});
     assert!(matches!(transfer,Err(ref e) if e.contains("investment cash transfers")));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
 }
