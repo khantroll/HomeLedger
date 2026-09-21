@@ -155,7 +155,7 @@ type NativeInvestmentEventRevision = Omit<InvestmentEventRevision,"supersedesRev
   supersedesRevisionId:string|null;settlementDate:string|null;acquisitionDate:string|null;securityId:string|null;relatedAccountId:string|null;
   quantityE8:number|null;unitPriceE8:number|null;grossCashMinor:number|null;memo:string|null;externalId:string|null;provenance:string|null;groupId:string|null;correctionReason:string|null;
 };
-function normalizeInvestmentEvent(event:NativeInvestmentEventRevision):InvestmentEventRevision{return {
+export function normalizeInvestmentEvent(event:NativeInvestmentEventRevision):InvestmentEventRevision{return {
   ...event,
   supersedesRevisionId:undefinedIfNull(event.supersedesRevisionId),settlementDate:undefinedIfNull(event.settlementDate),acquisitionDate:undefinedIfNull(event.acquisitionDate),
   securityId:undefinedIfNull(event.securityId),relatedAccountId:undefinedIfNull(event.relatedAccountId),quantityE8:undefinedIfNull(event.quantityE8),unitPriceE8:undefinedIfNull(event.unitPriceE8),
