@@ -510,7 +510,7 @@ export interface LotAllocation{acquisitionEventId:string;quantityE8:number;}
 export interface SecurityPrice{id:string;securityId:string;observedAt:string;priceE8:number;currency:string;source:"manual"|"import"|"market_provider";provenance?:string;}
 export interface SecurityPriceInput{securityId:string;observedAt:string;priceE8:number;currency:string;provenance?:string;}
 export interface RealizedResult{knownBasisQuantityE8:number;knownDisposedBasisMinor:number;calculableProceedsMinor:number;calculableGainMinor:number;unknownBasisQuantityE8:number;unknownBasisProceedsMinor:number;incompleteUnknownBasis:boolean;}
-export interface LotSnapshot{acquisitionEventId:string;acquisitionDate:string;quantityE8:number;basisMinor?:number;}
+export interface LotSnapshot{acquisitionEventId:string;acquisitionDate?:string;quantityE8:number;basisMinor?:number;}
 export interface HoldingSnapshot{accountId:string;securityId:string;quantityE8:number;knownBasisMinor:number;unknownBasisQuantityE8:number;priceE8?:number;priceObservedAt?:string;marketValueMinor?:number;unrealizedGainMinor?:number;incompleteUnknownBasis:boolean;lots:LotSnapshot[];realized:RealizedResult;}
 export interface PortfolioAccountSnapshot{accountId:string;cashMinor:number;holdingsValueMinor?:number;totalValueMinor?:number;holdings:HoldingSnapshot[];}
 export interface PortfolioSnapshot{asOfDate:string;accounts:PortfolioAccountSnapshot[];}
