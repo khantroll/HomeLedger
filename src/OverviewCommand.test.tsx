@@ -25,13 +25,13 @@ describe("Overview attention center",()=>{
     expect(screen.getByText("Cash is projected to go negative")).toBeTruthy();
     expect(screen.getByText("This month’s budget is over plan")).toBeTruthy();
     expect(screen.queryByText(/Overdue \/ auto-post/i)).toBeNull();
-    await user.click(screen.getByText("Review bills"));
+    await user.click(screen.getByRole("button",{name:/Review bills/i}));
     expect(onNavigate).toHaveBeenCalledWith("Bills");
-    await user.click(screen.getByText("Open forecast"));
+    await user.click(screen.getByRole("button",{name:/Open forecast/i}));
     expect(onNavigate).toHaveBeenCalledWith("Forecast");
-    await user.click(screen.getByText("Review budget"));
+    await user.click(screen.getByRole("button",{name:/Review budget/i}));
     expect(onNavigate).toHaveBeenCalledWith("Budget");
-    await user.click(screen.getByText("Review transactions"));
+    await user.click(screen.getByRole("button",{name:/Review transactions/i}));
     expect(onNavigate).toHaveBeenCalledWith("Transactions");
   });
 
