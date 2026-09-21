@@ -35,4 +35,12 @@ describe("ReportsPage",()=>{
     expect(save).toHaveBeenCalledWith(expect.stringContaining('"Account","Checking"'),"HomeLedger-report-2026-07-01-to-2026-09-19.csv");
     expect((await screen.findByRole("status")).textContent).toContain("Report CSV saved");
   });
+  it("opens a contributing account register through an accessible contextual link",async()=>{
+    const user=userEvent.setup(),onOpenAccount=vi.fn();
+    render(<ReportsPage accounts={accounts} transactions={transactions} today="2026-09-19" onOpenAccount={onOpenAccount}/>);
+    await user.click(screen.getByRole("button",{name:/Food/}));
+    await user.click(screen.getByRole("button",{name:"Open Card register"}));
+    expect(onOpenAccount).toHaveBeenCalledWith("card");
+  });
+
 });

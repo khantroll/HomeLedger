@@ -8,14 +8,16 @@ import {SuggestionLists,useLedgerSuggestions} from "./useLedgerSuggestions";
 import {calendarDays,monthBounds,monthLabel,shiftMonth} from "./billsCalendar";
 import "./bills.css";
 
-export function BillsPage({accounts,transactions,templates,occurrences,onChanged,onMonthChange,today=todayIso()}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];onChanged:()=>Promise<void>;onMonthChange?:(fromDate:string,toDate:string)=>Promise<void>;today?:string}){
+export type BillsNavigationFocus={kind:"overdue";dueDate:string}|{kind:"autoPost"};
+
+export function BillsPage({accounts,transactions,templates,occurrences,onChanged,onMonthChange,today=todayIso(),navigationFocus}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];onChanged:()=>Promise<void>;onMonthChange?:(fromDate:string,toDate:string)=>Promise<void>;today?:string;navigationFocus?:BillsNavigationFocus}){
   const [editing,setEditing]=useState<ScheduledTransaction|"new"|null>(null);
   const [confirmDelete,setConfirmDelete]=useState<string>();
   const [linking,setLinking]=useState<ScheduledOccurrence>();
-  const [reviewingAutoPost,setReviewingAutoPost]=useState(false);
+  const [reviewingAutoPost,setReviewingAutoPost]=useState(navigationFocus?.kind==="autoPost");
   const [suggested,setSuggested]=useState<SubscriptionCandidate>();
-  const [calendarMonth,setCalendarMonth]=useState(today.slice(0,7));
-  const [selectedDate,setSelectedDate]=useState<string>();
+  const [calendarMonth,setCalendarMonth]=useState(navigationFocus?.kind==="overdue"?navigationFocus.dueDate.slice(0,7):today.slice(0,7));
+  const [selectedDate,setSelectedDate]=useState<string|undefined>(navigationFocus?.kind==="overdue"?navigationFocus.dueDate:undefined);
   const [error,setError]=useState("");
   const active=templates.filter(item=>!item.archived);
   const occurrenceRows=[...occurrences].sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
@@ -25,6 +27,7 @@ export function BillsPage({accounts,transactions,templates,occurrences,onChanged
   const subscriptionCandidates=useMemo(()=>detectSubscriptions(transactions,templates,today),[transactions,templates,today]);
 
   useEffect(()=>{if(!onMonthChange)return;const bounds=monthBounds(calendarMonth);void onMonthChange(bounds.fromDate,bounds.toDate).catch(reason=>setError(message(reason)));},[calendarMonth,onMonthChange]);
+  useEffect(()=>{if(navigationFocus?.kind==="overdue"){setCalendarMonth(navigationFocus.dueDate.slice(0,7));setSelectedDate(navigationFocus.dueDate);}else if(navigationFocus?.kind==="autoPost")setReviewingAutoPost(true);},[navigationFocus]);
 
   function moveCalendar(offset:number){setCalendarMonth(value=>shiftMonth(value,offset));setSelectedDate(undefined);}
   function returnToToday(){setCalendarMonth(today.slice(0,7));setSelectedDate(today);}

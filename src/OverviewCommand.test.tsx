@@ -26,13 +26,13 @@ describe("Overview attention center",()=>{
     expect(screen.getByText("This month’s budget is over plan")).toBeTruthy();
     expect(screen.queryByText(/Overdue \/ auto-post/i)).toBeNull();
     await user.click(screen.getByRole("button",{name:/Review bills/i}));
-    expect(onNavigate).toHaveBeenCalledWith("Bills");
+    expect(onNavigate).toHaveBeenCalledWith({page:"Bills",focus:{kind:"overdue",dueDate:"2026-09-01"}});
     await user.click(screen.getByRole("button",{name:/Open forecast/i}));
-    expect(onNavigate).toHaveBeenCalledWith("Forecast");
+    expect(onNavigate).toHaveBeenCalledWith({page:"Forecast"});
     await user.click(screen.getByRole("button",{name:/Review budget/i}));
-    expect(onNavigate).toHaveBeenCalledWith("Budget");
+    expect(onNavigate).toHaveBeenCalledWith({page:"Budget"});
     await user.click(screen.getByRole("button",{name:/Review transactions/i}));
-    expect(onNavigate).toHaveBeenCalledWith("Transactions");
+    expect(onNavigate).toHaveBeenCalledWith({page:"Transactions",status:"review"});
   });
 
   it("shows a reassuring all-clear while keeping optional budget setup quiet",()=>{

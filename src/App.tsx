@@ -10,7 +10,7 @@ import { ReconciliationDialog } from "./ReconciliationDialog";
 import "./register.css";
 import "./accountLifecycle.css";
 import { RulesPage } from "./RulesPage";
-import { BillsPage } from "./BillsPage";
+import { BillsPage, type BillsNavigationFocus } from "./BillsPage";
 import { BudgetPage } from "./BudgetPage";
 import { ForecastPage } from "./ForecastPage";
 import { ReportsPage } from "./ReportsPage";
@@ -21,6 +21,12 @@ import { addDaysIso, formatDate, occurrenceDisplayState, occurrenceStateLabel, t
 import {calculateCashFlowForecast,forecastMonths} from "./forecastMath";
 import "./overviewCommand.css";
 import "./onboarding.css";
+
+type NavigationIntent =
+  | { page: "Transactions"; status: "review" }
+  | { page: "Bills"; focus: BillsNavigationFocus }
+  | { page: "Forecast" }
+  | { page: "Budget" };
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -41,6 +47,7 @@ export default function App() {
   const [scheduledOccurrences, setScheduledOccurrences] = useState<ScheduledOccurrence[]>([]);
   const [overviewBudgets, setOverviewBudgets] = useState<BudgetMonth[]>([]);
   const [active, setActive] = useState("Overview");
+  const [navigationIntent, setNavigationIntent] = useState<NavigationIntent>();
   const [registerAccountId, setRegisterAccountId] = useState<string>();
   const [registerToken, setRegisterToken] = useState(0);
   const [query, setQuery] = useState("");
@@ -88,12 +95,18 @@ export default function App() {
   const liabilities = useMemo(() => sumMoney(activeAccounts.filter((a) => a.balanceMinor < 0).map((a) => a.balanceMinor)), [activeAccounts]);
   const reviewCount = useMemo(() => transactions.filter((item) => item.status === "review").length, [transactions]);
 
-  function openNav(label: string) {
+  function openNav(label: string, intent?: NavigationIntent) {
     setActive(label);
+    setNavigationIntent(intent);
     if (label !== "Accounts") setRegisterAccountId(undefined);
   }
 
+  function openIntent(intent: NavigationIntent) {
+    openNav(intent.page, intent);
+  }
+
   function openAccountRegister(accountId: string) {
+    setNavigationIntent(undefined);
     setRegisterAccountId(accountId);
     setActive("Accounts");
   }
@@ -158,13 +171,13 @@ export default function App() {
           ) : active === "Budget" ? (
             <BudgetPage transactions={transactions} accounts={activeAccounts} />
           ) : active === "Bills" ? (
-            <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} onMonthChange={loadOccurrenceMonth} />
+            <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} onMonthChange={loadOccurrenceMonth} navigationFocus={navigationIntent?.page==="Bills"?navigationIntent.focus:undefined} />
           ) : active === "Forecast" ? (
             <ForecastPage accounts={activeAccounts} templates={scheduledTemplates} />
           ) : active === "Debt" ? (
             <DebtPage accounts={activeAccounts} />
           ) : active === "Reports" ? (
-            <ReportsPage accounts={accounts} transactions={transactions} />
+            <ReportsPage accounts={accounts} transactions={transactions} onOpenAccount={openAccountRegister} />
           ) : active === "Settings" ? (
             <BackupPage onRestored={refresh} />
           ) : active === "AI Insights" ? (
@@ -177,7 +190,7 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <AccountRegister accounts={activeAccounts} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
+              <AccountRegister accounts={activeAccounts} initialStatus={navigationIntent?.page==="Transactions"?navigationIntent.status:"all"} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
             </>
           ) : active === "Accounts" ? (
             <>
@@ -225,7 +238,7 @@ export default function App() {
                 <Summary label="Net worth" value={formatMoney(assets + liabilities)} detail="Based on tracked accounts" />
                 <Summary label="Needs review" value={String(reviewCount)} detail="Transactions requiring attention" tone="warning" />
               </div>
-              <OverviewCommandCenter accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} onNavigate={openNav}/>
+              <OverviewCommandCenter accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} onNavigate={openIntent}/>
               <UpcomingScheduled accounts={activeAccounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} onOpenBills={()=>openNav("Bills")} />
               <section className="panel overview-accounts">
                 <div className="panel-heading">
@@ -566,7 +579,7 @@ export function UpcomingScheduled({
   );
 }
 
-export function OverviewCommandCenter({accounts,transactions,templates,occurrences,budgets,onNavigate,today=todayIso()}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];budgets:BudgetMonth[];onNavigate:(label:string)=>void;today?:string}){
+export function OverviewCommandCenter({accounts,transactions,templates,occurrences,budgets,onNavigate,today=todayIso()}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];budgets:BudgetMonth[];onNavigate:(intent:NavigationIntent)=>void;today?:string}){
   const activeTemplates=new Map(templates.filter(item=>item.enabled&&!item.archived).map(item=>[item.id,item]));
   const overdue=occurrences.filter(item=>item.status==="expected"&&item.dueDate<today&&activeTemplates.has(item.scheduledTransactionId));
   const dueAutoPost=occurrences.filter(item=>item.status==="expected"&&item.dueDate<=today&&activeTemplates.get(item.scheduledTransactionId)?.autoPost);
@@ -574,18 +587,18 @@ export function OverviewCommandCenter({accounts,transactions,templates,occurrenc
   const currency=accounts.find(item=>["checking","savings","cash"].includes(item.type))?.currency??accounts[0]?.currency??"USD";
   const currentBudget=budgets.find(item=>item.month===today.slice(0,7));
   const forecast=calculateCashFlowForecast({today,horizonDays:30,currency,scenario:"expected",accounts,templates,occurrences,budgets});
-  const attention:Array<{key:string;priority:number;tone:"negative"|"warning"|"quiet";icon:ReactNode;title:string;detail:string;action:string;destination:string}>=[];
-  if(overdue.length)attention.push({key:"overdue",priority:10,tone:"negative",icon:<AlertTriangle size={16}/>,title:`${overdue.length} overdue scheduled ${overdue.length===1?"item":"items"}`,detail:`Oldest was due ${formatDate(overdue.map(item=>item.dueDate).sort()[0])}.`,action:"Review bills",destination:"Bills"});
-  if(dueAutoPost.length)attention.push({key:"autopost",priority:20,tone:"warning",icon:<CalendarDays size={16}/>,title:`${dueAutoPost.length} automatic ${dueAutoPost.length===1?"posting is":"postings are"} due`,detail:"These expected occurrences are due to be posted automatically.",action:"Review scheduled items",destination:"Bills"});
-  if(reviewCount)attention.push({key:"review",priority:30,tone:"warning",icon:<ReceiptText size={16}/>,title:`${reviewCount} ${reviewCount===1?"transaction needs":"transactions need"} review`,detail:"Confirm imported or uncategorized activity before treating the ledger as settled.",action:"Review transactions",destination:"Transactions"});
-  if(forecast.lowestBalanceMinor<0)attention.push({key:"forecast",priority:40,tone:"negative",icon:<TrendingDown size={16}/>,title:"Cash is projected to go negative",detail:`30-day low: ${formatMoney(forecast.lowestBalanceMinor,currency)} on ${formatDate(forecast.lowestBalanceDate)}.`,action:"Open forecast",destination:"Forecast"});
-  if(currentBudget?.availableMinor!==undefined&&currentBudget.availableMinor<0)attention.push({key:"budget",priority:50,tone:"negative",icon:<Tags size={16}/>,title:"This month’s budget is over plan",detail:`${formatMoney(Math.abs(currentBudget.availableMinor),currency)} over the available plan; ${formatMoney(currentBudget.spentMinor,currency)} spent.`,action:"Review budget",destination:"Budget"});
-  if(!currentBudget||currentBudget.lines.length===0)attention.push({key:"budget-setup",priority:90,tone:"quiet",icon:<Tags size={16}/>,title:"No current budget plan",detail:"Optional: add a monthly budget if you want spending-plan alerts here.",action:"Set up budget",destination:"Budget"});
+  const attention:Array<{key:string;priority:number;tone:"negative"|"warning"|"quiet";icon:ReactNode;title:string;detail:string;action:string;intent:NavigationIntent}>=[];
+  if(overdue.length)attention.push({key:"overdue",priority:10,tone:"negative",icon:<AlertTriangle size={16}/>,title:`${overdue.length} overdue scheduled ${overdue.length===1?"item":"items"}`,detail:`Oldest was due ${formatDate(overdue.map(item=>item.dueDate).sort()[0])}.`,action:"Review bills",intent:{page:"Bills",focus:{kind:"overdue",dueDate:overdue.map(item=>item.dueDate).sort()[0]}}});
+  if(dueAutoPost.length)attention.push({key:"autopost",priority:20,tone:"warning",icon:<CalendarDays size={16}/>,title:`${dueAutoPost.length} automatic ${dueAutoPost.length===1?"posting is":"postings are"} due`,detail:"These expected occurrences are due to be posted automatically.",action:"Review scheduled items",intent:{page:"Bills",focus:{kind:"autoPost"}}});
+  if(reviewCount)attention.push({key:"review",priority:30,tone:"warning",icon:<ReceiptText size={16}/>,title:`${reviewCount} ${reviewCount===1?"transaction needs":"transactions need"} review`,detail:"Confirm imported or uncategorized activity before treating the ledger as settled.",action:"Review transactions",intent:{page:"Transactions",status:"review"}});
+  if(forecast.lowestBalanceMinor<0)attention.push({key:"forecast",priority:40,tone:"negative",icon:<TrendingDown size={16}/>,title:"Cash is projected to go negative",detail:`30-day low: ${formatMoney(forecast.lowestBalanceMinor,currency)} on ${formatDate(forecast.lowestBalanceDate)}.`,action:"Open forecast",intent:{page:"Forecast"}});
+  if(currentBudget?.availableMinor!==undefined&&currentBudget.availableMinor<0)attention.push({key:"budget",priority:50,tone:"negative",icon:<Tags size={16}/>,title:"This month’s budget is over plan",detail:`${formatMoney(Math.abs(currentBudget.availableMinor),currency)} over the available plan; ${formatMoney(currentBudget.spentMinor,currency)} spent.`,action:"Review budget",intent:{page:"Budget"}});
+  if(!currentBudget||currentBudget.lines.length===0)attention.push({key:"budget-setup",priority:90,tone:"quiet",icon:<Tags size={16}/>,title:"No current budget plan",detail:"Optional: add a monthly budget if you want spending-plan alerts here.",action:"Set up budget",intent:{page:"Budget"}});
   attention.sort((a,b)=>a.priority-b.priority);
   const urgent=attention.filter(item=>item.tone!=="quiet"),setup=attention.filter(item=>item.tone==="quiet");
   return <section className="panel command-center"><div className="panel-heading"><div><h2>What needs my attention today?</h2><p>{urgent.length?`${urgent.length} ${urgent.length===1?"area needs":"areas need"} a look.`:"Your ledger has no urgent attention items."}</p></div></div>
     {urgent.length===0&&<div className="attention-clear"><span className="command-icon positive">✓</span><span><strong>You're caught up</strong><small>No overdue scheduled items, review transactions, negative 30-day forecast, or budget overage detected.</small></span></div>}
-    {attention.length>0&&<div className="attention-list">{[...urgent,...setup].map(item=><button key={item.key} className={`attention-item ${item.tone}`} onClick={()=>onNavigate(item.destination)}><span className={`command-icon ${item.tone}`}>{item.icon}</span><span className="attention-copy"><strong>{item.title}</strong><small>{item.detail}</small></span><span className="attention-action">{item.action} →</span></button>)}</div>}
+    {attention.length>0&&<div className="attention-list">{[...urgent,...setup].map(item=><button key={item.key} className={`attention-item ${item.tone}`} onClick={()=>onNavigate(item.intent)}><span className={`command-icon ${item.tone}`}>{item.icon}</span><span className="attention-copy"><strong>{item.title}</strong><small>{item.detail}</small></span><span className="attention-action">{item.action} →</span></button>)}</div>}
   </section>;
 }
 

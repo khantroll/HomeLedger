@@ -105,4 +105,25 @@ describe("App navigation shell", () => {
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ name:"Checking", openingBalanceMinor:0 }));
   });
 
+  it("opens review work with a visible register filter and ordinary navigation resets it", async () => {
+    const user=userEvent.setup();
+    const reviewTransactions:Transaction[]=[{id:"review",accountId:"checking",postedDate:"2026-09-18",payee:"Imported item",category:"Uncategorized",amountMinor:-1000,status:"review"}];
+    vi.spyOn(repositoryModule.financeRepository,"listAccounts").mockResolvedValue(accounts);
+    vi.spyOn(repositoryModule.financeRepository,"listTransactions").mockResolvedValue(reviewTransactions);
+    vi.spyOn(repositoryModule.financeRepository,"listScheduledTransactions").mockResolvedValue([]);
+    vi.spyOn(repositoryModule.financeRepository,"generateScheduledOccurrences").mockResolvedValue(0);
+    vi.spyOn(repositoryModule.financeRepository,"listScheduledOccurrences").mockResolvedValue([]);
+    const list=vi.spyOn(repositoryModule.financeRepository,"listTransactionsPage").mockResolvedValue({transactions:reviewTransactions,totalCount:1,offset:0,limit:100,priorBalanceMinor:0});
+    render(<App/>);
+    await screen.findByRole("heading",{name:"Overview"});
+    await user.click(screen.getByRole("button",{name:/Review transactions/i}));
+    expect(await screen.findByRole("heading",{name:"All accounts"})).toBeTruthy();
+    expect((screen.getByLabelText("Filter register by status") as HTMLSelectElement).value).toBe("review");
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({status:"review"}));
+    await user.click(screen.getByRole("button",{name:"Overview"}));
+    await user.click(screen.getByRole("button",{name:"Transactions"}));
+    expect((await screen.findByLabelText("Filter register by status") as HTMLSelectElement).value).toBe("all");
+  });
+
+
 });
