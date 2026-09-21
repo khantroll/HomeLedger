@@ -530,10 +530,10 @@ fn ordinary_ledger_rejects_investment_asset_conversions() {
     let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household'),('cash','Checking','checking','USD',0,'Household')",[]).unwrap();
     let result=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Buy".into(),category:"Investment".into(),amount_minor:-10000,status:"cleared".into(),memo:None,splits:None});
-    assert!(result.unwrap_err().contains("investment event workflow"));
+    assert!(matches!(result,Err(ref e) if e.contains("investment event workflow")));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
     let transfer=create_transfer_inner(&mut connection,TransferRequest{from_account_id:"cash".into(),to_account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Funding".into(),amount_minor:10000,status:"cleared".into(),memo:None});
-    assert!(transfer.unwrap_err().contains("investment cash transfers"));
+    assert!(matches!(transfer,Err(ref e) if e.contains("investment cash transfers")));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
 }
 
