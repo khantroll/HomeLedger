@@ -214,7 +214,7 @@ fn move_fifo_lots(lots:&mut Vec<Lot>,qty:i64)->Result<Vec<Lot>,String>{
 }
 fn price_at(c:&Connection,security:&str,as_of:&str)->Result<Option<(i64,String,String)>,String>{c.query_row("SELECT price_e8,observed_at,currency FROM security_prices WHERE security_id=?1 AND substr(observed_at,1,10)<=?2 ORDER BY observed_at DESC,id DESC LIMIT 1",params![security,as_of],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())}
 
-pub pub(crate) fn snapshot_inner(c:&Connection,account_ids:Option<&[String]>,as_of:&str)->Result<PortfolioSnapshot,String>{
+pub(crate) fn snapshot_inner(c:&Connection,account_ids:Option<&[String]>,as_of:&str)->Result<PortfolioSnapshot,String>{
  date(as_of,"As-of date")?;let mut ids=if let Some(v)=account_ids{v.to_vec()}else{let mut s=c.prepare("SELECT id FROM accounts WHERE account_type='investment' AND archived_at IS NULL ORDER BY sort_order,id").map_err(|e|e.to_string())?;let rows=s.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;let out=rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;out};
  ids.sort();ids.dedup();let all=effective_events(c,None,as_of)?;let mut lotmap:HashMap<(String,String),Vec<Lot>>=HashMap::new();let mut realized:HashMap<(String,String),RealizedResult>=HashMap::new();let mut cash:HashMap<String,i64>=HashMap::new();
  for id in &ids{let settings=get_settings_inner(c,id)?.ok_or_else(||format!("Investment account {id} has no settings"))?;cash.insert(id.clone(),if settings.opening_date.as_str()<=as_of{settings.opening_cash_minor}else{0});}
