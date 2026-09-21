@@ -54,7 +54,9 @@ describe("Portfolio native nullable snapshot boundary",()=>{
 
     render(<PortfolioPage accounts={accounts} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
 
-    const row=await screen.findByRole("row",{name:/EXM Example Corp/});
+    const row=(await screen.findByText("EXM")).closest("tr");
+    expect(row).toBeTruthy();
+    if(!row)throw new Error("Holding row was not rendered");
     expect(within(row).getByText("Price needed")).toBeTruthy();
     expect(within(row).getAllByText("Unknown").length).toBeGreaterThanOrEqual(3);
     expect(within(row).queryByText("$0.00")).toBeNull();
