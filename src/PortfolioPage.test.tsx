@@ -9,7 +9,7 @@ vi.mock("./repository", async (importOriginal) => {
 });
 
 import { PortfolioPage } from "./PortfolioPage";
-import { investmentRepository, normalizeInvestmentEvent, normalizePortfolioSnapshot } from "./repository";
+import { investmentRepository, normalizeInvestmentEvent, normalizePortfolioSnapshot, normalizeSecurityPrice } from "./repository";
 
 beforeEach(()=>{vi.mocked(investmentRepository.listSecurityPrices).mockResolvedValue([]);});
 afterEach(()=>{cleanup();vi.clearAllMocks();});
@@ -151,6 +151,11 @@ describe("Investment account workspace",()=>{
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(snapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);vi.mocked(investmentRepository.listSecurityPrices).mockResolvedValue([{id:"p1",securityId:"sec",observedAt:"2026-09-10",priceE8:110_000_000,currency:"USD",source:"manual"},{id:"p2",securityId:"sec",observedAt:"2026-09-20",priceE8:125_000_000,currency:"USD",source:"manual"}]);
   render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);expect(await screen.findByRole("img",{name:"Local price history chart"})).toBeTruthy();expect(screen.getByText(/Selected observation:/)).toBeTruthy();expect(screen.getAllByText(/Sep 20, 2026 · Manual/).length).toBeGreaterThanOrEqual(1);expect(screen.getByText(/older than selected as-of date/)).toBeTruthy();
  });
+ it("retains the selected as-of date when drilling from account holdings into security detail",async()=>{
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockImplementation(async(_ids,date)=>({...snapshot,asOfDate:date}));vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);const open=vi.fn();
+  const view=render(<PortfolioPage accounts={accounts} focus={{accountId:"inv"}} onShowAll={()=>{}} onOpenSecurity={open}/>);await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Choose date"}));fireEvent.change(screen.getByLabelText("Historical as of date"),{target:{value:"2026-01-15"}});await vi.waitFor(()=>expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledWith(["inv"],"2026-01-15"));fireEvent.click(screen.getByRole("button",{name:/EXM/}));expect(open).toHaveBeenCalledWith("inv","sec");view.rerender(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={open}/>);expect(await screen.findByDisplayValue("2026-01-15")).toBeTruthy();
+ });
+ it("normalizes nullable native price provenance",()=>{expect(normalizeSecurityPrice({id:"p",securityId:"sec",observedAt:"2026-01-01",priceE8:100_000_000,currency:"USD",source:"manual",provenance:null}).provenance).toBeUndefined();});
  it("normalizes native null activity fields to undefined",()=>{
   const normalized=normalizeInvestmentEvent({...buy,supersedesRevisionId:null,settlementDate:null,acquisitionDate:null,relatedAccountId:null,unitPriceE8:null,memo:null,externalId:null,provenance:null,groupId:null,correctionReason:null,securityId:null,quantityE8:null,grossCashMinor:null});
   expect(normalized.securityId).toBeUndefined();expect(normalized.quantityE8).toBeUndefined();expect(normalized.grossCashMinor).toBeUndefined();expect(normalized.acquisitionDate).toBeUndefined();expect(normalized.provenance).toBeUndefined();
