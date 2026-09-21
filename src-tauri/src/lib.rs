@@ -1574,6 +1574,10 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
     if version < 18 {
         let tx = connection.transaction().map_err(|e| e.to_string())?;
         tx.execute_batch(include_str!("../migrations/018_portfolio_foundation.sql")).map_err(|e| e.to_string())?;
+        let account_schema: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='accounts'", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if !account_schema.contains("'asset','investment'") { return Err("Portfolio Foundation migration did not extend the account type constraint".into()); }
+        let fk_error: Option<String> = tx.query_row("SELECT printf('%s rowid %s references %s', "table", rowid, parent) FROM pragma_foreign_key_check LIMIT 1", [], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+        if let Some(error) = fk_error { return Err(format!("Portfolio Foundation migration failed foreign-key validation: {error}")); }
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(18, 'Portfolio Foundation')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
