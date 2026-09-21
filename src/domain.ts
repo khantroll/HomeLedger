@@ -336,11 +336,31 @@ export interface RestoreResult {
   transactionCount: number;
 }
 
+export interface RecoverySnapshotInfo {
+  fileName: string;
+  createdAt: string;
+  reason: "automatic" | "pre-migration";
+  schemaVersion: number;
+  sizeBytes: number;
+}
+
+export interface BackupHealth {
+  lastSuccessfulAt?: string;
+  lastReason?: string;
+  lastError?: string;
+  retention: number;
+  snapshots: RecoverySnapshotInfo[];
+}
+
 export interface BackupRepository {
   exportSnapshot(): Promise<string>;
   saveEncryptedFile(contents: string): Promise<boolean>;
   chooseEncryptedFile(): Promise<string | null>;
   restoreSnapshot(snapshotBase64: string): Promise<RestoreResult>;
+  getHealth(): Promise<BackupHealth>;
+  setRetention(retention: number): Promise<BackupHealth>;
+  createRecoverySnapshot(): Promise<BackupHealth>;
+  restoreRecoverySnapshot(fileName: string): Promise<RestoreResult>;
 }
 
 export interface CreateAccountInput {
