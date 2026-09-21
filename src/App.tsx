@@ -455,7 +455,8 @@ function AccountsPage({
               <small>{[account.institution, account.ownerLabel, accountTypeLabel(account.type)].filter(Boolean).join(" · ")}</small>
             </div>
             <div className="account-balance">
-              <span className={account.balanceMinor < 0 ? "negative" : ""}>{account.type === "investment" ? "Investment portfolio" : formatMoney(account.balanceMinor, account.currency)}</span>\n              <div className="account-row-actions">
+              <span className={account.balanceMinor < 0 ? "negative" : ""}>{account.type === "investment" ? "Investment portfolio" : formatMoney(account.balanceMinor, account.currency)}</span>
+              <div className="account-row-actions">
                 <button
                   onClick={(event) => {
                     event.stopPropagation();
