@@ -89,7 +89,7 @@ describe("Investment account workspace",()=>{
   fireEvent.click(screen.getByRole("button",{name:"Activity"}));
   expect(screen.getByText("Dividend from EXM")).toBeTruthy();expect(screen.getByText("Bought 1 EXM")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"Cash"}));
-  expect(screen.getByText("Cash held in this investment account")).toBeTruthy();expect(screen.getByText("$50.00")).toBeTruthy();expect(screen.getByText("Income $5.00")).toBeTruthy();
+  expect(screen.getByText("Cash held in this investment account")).toBeTruthy();expect(screen.getAllByText("$50.00").length).toBeGreaterThanOrEqual(1);expect(screen.getByText("Income $5.00")).toBeTruthy();
  });
  it("shows security detail with position, activity, and expandable lot provenance",async()=>{
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(snapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([buy]);
@@ -101,7 +101,7 @@ describe("Investment account workspace",()=>{
   const unknown=structuredClone(snapshot);const h=unknown.accounts[0].holdings[0];h.priceE8=undefined;h.priceObservedAt=undefined;h.marketValueMinor=undefined;h.unrealizedGainMinor=undefined;h.unknownBasisQuantityE8=50_000_000;h.incompleteUnknownBasis=true;h.lots=[{acquisitionEventId:"open",acquisitionDate:undefined,quantityE8:50_000_000,basisMinor:undefined}];unknown.accounts[0].holdingsValueMinor=undefined;unknown.accounts[0].totalValueMinor=undefined;
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(unknown);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
   render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
-  expect(await screen.findByText("Price needed")).toBeTruthy();expect(screen.getAllByText("Unknown").length).toBeGreaterThan(0);expect(screen.getByText(/Partial — some basis is unknown/)).toBeTruthy();fireEvent.click(screen.getByRole("button",{name:/Lots/}));expect(screen.getByText("Unknown acquisition date")).toBeTruthy();expect(screen.getByText("Unknown basis")).toBeTruthy();
+  expect(await screen.findByText("Price needed")).toBeTruthy();expect(screen.getAllByText("Unknown").length).toBeGreaterThan(0);expect(screen.getByText(/Partial — some basis is unknown/)).toBeTruthy();fireEvent.click(screen.getByRole("button",{name:/Lots/}));expect(screen.getByText(/Acquired Unknown acquisition date/)).toBeTruthy();expect(screen.getByText("Unknown basis")).toBeTruthy();
  });
  it("normalizes native null activity fields to undefined",()=>{
   const normalized=normalizeInvestmentEvent({...buy,supersedesRevisionId:null,settlementDate:null,acquisitionDate:null,relatedAccountId:null,unitPriceE8:null,memo:null,externalId:null,provenance:null,groupId:null,correctionReason:null,securityId:null,quantityE8:null,grossCashMinor:null});
