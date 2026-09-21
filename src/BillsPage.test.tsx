@@ -65,6 +65,18 @@ describe("BillsPage",()=>{
     expect(onChanged).toHaveBeenCalledTimes(3);
   });
 
+
+  it("opens contextual overdue work on the relevant due date",async()=>{
+    render(<BillsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} onChanged={async()=>{}} today="2026-09-18" navigationFocus={{kind:"overdue",dueDate:"2026-09-15"}}/>);
+    expect(screen.getByRole("heading",{name:"Sep 15, 2026"})).toBeTruthy();
+    expect(screen.getByRole("gridcell",{name:/Sep 15, 2026/}).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("opens the existing auto-post review from contextual navigation",()=>{
+    render(<BillsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} onChanged={async()=>{}} today="2026-09-18" navigationFocus={{kind:"autoPost"}}/>);
+    expect(screen.getByRole("dialog",{name:/Review automatic posting/i})).toBeTruthy();
+  });
+
   it("creates deposits using financial-language recurrence controls",async()=>{
     const user=userEvent.setup(),onChanged=vi.fn(async()=>{});
     const create=vi.spyOn(financeRepository,"createScheduledTransaction").mockImplementation(async input=>({id:"new",...input}));
