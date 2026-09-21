@@ -1,22 +1,14 @@
-PRAGMA defer_foreign_keys = ON;
-
-CREATE TABLE accounts_new (
-  id TEXT PRIMARY KEY,
-  household_id TEXT NOT NULL DEFAULT 'local-household' REFERENCES households(id),
-  name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),
-  institution TEXT CHECK(institution IS NULL OR length(institution) <= 80),
-  account_type TEXT NOT NULL CHECK(account_type IN ('checking','savings','credit','cash','loan','asset','investment')),
-  currency TEXT NOT NULL CHECK(length(currency) = 3),
-  opening_balance_minor INTEGER NOT NULL DEFAULT 0,
-  owner_label TEXT NOT NULL CHECK(length(owner_label) BETWEEN 1 AND 80),
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  modified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  archived_at TEXT
-);
-INSERT INTO accounts_new SELECT * FROM accounts;
-DROP TABLE accounts;
-ALTER TABLE accounts_new RENAME TO accounts;
+-- Extending the account type in-place is deliberate. Rebuilding the parent accounts
+-- table while foreign keys are active can invalidate populated child relationships.
+-- sqlite_schema is changed narrowly, with FK enforcement left enabled; apply_migrations
+-- validates the exact replacement and runs foreign_key_check before committing v18.
+PRAGMA writable_schema = ON;
+UPDATE sqlite_schema
+SET sql = replace(sql,
+  "account_type IN ('checking','savings','credit','cash','loan','asset')",
+  "account_type IN ('checking','savings','credit','cash','loan','asset','investment')")
+WHERE type='table' AND name='accounts';
+PRAGMA writable_schema = RESET;
 
 CREATE TABLE investment_account_settings (
   account_id TEXT PRIMARY KEY REFERENCES accounts(id),
