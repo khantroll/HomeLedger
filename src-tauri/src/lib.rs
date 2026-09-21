@@ -1402,9 +1402,8 @@ fn list_recovery_snapshots(data_dir: &Path) -> Result<Vec<RecoverySnapshotInfo>,
         let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
         let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
         let schema_version = connection.query_row("SELECT COALESCE(MAX(version),0) FROM schema_migrations", [], |row| row.get(0)).unwrap_or(0);
-        let parts: Vec<&str> = file_name.trim_end_matches(".db").split('-').collect();
         let reason = if file_name.contains("-pre-migration-") { "pre-migration" } else { "automatic" }.to_string();
-        let created_at = parts.iter().skip(2).take(2).cloned().collect::<Vec<_>>().join("-");
+        let created_at = meta.modified().ok().map(chrono::DateTime::<chrono::Utc>::from).map(|v| v.to_rfc3339()).unwrap_or_default();
         result.push(RecoverySnapshotInfo { file_name, created_at, reason, schema_version, size_bytes: meta.len() });
     }
     result.sort_by(|a,b| b.file_name.cmp(&a.file_name));
