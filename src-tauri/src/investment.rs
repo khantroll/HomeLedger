@@ -1,0 +1,224 @@
+use crate::DbState;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use tauri::State;
+use uuid::Uuid;
+
+pub const SCALE_E8: i64 = 100_000_000;
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct InvestmentAccountSettings { pub account_id:String, pub account_kind:String, pub tax_treatment:String, pub default_lot_method:String, pub opening_cash_minor:i64, pub opening_date:String }
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct InvestmentAccountSettingsRequest { pub account_id:String, pub account_kind:String, pub tax_treatment:String, pub opening_cash_minor:i64, pub opening_date:String }
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct Security { pub id:String, pub security_type:String, pub name:String, pub symbol:Option<String>, pub exchange_mic:Option<String>, pub currency:String, pub archived:bool }
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct SecurityRequest { pub security_type:String, pub name:String, pub symbol:Option<String>, pub exchange_mic:Option<String>, pub currency:String }
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct SecurityIdentifier { pub security_id:String, pub namespace:String, pub value:String }
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct InvestmentEventRevision {
+    pub id:String,pub event_id:String,pub revision_number:i64,pub supersedes_revision_id:Option<String>,
+    pub account_id:String,pub event_type:String,pub trade_date:String,pub settlement_date:Option<String>,pub acquisition_date:Option<String>,
+    pub security_id:Option<String>,pub related_account_id:Option<String>,pub quantity_e8:Option<i64>,pub unit_price_e8:Option<i64>,
+    pub gross_cash_minor:Option<i64>,pub cash_effect_minor:i64,pub income_minor:i64,pub acquisition_funding_minor:i64,pub fee_minor:i64,
+    pub basis_effect_minor:i64,pub split_numerator:Option<i64>,pub split_denominator:Option<i64>,pub status:String,pub source:String,
+    pub memo:Option<String>,pub external_id:Option<String>,pub provenance:Option<String>,pub group_id:Option<String>,pub correction_reason:Option<String>
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct InvestmentEventRequest {
+    pub account_id:String,pub event_type:String,pub trade_date:String,pub settlement_date:Option<String>,pub acquisition_date:Option<String>,
+    pub security_id:Option<String>,pub related_account_id:Option<String>,pub quantity_e8:Option<i64>,pub unit_price_e8:Option<i64>,
+    pub gross_cash_minor:Option<i64>,#[serde(default)] pub cash_effect_minor:i64,#[serde(default)] pub income_minor:i64,
+    #[serde(default)] pub acquisition_funding_minor:i64,#[serde(default)] pub fee_minor:i64,#[serde(default)] pub basis_effect_minor:i64,
+    pub split_numerator:Option<i64>,pub split_denominator:Option<i64>,pub status:String,pub source:String,pub memo:Option<String>,
+    pub external_id:Option<String>,pub provenance:Option<String>,pub group_id:Option<String>
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct LotAllocation { pub acquisition_event_id:String, pub quantity_e8:i64 }
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct SetLotAllocationsRequest { pub sale_event_id:String, pub allocations:Vec<LotAllocation> }
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct SecurityPrice { pub id:String,pub security_id:String,pub observed_at:String,pub price_e8:i64,pub currency:String,pub source:String,pub provenance:Option<String> }
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct SecurityPriceRequest { pub security_id:String,pub observed_at:String,pub price_e8:i64,pub currency:String,pub provenance:Option<String> }
+
+#[derive(Clone)]
+struct Lot { event_id:String, acquisition_date:String, quantity_e8:i64, basis_minor:Option<i64> }
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct LotSnapshot { pub acquisition_event_id:String,pub acquisition_date:String,pub quantity_e8:i64,pub basis_minor:Option<i64> }
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all="camelCase")]
+pub struct RealizedResult {
+    pub known_basis_quantity_e8:i64,pub known_disposed_basis_minor:i64,pub calculable_proceeds_minor:i64,pub calculable_gain_minor:i64,
+    pub unknown_basis_quantity_e8:i64,pub unknown_basis_proceeds_minor:i64,pub incomplete_unknown_basis:bool
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct HoldingSnapshot {
+    pub account_id:String,pub security_id:String,pub quantity_e8:i64,pub known_basis_minor:i64,pub unknown_basis_quantity_e8:i64,
+    pub price_e8:Option<i64>,pub price_observed_at:Option<String>,pub market_value_minor:Option<i64>,pub unrealized_gain_minor:Option<i64>,
+    pub incomplete_unknown_basis:bool,pub lots:Vec<LotSnapshot>,pub realized:RealizedResult
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct PortfolioAccountSnapshot { pub account_id:String,pub cash_minor:i64,pub holdings_value_minor:Option<i64>,pub total_value_minor:Option<i64>,pub holdings:Vec<HoldingSnapshot> }
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct PortfolioSnapshot { pub as_of_date:String,pub accounts:Vec<PortfolioAccountSnapshot> }
+
+fn clean(value:String, label:&str, max:usize)->Result<String,String>{let v=value.trim().to_string();if v.is_empty(){return Err(format!("{label} is required"));}if v.chars().count()>max{return Err(format!("{label} is too long"));}Ok(v)}
+fn optional(value:Option<String>,max:usize)->Result<Option<String>,String>{match value.map(|v|v.trim().to_string()).filter(|v|!v.is_empty()){Some(v) if v.chars().count()>max=>Err("Optional field is too long".into()),v=>Ok(v)}}
+fn date(value:&str,label:&str)->Result<(),String>{chrono::NaiveDate::parse_from_str(value,"%Y-%m-%d").map(|_|()).map_err(|_|format!("{label} must use YYYY-MM-DD"))}
+fn currency(value:String)->Result<String,String>{let v=value.trim().to_uppercase();if v.len()!=3||!v.chars().all(|c|c.is_ascii_alphabetic()){Err("Currency must be a three-letter code".into())}else{Ok(v)}}
+fn account_is_investment(c:&Connection,id:&str)->Result<bool,String>{c.query_row("SELECT account_type='investment' FROM accounts WHERE id=?1",[id],|r|r.get(0)).optional().map_err(|e|e.to_string())?.ok_or("Account does not exist".into())}
+fn security_exists(c:&Connection,id:&str)->Result<bool,String>{c.query_row("SELECT EXISTS(SELECT 1 FROM securities WHERE id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())}
+
+fn validate_settings(c:&Connection,r:&InvestmentAccountSettingsRequest)->Result<(),String>{
+    if !account_is_investment(c,&r.account_id)? {return Err("Investment settings require an investment account".into())}
+    if !["brokerage","retirement","education","other"].contains(&r.account_kind.as_str()){return Err("Unsupported investment account kind".into())}
+    if !["taxable","tax_deferred","tax_exempt","unknown"].contains(&r.tax_treatment.as_str()){return Err("Unsupported tax treatment".into())}
+    date(&r.opening_date,"Opening date")
+}
+pub fn upsert_settings_inner(c:&Connection,r:InvestmentAccountSettingsRequest)->Result<InvestmentAccountSettings,String>{
+    validate_settings(c,&r)?;
+    c.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,default_lot_method,opening_cash_minor,opening_date) VALUES(?1,?2,?3,'fifo',?4,?5) ON CONFLICT(account_id) DO UPDATE SET account_kind=excluded.account_kind,tax_treatment=excluded.tax_treatment,opening_cash_minor=excluded.opening_cash_minor,opening_date=excluded.opening_date,modified_at=CURRENT_TIMESTAMP",params![r.account_id,r.account_kind,r.tax_treatment,r.opening_cash_minor,r.opening_date]).map_err(|e|e.to_string())?;
+    get_settings_inner(c,&r.account_id)?.ok_or("Could not save investment settings".into())
+}
+pub fn get_settings_inner(c:&Connection,id:&str)->Result<Option<InvestmentAccountSettings>,String>{
+    c.query_row("SELECT account_id,account_kind,tax_treatment,default_lot_method,opening_cash_minor,opening_date FROM investment_account_settings WHERE account_id=?1",[id],|r|Ok(InvestmentAccountSettings{account_id:r.get(0)?,account_kind:r.get(1)?,tax_treatment:r.get(2)?,default_lot_method:r.get(3)?,opening_cash_minor:r.get(4)?,opening_date:r.get(5)?})).optional().map_err(|e|e.to_string())
+}
+#[tauri::command] pub fn get_investment_account_settings(account_id:String,state:State<DbState>)->Result<Option<InvestmentAccountSettings>,String>{get_settings_inner(&state.0.lock().map_err(|_|"Database lock failed")?,&account_id)}
+#[tauri::command] pub fn save_investment_account_settings(request:InvestmentAccountSettingsRequest,state:State<DbState>)->Result<InvestmentAccountSettings,String>{upsert_settings_inner(&state.0.lock().map_err(|_|"Database lock failed")?,request)}
+
+fn security_row(r:&rusqlite::Row<'_>)->rusqlite::Result<Security>{Ok(Security{id:r.get(0)?,security_type:r.get(1)?,name:r.get(2)?,symbol:r.get(3)?,exchange_mic:r.get(4)?,currency:r.get(5)?,archived:r.get(6)?})}
+#[tauri::command] pub fn list_securities(include_archived:Option<bool>,state:State<DbState>)->Result<Vec<Security>,String>{
+ let c=state.0.lock().map_err(|_|"Database lock failed")?;let sql=if include_archived.unwrap_or(false){"SELECT id,security_type,name,symbol,exchange_mic,currency,archived_at IS NOT NULL FROM securities ORDER BY name,id"}else{"SELECT id,security_type,name,symbol,exchange_mic,currency,archived_at IS NOT NULL FROM securities WHERE archived_at IS NULL ORDER BY name,id"};
+ let mut s=c.prepare(sql).map_err(|e|e.to_string())?;let rows=s.query_map([],security_row).map_err(|e|e.to_string())?;rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+}
+fn validate_security(r:&mut SecurityRequest)->Result<(),String>{if !["stock","etf","mutual_fund","bond","cash_equivalent","other"].contains(&r.security_type.as_str()){return Err("Unsupported security type".into())}r.name=clean(std::mem::take(&mut r.name),"Security name",160)?;r.symbol=optional(r.symbol.take(),40)?;r.exchange_mic=optional(r.exchange_mic.take(),20)?;r.currency=currency(std::mem::take(&mut r.currency))?;Ok(())}
+#[tauri::command] pub fn create_security(mut request:SecurityRequest,state:State<DbState>)->Result<Security,String>{validate_security(&mut request)?;let c=state.0.lock().map_err(|_|"Database lock failed")?;let id=Uuid::new_v4().to_string();c.execute("INSERT INTO securities(id,security_type,name,symbol,exchange_mic,currency) VALUES(?1,?2,?3,?4,?5,?6)",params![id,request.security_type,request.name,request.symbol,request.exchange_mic,request.currency]).map_err(|e|e.to_string())?;c.query_row("SELECT id,security_type,name,symbol,exchange_mic,currency,0 FROM securities WHERE id=?1",[id],security_row).map_err(|e|e.to_string())}
+#[tauri::command] pub fn update_security(security_id:String,mut request:SecurityRequest,state:State<DbState>)->Result<Security,String>{validate_security(&mut request)?;let c=state.0.lock().map_err(|_|"Database lock failed")?;if c.execute("UPDATE securities SET security_type=?2,name=?3,symbol=?4,exchange_mic=?5,currency=?6,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![security_id,request.security_type,request.name,request.symbol,request.exchange_mic,request.currency]).map_err(|e|e.to_string())?!=1{return Err("Security does not exist".into())}c.query_row("SELECT id,security_type,name,symbol,exchange_mic,currency,archived_at IS NOT NULL FROM securities WHERE id=?1",[security_id],security_row).map_err(|e|e.to_string())}
+#[tauri::command] pub fn set_security_archived(security_id:String,archived:bool,state:State<DbState>)->Result<(),String>{let c=state.0.lock().map_err(|_|"Database lock failed")?;let changed=if archived{c.execute("UPDATE securities SET archived_at=CURRENT_TIMESTAMP,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND archived_at IS NULL",[security_id])}else{c.execute("UPDATE securities SET archived_at=NULL,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND archived_at IS NOT NULL",[security_id])}.map_err(|e|e.to_string())?;if changed==0&&!security_exists(&c,&security_id)?{Err("Security does not exist".into())}else{Ok(())}}
+#[tauri::command] pub fn add_security_identifier(security_id:String,namespace:String,value:String,state:State<DbState>)->Result<SecurityIdentifier,String>{let ns=clean(namespace,"Identifier namespace",40)?.to_uppercase();let val=clean(value,"Identifier value",160)?;let c=state.0.lock().map_err(|_|"Database lock failed")?;if !security_exists(&c,&security_id)?{return Err("Security does not exist".into())}c.execute("INSERT INTO security_identifiers(security_id,namespace,value) VALUES(?1,?2,?3)",params![security_id,ns,val]).map_err(|e|e.to_string())?;Ok(SecurityIdentifier{security_id,namespace:ns,value:val})}
+#[tauri::command] pub fn remove_security_identifier(security_id:String,namespace:String,value:String,state:State<DbState>)->Result<(),String>{let c=state.0.lock().map_err(|_|"Database lock failed")?;c.execute("DELETE FROM security_identifiers WHERE security_id=?1 AND namespace=?2 AND value=?3",params![security_id,namespace.to_uppercase(),value]).map_err(|e|e.to_string())?;Ok(())}
+
+fn validate_event(c:&Connection,r:&mut InvestmentEventRequest)->Result<(),String>{
+ if !account_is_investment(c,&r.account_id)?{return Err("Investment events require an investment account".into())}
+ if !["buy","sell","dividend","reinvest_dividend","interest","fee","split","return_of_capital","cash_transfer","security_transfer","opening_position","basis_adjustment"].contains(&r.event_type.as_str()){return Err("Unsupported investment event type".into())}
+ if !["review","pending","cleared","reconciled"].contains(&r.status.as_str()){return Err("Unsupported investment event status".into())}
+ if !["manual","import","broker"].contains(&r.source.as_str()){return Err("Unsupported investment event source".into())}
+ date(&r.trade_date,"Trade date")?;if let Some(v)=&r.settlement_date{date(v,"Settlement date")?}if let Some(v)=&r.acquisition_date{date(v,"Acquisition date")?}
+ if let Some(id)=&r.security_id{if !security_exists(c,id)?{return Err("Security does not exist".into())}}
+ r.memo=optional(r.memo.take(),500)?;r.external_id=optional(r.external_id.take(),200)?;r.provenance=optional(r.provenance.take(),1000)?;
+ let needs_security=!matches!(r.event_type.as_str(),"interest"|"fee"|"cash_transfer");
+ if needs_security&&r.security_id.is_none(){return Err("This event type requires a security".into())}
+ if r.fee_minor<0||r.income_minor<0||r.acquisition_funding_minor<0{return Err("Fees, income and acquisition funding cannot be negative".into())}
+ match r.event_type.as_str(){
+  "buy"=>{if r.quantity_e8.unwrap_or(0)<=0||r.cash_effect_minor>=0||r.acquisition_funding_minor<=0{return Err("Buy requires positive quantity/acquisition funding and negative cash effect".into())}}
+  "sell"=>{if r.quantity_e8.unwrap_or(0)<=0||r.cash_effect_minor<=0{return Err("Sell requires positive quantity and positive net cash proceeds".into())}}
+  "dividend"=>{if r.income_minor<=0||r.cash_effect_minor<=0{return Err("Dividend requires positive income and cash".into())}}
+  "reinvest_dividend"=>{if r.quantity_e8.unwrap_or(0)<=0||r.income_minor<=0||r.acquisition_funding_minor<=0||r.cash_effect_minor!=r.income_minor-r.acquisition_funding_minor-r.fee_minor{return Err("Reinvested dividend must preserve income and acquisition funding with deterministic net cash".into())}}
+  "interest"=>{if r.income_minor<=0||r.cash_effect_minor<=0{return Err("Interest requires positive income and cash".into())}}
+  "fee"=>{if r.cash_effect_minor>=0{return Err("Standalone fee must reduce cash".into())}}
+  "split"=>{if r.split_numerator.unwrap_or(0)<=0||r.split_denominator.unwrap_or(0)<=0{return Err("Split requires a positive ratio".into())}}
+  "return_of_capital"=>{if r.cash_effect_minor<=0||r.basis_effect_minor>=0{return Err("Return of capital requires positive cash and negative basis effect".into())}}
+  "cash_transfer"=>{if r.related_account_id.is_none()||r.cash_effect_minor>=0{return Err("Cash transfer requires destination account and negative source cash effect".into())}}
+  "security_transfer"=>{if r.related_account_id.is_none()||r.quantity_e8.unwrap_or(0)<=0{return Err("Security transfer requires destination account and positive quantity".into())}}
+  "opening_position"=>{if r.quantity_e8.unwrap_or(0)<=0||r.cash_effect_minor!=0{return Err("Opening position requires positive quantity and no cash effect".into())}}
+  "basis_adjustment"=>{if r.basis_effect_minor==0||r.cash_effect_minor!=0{return Err("Basis adjustment requires basis change and no cash effect".into())}}
+  _=>{}
+ }
+ if matches!(r.event_type.as_str(),"cash_transfer"|"security_transfer"){let id=r.related_account_id.as_ref().unwrap();if id==&r.account_id{return Err("Transfer destination must differ from source".into())}let _:String=c.query_row("SELECT currency FROM accounts WHERE id=?1",[id],|x|x.get(0)).optional().map_err(|e|e.to_string())?.ok_or("Transfer destination does not exist")?;}
+ Ok(())
+}
+fn insert_revision(c:&Connection,event_id:&str,revision_number:i64,supersedes:Option<&str>,r:&InvestmentEventRequest,reason:Option<&str>)->Result<InvestmentEventRevision,String>{
+ let id=Uuid::new_v4().to_string();c.execute("INSERT INTO investment_event_revisions(id,event_id,revision_number,supersedes_revision_id,event_type,trade_date,settlement_date,acquisition_date,security_id,related_account_id,quantity_e8,unit_price_e8,gross_cash_minor,cash_effect_minor,income_minor,acquisition_funding_minor,fee_minor,basis_effect_minor,split_numerator,split_denominator,status,source,memo,external_id,provenance,group_id,correction_reason,corrected_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,CASE WHEN ?27 IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)",params![id,event_id,revision_number,supersedes,r.event_type,r.trade_date,r.settlement_date,r.acquisition_date,r.security_id,r.related_account_id,r.quantity_e8,r.unit_price_e8,r.gross_cash_minor,r.cash_effect_minor,r.income_minor,r.acquisition_funding_minor,r.fee_minor,r.basis_effect_minor,r.split_numerator,r.split_denominator,r.status,r.source,r.memo,r.external_id,r.provenance,r.group_id,reason]).map_err(|e|e.to_string())?;
+ c.execute("UPDATE investment_events SET current_revision_id=?2 WHERE id=?1",params![event_id,id]).map_err(|e|e.to_string())?;get_revision(c,&id)
+}
+fn get_revision(c:&Connection,id:&str)->Result<InvestmentEventRevision,String>{c.query_row("SELECT r.id,r.event_id,r.revision_number,r.supersedes_revision_id,e.account_id,r.event_type,r.trade_date,r.settlement_date,r.acquisition_date,r.security_id,r.related_account_id,r.quantity_e8,r.unit_price_e8,r.gross_cash_minor,r.cash_effect_minor,r.income_minor,r.acquisition_funding_minor,r.fee_minor,r.basis_effect_minor,r.split_numerator,r.split_denominator,r.status,r.source,r.memo,r.external_id,r.provenance,r.group_id,r.correction_reason FROM investment_event_revisions r JOIN investment_events e ON e.id=r.event_id WHERE r.id=?1",[id],|x|Ok(InvestmentEventRevision{id:x.get(0)?,event_id:x.get(1)?,revision_number:x.get(2)?,supersedes_revision_id:x.get(3)?,account_id:x.get(4)?,event_type:x.get(5)?,trade_date:x.get(6)?,settlement_date:x.get(7)?,acquisition_date:x.get(8)?,security_id:x.get(9)?,related_account_id:x.get(10)?,quantity_e8:x.get(11)?,unit_price_e8:x.get(12)?,gross_cash_minor:x.get(13)?,cash_effect_minor:x.get(14)?,income_minor:x.get(15)?,acquisition_funding_minor:x.get(16)?,fee_minor:x.get(17)?,basis_effect_minor:x.get(18)?,split_numerator:x.get(19)?,split_denominator:x.get(20)?,status:x.get(21)?,source:x.get(22)?,memo:x.get(23)?,external_id:x.get(24)?,provenance:x.get(25)?,group_id:x.get(26)?,correction_reason:x.get(27)?})).map_err(|e|e.to_string())}
+pub fn create_event_inner(c:&mut Connection,mut r:InvestmentEventRequest)->Result<InvestmentEventRevision,String>{validate_event(c,&mut r)?;let tx=c.transaction().map_err(|e|e.to_string())?;let event_id=Uuid::new_v4().to_string();tx.execute("INSERT INTO investment_events(id,account_id) VALUES(?1,?2)",params![event_id,r.account_id]).map_err(|e|e.to_string())?;let result=insert_revision(&tx,&event_id,1,None,&r,None)?;tx.commit().map_err(|e|e.to_string())?;Ok(result)}
+#[tauri::command] pub fn create_investment_event(request:InvestmentEventRequest,state:State<DbState>)->Result<InvestmentEventRevision,String>{create_event_inner(&mut state.0.lock().map_err(|_|"Database lock failed")?,request)}
+#[tauri::command] pub fn update_pending_investment_event(event_id:String,mut request:InvestmentEventRequest,state:State<DbState>)->Result<InvestmentEventRevision,String>{let c=state.0.lock().map_err(|_|"Database lock failed")?;validate_event(&c,&mut request)?;let (rid,status,account):(String,String,String)=c.query_row("SELECT r.id,r.status,e.account_id FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE e.id=?1",[&event_id],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(|e|e.to_string())?.ok_or("Investment event does not exist")?;if !matches!(status.as_str(),"pending"|"review"){return Err("Cleared or reconciled events require guarded correction".into())}if account!=request.account_id{return Err("Event account cannot be changed".into())}c.execute("UPDATE investment_event_revisions SET event_type=?2,trade_date=?3,settlement_date=?4,acquisition_date=?5,security_id=?6,related_account_id=?7,quantity_e8=?8,unit_price_e8=?9,gross_cash_minor=?10,cash_effect_minor=?11,income_minor=?12,acquisition_funding_minor=?13,fee_minor=?14,basis_effect_minor=?15,split_numerator=?16,split_denominator=?17,status=?18,source=?19,memo=?20,external_id=?21,provenance=?22,group_id=?23 WHERE id=?1",params![rid,request.event_type,request.trade_date,request.settlement_date,request.acquisition_date,request.security_id,request.related_account_id,request.quantity_e8,request.unit_price_e8,request.gross_cash_minor,request.cash_effect_minor,request.income_minor,request.acquisition_funding_minor,request.fee_minor,request.basis_effect_minor,request.split_numerator,request.split_denominator,request.status,request.source,request.memo,request.external_id,request.provenance,request.group_id]).map_err(|e|e.to_string())?;get_revision(&c,&rid)}
+#[tauri::command] pub fn correct_historical_investment_event(event_id:String,mut replacement:InvestmentEventRequest,reason:String,state:State<DbState>)->Result<InvestmentEventRevision,String>{let reason=clean(reason,"Correction reason",500)?;let mut c=state.0.lock().map_err(|_|"Database lock failed")?;validate_event(&c,&mut replacement)?;let tx=c.transaction().map_err(|e|e.to_string())?;let (rid,rev,status,account):(String,i64,String,String)=tx.query_row("SELECT r.id,r.revision_number,r.status,e.account_id FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE e.id=?1",[&event_id],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).optional().map_err(|e|e.to_string())?.ok_or("Investment event does not exist")?;if !matches!(status.as_str(),"cleared"|"reconciled"){return Err("Only cleared or reconciled events use historical correction".into())}if account!=replacement.account_id{return Err("Event account cannot be changed".into())}tx.execute("DELETE FROM investment_lot_allocations WHERE sale_revision_id=?1",[&rid]).map_err(|e|e.to_string())?;let result=insert_revision(&tx,&event_id,rev+1,Some(&rid),&replacement,Some(&reason))?;tx.commit().map_err(|e|e.to_string())?;Ok(result)}
+#[tauri::command] pub fn get_investment_event_history(event_id:String,state:State<DbState>)->Result<Vec<InvestmentEventRevision>,String>{let c=state.0.lock().map_err(|_|"Database lock failed")?;let mut s=c.prepare("SELECT id FROM investment_event_revisions WHERE event_id=?1 ORDER BY revision_number").map_err(|e|e.to_string())?;let ids=s.query_map([event_id],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;ids.iter().map(|id|get_revision(&c,id)).collect()}
+fn effective_events(c:&Connection,account_id:Option<&str>,as_of:&str)->Result<Vec<InvestmentEventRevision>,String>{date(as_of,"As-of date")?;let sql=if account_id.is_some(){"SELECT e.current_revision_id FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE (e.account_id=?1 OR (r.event_type IN ('cash_transfer','security_transfer') AND r.related_account_id=?1)) AND r.trade_date<=?2 AND r.status<>'review' ORDER BY r.trade_date,e.id"}else{"SELECT e.current_revision_id FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE r.trade_date<=?1 AND r.status<>'review' ORDER BY r.trade_date,e.id"};let mut s=c.prepare(sql).map_err(|e|e.to_string())?;let ids=if let Some(a)=account_id{s.query_map(params![a,as_of],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>()}else{s.query_map([as_of],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>()}.map_err(|e|e.to_string())?;ids.iter().map(|id|get_revision(c,id)).collect()}
+
+#[tauri::command] pub fn set_specific_lot_allocations(request:SetLotAllocationsRequest,state:State<DbState>)->Result<(),String>{let mut c=state.0.lock().map_err(|_|"Database lock failed")?;let tx=c.transaction().map_err(|e|e.to_string())?;let (rid,status,qty):(String,String,i64)=tx.query_row("SELECT r.id,r.status,COALESCE(r.quantity_e8,0) FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE e.id=?1 AND r.event_type='sell'",[&request.sale_event_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?.ok_or("Sale event does not exist")?;if status=="reconciled"{return Err("Reconciled sale allocations require historical correction".into())}let total:i128=request.allocations.iter().map(|x|x.quantity_e8 as i128).sum();if request.allocations.is_empty()||request.allocations.iter().any(|x|x.quantity_e8<=0)||total!=qty as i128{return Err("Specific-lot allocations must exactly equal disposed quantity".into())}tx.execute("DELETE FROM investment_lot_allocations WHERE sale_revision_id=?1",[&rid]).map_err(|e|e.to_string())?;for a in request.allocations{let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM investment_events WHERE id=?1)",[&a.acquisition_event_id],|r|r.get(0)).map_err(|e|e.to_string())?;if !exists{return Err("Allocated acquisition event does not exist".into())}tx.execute("INSERT INTO investment_lot_allocations(sale_revision_id,acquisition_event_id,quantity_e8) VALUES(?1,?2,?3)",params![rid,a.acquisition_event_id,a.quantity_e8]).map_err(|e|e.to_string())?;}tx.commit().map_err(|e|e.to_string())}
+
+fn proportional(total:i64,part:i64,whole:i64)->Result<i64,String>{if whole<=0{return Err("Cannot allocate across zero quantity".into())}let n=(total as i128).checked_mul(part as i128).ok_or("Investment arithmetic overflow")?;let q=n/(whole as i128);i64::try_from(q).map_err(|_|"Investment arithmetic overflow".into())}
+fn value_minor(quantity:i64,price_e8:i64)->Result<i64,String>{let n=(quantity as i128).checked_mul(price_e8 as i128).ok_or("Investment arithmetic overflow")?;let denom=(SCALE_E8 as i128)*(SCALE_E8 as i128);let cents=n.checked_mul(100).ok_or("Investment arithmetic overflow")?;let rounded=if cents>=0{(cents+denom/2)/denom}else{(cents-denom/2)/denom};i64::try_from(rounded).map_err(|_|"Investment arithmetic overflow".into())}
+
+fn allocations(c:&Connection,revision_id:&str)->Result<Vec<LotAllocation>,String>{let mut s=c.prepare("SELECT acquisition_event_id,quantity_e8 FROM investment_lot_allocations WHERE sale_revision_id=?1 ORDER BY acquisition_event_id").map_err(|e|e.to_string())?;s.query_map([revision_id],|r|Ok(LotAllocation{acquisition_event_id:r.get(0)?,quantity_e8:r.get(1)?})).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())}
+fn consume(lots:&mut Vec<Lot>,qty:i64,specific:&[LotAllocation],proceeds:i64)->Result<RealizedResult,String>{
+ let available:i64=lots.iter().map(|l|l.quantity_e8).sum();if qty>available{return Err("Sale or transfer exceeds available units".into())}
+ let mut needs:Vec<(usize,i64)>=vec![];
+ if specific.is_empty(){let mut left=qty;for(i,l)in lots.iter().enumerate(){if left==0{break}let take=left.min(l.quantity_e8);if take>0{needs.push((i,take));left-=take;}}}
+ else{for a in specific{let i=lots.iter().position(|l|l.event_id==a.acquisition_event_id).ok_or("Specific lot is not open")?;if a.quantity_e8>lots[i].quantity_e8{return Err("Specific-lot allocation exceeds open lot")};needs.push((i,a.quantity_e8));}}
+ let mut out=RealizedResult::default();let mut allocated_proceeds=0i64;
+ for(pos,(i,take))in needs.iter().enumerate(){let p=if pos+1==needs.len(){proceeds-allocated_proceeds}else{proportional(proceeds,*take,qty)?};allocated_proceeds+=p;let lot=&mut lots[*i];match lot.basis_minor{Some(b)=>{let disposed=if *take==lot.quantity_e8{b}else{proportional(b,*take,lot.quantity_e8)?};lot.basis_minor=Some(b-disposed);out.known_basis_quantity_e8+=*take;out.known_disposed_basis_minor=out.known_disposed_basis_minor.checked_add(disposed).ok_or("Investment arithmetic overflow")?;out.calculable_proceeds_minor=out.calculable_proceeds_minor.checked_add(p).ok_or("Investment arithmetic overflow")?},None=>{out.unknown_basis_quantity_e8+=*take;out.unknown_basis_proceeds_minor=out.unknown_basis_proceeds_minor.checked_add(p).ok_or("Investment arithmetic overflow")?}}lot.quantity_e8-=*take;}
+ lots.retain(|l|l.quantity_e8>0);out.calculable_gain_minor=out.calculable_proceeds_minor-out.known_disposed_basis_minor;out.incomplete_unknown_basis=out.unknown_basis_quantity_e8>0;Ok(out)
+}
+fn price_at(c:&Connection,security:&str,as_of:&str)->Result<Option<(i64,String)>,String>{c.query_row("SELECT price_e8,observed_at FROM security_prices WHERE security_id=?1 AND substr(observed_at,1,10)<=?2 ORDER BY observed_at DESC,id DESC LIMIT 1",params![security,as_of],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())}
+
+pub fn snapshot_inner(c:&Connection,account_ids:Option<&[String]>,as_of:&str)->Result<PortfolioSnapshot,String>{
+ date(as_of,"As-of date")?;let mut ids=if let Some(v)=account_ids{v.to_vec()}else{let mut s=c.prepare("SELECT id FROM accounts WHERE account_type='investment' AND archived_at IS NULL ORDER BY sort_order,id").map_err(|e|e.to_string())?;s.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?};
+ ids.sort();ids.dedup();let all=effective_events(c,None,as_of)?;let mut lotmap:HashMap<(String,String),Vec<Lot>>=HashMap::new();let mut realized:HashMap<(String,String),RealizedResult>=HashMap::new();let mut cash:HashMap<String,i64>=HashMap::new();
+ for id in &ids{let settings=get_settings_inner(c,id)?.ok_or_else(||format!("Investment account {id} has no settings"))?;cash.insert(id.clone(),if settings.opening_date.as_str()<=as_of{settings.opening_cash_minor}else{0});}
+ for e in all{
+  let target_in_scope=ids.contains(&e.account_id);let related_in_scope=e.related_account_id.as_ref().is_some_and(|x|ids.contains(x));
+  if !target_in_scope&&!related_in_scope{continue}
+  let cash_date=e.settlement_date.as_deref().unwrap_or(&e.trade_date);
+  if cash_date<=as_of&&target_in_scope{*cash.entry(e.account_id.clone()).or_default()=cash.get(&e.account_id).copied().unwrap_or(0).checked_add(e.cash_effect_minor).ok_or("Investment cash overflow")?;}
+  if cash_date<=as_of&&matches!(e.event_type.as_str(),"cash_transfer")&&related_in_scope{let dest=e.related_account_id.clone().unwrap();*cash.entry(dest.clone()).or_default()=cash.get(&dest).copied().unwrap_or(0).checked_add(-e.cash_effect_minor).ok_or("Investment cash overflow")?;}
+  let Some(sec)=e.security_id.clone() else{continue};
+  let key=(e.account_id.clone(),sec.clone());
+  match e.event_type.as_str(){
+   "buy"|"reinvest_dividend"=>{if target_in_scope{lotmap.entry(key).or_default().push(Lot{event_id:e.event_id.clone(),acquisition_date:e.acquisition_date.clone().unwrap_or(e.trade_date.clone()),quantity_e8:e.quantity_e8.unwrap(),basis_minor:Some(e.acquisition_funding_minor.checked_add(e.fee_minor).ok_or("Investment basis overflow")?)});}}
+   "opening_position"=>{if target_in_scope{lotmap.entry(key).or_default().push(Lot{event_id:e.event_id.clone(),acquisition_date:e.acquisition_date.clone().unwrap_or(e.trade_date.clone()),quantity_e8:e.quantity_e8.unwrap(),basis_minor:e.gross_cash_minor});}}
+   "sell"=>{if target_in_scope{let a=allocations(c,&e.id)?;let rr=consume(lotmap.entry(key.clone()).or_default(),e.quantity_e8.unwrap(),&a,e.cash_effect_minor)?;let cur=realized.entry(key).or_default();cur.known_basis_quantity_e8+=rr.known_basis_quantity_e8;cur.known_disposed_basis_minor+=rr.known_disposed_basis_minor;cur.calculable_proceeds_minor+=rr.calculable_proceeds_minor;cur.calculable_gain_minor+=rr.calculable_gain_minor;cur.unknown_basis_quantity_e8+=rr.unknown_basis_quantity_e8;cur.unknown_basis_proceeds_minor+=rr.unknown_basis_proceeds_minor;cur.incomplete_unknown_basis|=rr.incomplete_unknown_basis;}}
+   "split"=>{if target_in_scope{let n=e.split_numerator.unwrap();let d=e.split_denominator.unwrap();for l in lotmap.entry(key).or_default(){let q=(l.quantity_e8 as i128)*(n as i128)/(d as i128);l.quantity_e8=i64::try_from(q).map_err(|_|"Split quantity overflow")?;}}}
+   "return_of_capital"|"basis_adjustment"=>{if target_in_scope{let lots=lotmap.entry(key).or_default();let known_total:i64=lots.iter().filter_map(|l|l.basis_minor).sum();if e.basis_effect_minor<0&&-e.basis_effect_minor>known_total{return Err("Basis adjustment would drive known basis below zero".into())}let mut remaining=e.basis_effect_minor;let known_indices:Vec<usize>=lots.iter().enumerate().filter(|(_,l)|l.basis_minor.is_some()).map(|(i,_)|i).collect();for(pos,i)in known_indices.iter().enumerate(){let b=lots[*i].basis_minor.unwrap();let delta=if pos+1==known_indices.len(){remaining}else{proportional(e.basis_effect_minor,b,known_total.max(1))?};lots[*i].basis_minor=Some(b+delta);remaining-=delta;}}}
+   "security_transfer"=>{let qty=e.quantity_e8.unwrap();if target_in_scope{let moved=consume(lotmap.entry(key.clone()).or_default(),qty,&[],0)?;if moved.incomplete_unknown_basis||moved.known_basis_quantity_e8>0{let dest=e.related_account_id.clone().unwrap();if ids.contains(&dest){let basis=if moved.incomplete_unknown_basis{None}else{Some(moved.known_disposed_basis_minor)};lotmap.entry((dest,sec)).or_default().push(Lot{event_id:e.event_id.clone(),acquisition_date:e.acquisition_date.clone().unwrap_or(e.trade_date.clone()),quantity_e8:qty,basis_minor:basis});}}}}
+   _=>{}
+  }
+ }
+ let mut accounts=vec![];
+ for id in ids{let mut holdings=vec![];let mut value_sum=0i64;let mut all_priced=true;let keys:Vec<_>=lotmap.keys().filter(|(a,_)|a==&id).cloned().collect();for key in keys{let lots=lotmap.remove(&key).unwrap_or_default();let qty:i64=lots.iter().map(|l|l.quantity_e8).sum();if qty==0{continue}let known:i64=lots.iter().filter_map(|l|l.basis_minor).sum();let unknown:i64=lots.iter().filter(|l|l.basis_minor.is_none()).map(|l|l.quantity_e8).sum();let price=price_at(c,&key.1,as_of)?;let mv=match price{Some((p,_))=>Some(value_minor(qty,p)?),None=>{all_priced=false;None}};if let Some(v)=mv{value_sum=value_sum.checked_add(v).ok_or("Portfolio value overflow")?}let unrealized=if unknown==0{mv.map(|v|v-known)}else{None};holdings.push(HoldingSnapshot{account_id:id.clone(),security_id:key.1.clone(),quantity_e8:qty,known_basis_minor:known,unknown_basis_quantity_e8:unknown,price_e8:price.as_ref().map(|x|x.0),price_observed_at:price.as_ref().map(|x|x.1.clone()),market_value_minor:mv,unrealized_gain_minor:unrealized,incomplete_unknown_basis:unknown>0,lots:lots.into_iter().map(|l|LotSnapshot{acquisition_event_id:l.event_id,acquisition_date:l.acquisition_date,quantity_e8:l.quantity_e8,basis_minor:l.basis_minor}).collect(),realized:realized.remove(&key).unwrap_or_default()});}let cm=*cash.get(&id).unwrap_or(&0);accounts.push(PortfolioAccountSnapshot{account_id:id,cash_minor:cm,holdings_value_minor:if all_priced{Some(value_sum)}else{None},total_value_minor:if all_priced{Some(cm.checked_add(value_sum).ok_or("Portfolio total overflow")?)}else{None},holdings});}
+ Ok(PortfolioSnapshot{as_of_date:as_of.into(),accounts})
+}
+#[tauri::command] pub fn calculate_portfolio_snapshot(account_ids:Option<Vec<String>>,as_of_date:String,state:State<DbState>)->Result<PortfolioSnapshot,String>{snapshot_inner(&state.0.lock().map_err(|_|"Database lock failed")?,account_ids.as_deref(),&as_of_date)}
+#[tauri::command] pub fn derive_investment_holdings(account_id:String,as_of_date:String,state:State<DbState>)->Result<Vec<HoldingSnapshot>,String>{let p=snapshot_inner(&state.0.lock().map_err(|_|"Database lock failed")?,Some(&[account_id.clone()]),&as_of_date)?;Ok(p.accounts.into_iter().find(|a|a.account_id==account_id).map(|a|a.holdings).unwrap_or_default())}
+pub fn account_value_today(c:&Connection,account_id:&str)->Result<Option<i64>,String>{let today=chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();let p=snapshot_inner(c,Some(&[account_id.to_string()]),&today)?;Ok(p.accounts.first().and_then(|a|a.total_value_minor))}
+
+#[tauri::command] pub fn add_manual_security_price(request:SecurityPriceRequest,state:State<DbState>)->Result<SecurityPrice,String>{if request.price_e8<0{return Err("Price cannot be negative".into())}if request.observed_at.len()<10{ return Err("Price observation needs a date".into()) }date(&request.observed_at[..10],"Price date")?;let cur=currency(request.currency)?;let prov=optional(request.provenance,1000)?;let c=state.0.lock().map_err(|_|"Database lock failed")?;if !security_exists(&c,&request.security_id)?{return Err("Security does not exist".into())}let id=Uuid::new_v4().to_string();c.execute("INSERT INTO security_prices(id,security_id,observed_at,price_e8,currency,source,provenance) VALUES(?1,?2,?3,?4,?5,'manual',?6)",params![id,request.security_id,request.observed_at,request.price_e8,cur,prov]).map_err(|e|e.to_string())?;Ok(SecurityPrice{id,security_id:request.security_id,observed_at:request.observed_at,price_e8:request.price_e8,currency:cur,source:"manual".into(),provenance:prov})}
+#[tauri::command] pub fn delete_manual_security_price(price_id:String,state:State<DbState>)->Result<(),String>{let c=state.0.lock().map_err(|_|"Database lock failed")?;if c.execute("DELETE FROM security_prices WHERE id=?1 AND source='manual'",[price_id]).map_err(|e|e.to_string())?!=1{return Err("Manual price does not exist".into())}Ok(())}
+#[tauri::command] pub fn list_security_prices(security_id:String,from_date:Option<String>,to_date:Option<String>,state:State<DbState>)->Result<Vec<SecurityPrice>,String>{if let Some(v)=&from_date{date(v,"From date")?}if let Some(v)=&to_date{date(v,"To date")?}let c=state.0.lock().map_err(|_|"Database lock failed")?;let mut s=c.prepare("SELECT id,security_id,observed_at,price_e8,currency,source,provenance FROM security_prices WHERE security_id=?1 AND (?2 IS NULL OR substr(observed_at,1,10)>=?2) AND (?3 IS NULL OR substr(observed_at,1,10)<=?3) ORDER BY observed_at,id").map_err(|e|e.to_string())?;s.query_map(params![security_id,from_date,to_date],|r|Ok(SecurityPrice{id:r.get(0)?,security_id:r.get(1)?,observed_at:r.get(2)?,price_e8:r.get(3)?,currency:r.get(4)?,source:r.get(5)?,provenance:r.get(6)?})).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())}
