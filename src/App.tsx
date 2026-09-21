@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
 import { formatMoney, parseMoney, sumMoney, type Account, type AccountType, type BudgetMonth, type ScheduledOccurrence, type ScheduledTransaction, type Transaction } from "./domain";
 import { financeRepository as repository, isNativeApp } from "./repository";
 import { ImportPage } from "./ImportPage";
@@ -21,12 +21,14 @@ import { addDaysIso, formatDate, occurrenceDisplayState, occurrenceStateLabel, t
 import {calculateCashFlowForecast,forecastMonths} from "./forecastMath";
 import "./overviewCommand.css";
 import "./onboarding.css";
+import { PortfolioPage, type PortfolioNavigationFocus } from "./PortfolioPage";
 
 type NavigationIntent =
   | { page: "Transactions"; status: "review" }
   | { page: "Bills"; focus: BillsNavigationFocus }
   | { page: "Forecast" }
-  | { page: "Budget" };
+  | { page: "Budget" }
+  | { page: "Portfolio"; focus?: PortfolioNavigationFocus };
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -36,7 +38,7 @@ type EditorDialog =
   | null;
 
 const navItems = [
-  ["Overview", LayoutDashboard], ["Accounts", Landmark], ["Transactions", ReceiptText], ["Imports", FileInput], ["Rules", ListFilter],
+  ["Overview", LayoutDashboard], ["Accounts", Landmark], ["Portfolio", BriefcaseBusiness], ["Transactions", ReceiptText], ["Imports", FileInput], ["Rules", ListFilter],
   ["Budget", Tags], ["Bills", CalendarDays], ["Forecast", TrendingUp], ["Debt", CircleDollarSign], ["Reports", BarChart3], ["AI Insights", Bot], ["Settings", Settings],
 ] as const;
 
@@ -105,10 +107,23 @@ export default function App() {
     openNav(intent.page, intent);
   }
 
-  function openAccountRegister(accountId: string) {
+  function openAccountDestination(accountId: string) {
+    const account = accounts.find(item => item.id === accountId);
+    if (account?.type === "investment") {
+      setRegisterAccountId(undefined);
+      setNavigationIntent({ page: "Portfolio", focus: { accountId } });
+      setActive("Portfolio");
+      return;
+    }
     setNavigationIntent(undefined);
     setRegisterAccountId(accountId);
     setActive("Accounts");
+  }
+
+  function openPortfolioSecurity(accountId: string, securityId: string) {
+    setNavigationIntent({ page: "Portfolio", focus: { accountId, securityId } });
+    setActive("Portfolio");
+    setRegisterAccountId(undefined);
   }
 
   function handleRegisterDialog(request: RegisterDialogRequest) {
@@ -132,7 +147,7 @@ export default function App() {
             <button key={label} className={active === label ? "active" : ""} onClick={() => openNav(label)}>
               <Icon size={17} />
               <span>{label}</span>
-              {!["Overview", "Accounts", "Transactions", "Imports", "Rules", "Budget", "Bills", "Forecast", "Debt", "Reports", "AI Insights", "Settings"].includes(label) && <em>Planned</em>}
+              {!["Overview", "Accounts", "Portfolio", "Transactions", "Imports", "Rules", "Budget", "Bills", "Forecast", "Debt", "Reports", "AI Insights", "Settings"].includes(label) && <em>Planned</em>}
             </button>
           ))}
         </nav>
@@ -164,7 +179,14 @@ export default function App() {
           </button>
         </header>
         <section className="content">
-          {active === "Imports" ? (
+          {active === "Portfolio" ? (
+            <PortfolioPage
+              accounts={activeAccounts}
+              focus={navigationIntent?.page === "Portfolio" ? navigationIntent.focus : undefined}
+              onShowAll={() => openNav("Portfolio", { page: "Portfolio" })}
+              onOpenSecurity={openPortfolioSecurity}
+            />
+          ) : active === "Imports" ? (
             <ImportPage accounts={activeAccounts} transactions={transactions} onImported={refresh} />
           ) : active === "Rules" ? (
             <RulesPage />
@@ -177,7 +199,7 @@ export default function App() {
           ) : active === "Debt" ? (
             <DebtPage accounts={activeAccounts} />
           ) : active === "Reports" ? (
-            <ReportsPage accounts={accounts} transactions={transactions} onOpenAccount={openAccountRegister} />
+            <ReportsPage accounts={accounts} transactions={transactions} onOpenAccount={openAccountDestination} />
           ) : active === "Settings" ? (
             <BackupPage onRestored={refresh} />
           ) : active === "AI Insights" ? (
@@ -215,7 +237,7 @@ export default function App() {
                   />
                 </div>
               ) : (
-                <AccountsPage accounts={accounts} onAdd={() => setDialog({ kind: "account" })} onEdit={(account) => setDialog({ kind: "account", account })} onChanged={refresh} onOpenRegister={openAccountRegister} onReconcile={(account) => setDialog({ kind: "reconciliation", account })} />
+                <AccountsPage accounts={accounts} onAdd={() => setDialog({ kind: "account" })} onEdit={(account) => setDialog({ kind: "account", account })} onChanged={refresh} onOpenRegister={openAccountDestination} onReconcile={(account) => setDialog({ kind: "reconciliation", account })} />
               )}
             </>
           ) : (
@@ -267,9 +289,9 @@ export default function App() {
                           <small>{[account.institution, account.ownerLabel].filter(Boolean).join(" · ")}</small>
                         </div>
                         <div className="account-balance">
-                          <span className={account.balanceMinor < 0 ? "negative" : ""}>{formatMoney(account.balanceMinor, account.currency)}</span>
-                          <button className="overview-account-button" onClick={() => openAccountRegister(account.id)}>
-                            Open register
+                          <span className={account.balanceMinor < 0 ? "negative" : ""}>{account.type === "investment" ? "Investment portfolio" : formatMoney(account.balanceMinor, account.currency)}</span>
+                          <button className="overview-account-button" onClick={() => openAccountDestination(account.id)}>
+                            {account.type === "investment" ? "Open portfolio" : "Open register"}
                           </button>
                         </div>
                       </div>
@@ -441,16 +463,16 @@ function AccountsPage({
                     onOpenRegister(account.id);
                   }}
                 >
-                  Open register
+                  {account.type === "investment" ? "Open portfolio" : "Open register"}
                 </button>
-                <button
+                {account.type !== "investment" && <button
                   onClick={(event) => {
                     event.stopPropagation();
                     onReconcile(account);
                   }}
                 >
                   Reconcile
-                </button>
+                </button>}
                 <button onClick={(event) => { event.stopPropagation(); onEdit(account); }}>Edit</button>
                 <button disabled={busyId === account.id || index === 0} aria-label={`Move ${account.name} up`} onClick={(event) => { event.stopPropagation(); void move(account.id, -1); }}>↑</button>
                 <button disabled={busyId === account.id || index === activeAccounts.length - 1} aria-label={`Move ${account.name} down`} onClick={(event) => { event.stopPropagation(); void move(account.id, 1); }}>↓</button>
