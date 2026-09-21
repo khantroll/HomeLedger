@@ -195,7 +195,7 @@ fn list_investment_events_inner(c:&Connection,account_id:&str,from_date:Option<&
  if !account_is_investment(c,account_id)?{return Err("Investment account does not exist".into())}
  if let Some(v)=from_date{date(v,"From date")?;} if let Some(v)=to_date{date(v,"To date")?;}
  if let (Some(from),Some(to))=(from_date,to_date){if from>to{return Err("From date must not be after to date".into())}}
- let mut s=c.prepare("SELECT e.current_revision_id FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE e.account_id=?1 AND (?2 IS NULL OR r.trade_date>=?2) AND (?3 IS NULL OR r.trade_date<=?3) ORDER BY r.trade_date DESC,e.id DESC").map_err(|e|e.to_string())?;
+ let mut s=c.prepare("SELECT e.current_revision_id FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE (e.account_id=?1 OR (r.event_type IN ('cash_transfer','security_transfer') AND r.related_account_id=?1)) AND (?2 IS NULL OR r.trade_date>=?2) AND (?3 IS NULL OR r.trade_date<=?3) ORDER BY r.trade_date DESC,e.id DESC").map_err(|e|e.to_string())?;
  let ids=s.query_map(params![account_id,from_date,to_date],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
  ids.iter().map(|id|get_revision(c,id)).collect()
 }
