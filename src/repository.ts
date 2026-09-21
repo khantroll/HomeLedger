@@ -207,7 +207,10 @@ function normalizeHoldings(holdings:NativeHoldingSnapshot[]):HoldingSnapshot[] {
   return normalizePortfolioSnapshot({asOfDate:"",accounts:[{accountId:"",cashMinor:0,holdingsValueMinor:null,totalValueMinor:null,holdings}]}).accounts[0].holdings;
 }
 
-type NativeSecurityPrice=Omit<SecurityPrice,"provenance">&{provenance:string|null};\nexport function normalizeSecurityPrice(price:NativeSecurityPrice):SecurityPrice{return {...price,provenance:undefinedIfNull(price.provenance)};}\n\nexport class TauriInvestmentRepository implements InvestmentRepository {
+type NativeSecurityPrice=Omit<SecurityPrice,"provenance">&{provenance:string|null};
+export function normalizeSecurityPrice(price:NativeSecurityPrice):SecurityPrice{return {...price,provenance:undefinedIfNull(price.provenance)};}
+
+export class TauriInvestmentRepository implements InvestmentRepository {
   createInvestmentAccount(input:CreateInvestmentAccountInput):Promise<InvestmentAccountSettings>{return invoke("create_investment_account",{request:input});}
   getInvestmentAccountSettings(accountId:string):Promise<InvestmentAccountSettings|undefined>{return invoke("get_investment_account_settings",{accountId});}
   saveInvestmentAccountSettings(input:InvestmentAccountSettings):Promise<InvestmentAccountSettings>{return invoke("save_investment_account_settings",{request:input});}
