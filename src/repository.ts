@@ -151,6 +151,17 @@ class UnavailableAiRepository implements AiRepository {
 }
 export const aiRepository:AiRepository=isNativeApp?new TauriAiRepository():new UnavailableAiRepository();
 
+type NativeInvestmentEventRevision = Omit<InvestmentEventRevision,"supersedesRevisionId"|"settlementDate"|"acquisitionDate"|"securityId"|"relatedAccountId"|"quantityE8"|"unitPriceE8"|"grossCashMinor"|"memo"|"externalId"|"provenance"|"groupId"|"correctionReason"> & {
+  supersedesRevisionId:string|null;settlementDate:string|null;acquisitionDate:string|null;securityId:string|null;relatedAccountId:string|null;
+  quantityE8:number|null;unitPriceE8:number|null;grossCashMinor:number|null;memo:string|null;externalId:string|null;provenance:string|null;groupId:string|null;correctionReason:string|null;
+};
+export function normalizeInvestmentEvent(event:NativeInvestmentEventRevision):InvestmentEventRevision{return {
+  ...event,
+  supersedesRevisionId:undefinedIfNull(event.supersedesRevisionId),settlementDate:undefinedIfNull(event.settlementDate),acquisitionDate:undefinedIfNull(event.acquisitionDate),
+  securityId:undefinedIfNull(event.securityId),relatedAccountId:undefinedIfNull(event.relatedAccountId),quantityE8:undefinedIfNull(event.quantityE8),unitPriceE8:undefinedIfNull(event.unitPriceE8),
+  grossCashMinor:undefinedIfNull(event.grossCashMinor),memo:undefinedIfNull(event.memo),externalId:undefinedIfNull(event.externalId),provenance:undefinedIfNull(event.provenance),
+  groupId:undefinedIfNull(event.groupId),correctionReason:undefinedIfNull(event.correctionReason),
+};}
 type NativeHoldingSnapshot = Omit<HoldingSnapshot,"priceE8"|"priceObservedAt"|"marketValueMinor"|"unrealizedGainMinor"|"lots"> & {
   priceE8:number|null;
   priceObservedAt:string|null;
@@ -209,7 +220,8 @@ export class TauriInvestmentRepository implements InvestmentRepository {
   createInvestmentEvent(input:InvestmentEventInput):Promise<InvestmentEventRevision>{return invoke("create_investment_event",{request:input});}
   updatePendingInvestmentEvent(eventId:string,input:InvestmentEventInput):Promise<InvestmentEventRevision>{return invoke("update_pending_investment_event",{eventId,request:input});}
   correctHistoricalInvestmentEvent(eventId:string,replacement:InvestmentEventInput,reason:string):Promise<InvestmentEventRevision>{return invoke("correct_historical_investment_event",{eventId,replacement,reason});}
-  getInvestmentEventHistory(eventId:string):Promise<InvestmentEventRevision[]>{return invoke("get_investment_event_history",{eventId});}
+  async getInvestmentEventHistory(eventId:string):Promise<InvestmentEventRevision[]>{const rows=await invoke<NativeInvestmentEventRevision[]>("get_investment_event_history",{eventId});return rows.map(normalizeInvestmentEvent);}
+  async listInvestmentEvents(accountId:string,fromDate?:string,toDate?:string):Promise<InvestmentEventRevision[]>{const rows=await invoke<NativeInvestmentEventRevision[]>("list_investment_events",{accountId,fromDate:fromDate??null,toDate:toDate??null});return rows.map(normalizeInvestmentEvent);}
   setSpecificLotAllocations(saleEventId:string,allocations:LotAllocation[]):Promise<void>{return invoke("set_specific_lot_allocations",{request:{saleEventId,allocations}});}
   async deriveInvestmentHoldings(accountId:string,asOfDate:string):Promise<HoldingSnapshot[]>{const result=await invoke<NativeHoldingSnapshot[]>("derive_investment_holdings",{accountId,asOfDate});return normalizeHoldings(result);}
   async calculatePortfolioSnapshot(accountIds:string[]|undefined,asOfDate:string):Promise<PortfolioSnapshot>{const result=await invoke<NativePortfolioSnapshot>("calculate_portfolio_snapshot",{accountIds:accountIds??null,asOfDate});return normalizePortfolioSnapshot(result);}
