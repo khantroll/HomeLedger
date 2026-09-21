@@ -38,7 +38,7 @@ Portfolio Manager then provided the cross-account investment view. Microsoft des
 
 ### 1.2 Securities and holdings
 
-Money kept an investment/security identity distinct from the account that held it. Investment setup covered stocks, mutual funds, bonds, precious metals, CDs, retirement accounts, employee stock options, and watch-only securities. Portfolio Manager could retain closed positions and expose investment details; Money's own support guidance warned that investment transaction history was necessary for accurate balances and gains.
+Money kept an investment/security identity distinct from the account that held it. Investment setup covered stocks, mutual funds, bonds, precious metals, CDs, retirement accounts, employee stock options, and watch-only securities. Money also exposed an “Investments to Watch” concept: securities could be followed without being owned. Portfolio Manager could retain closed positions and expose investment details; Money's own support guidance warned that investment transaction history was necessary for accurate balances and gains.
 
 Holdings were transaction-backed. Historical Microsoft material explicitly described support for multiple purchase dates, stock splits, and commissions. Money could show a closed position after shares had been sold and could show investment activities beneath a security.
 
@@ -112,6 +112,7 @@ Money's strength was progressive disclosure. A household user could start from a
 8. **Cash belongs in the investment account experience.** It participates in net worth and portfolio value without becoming a fake security.
 9. **Online enrichment is optional.** Manual securities, prices and complete offline portfolios remain first-class.
 10. **No trading-platform drift.** Portfolio management remains household financial recordkeeping and understanding.
+11. **Watching is not owning.** A future local Watchlist may follow securities and prices, but watched securities never become holdings or affect net worth, lots, performance, or reconciliation.
 
 ---
 
@@ -222,7 +223,19 @@ Do not begin with Money's dozens of configurable columns. A small set of saved/d
 
 Portfolio summary should include cash and account totals. Closed positions are hidden by default but viewable.
 
-### 4.3 Security detail
+The architecture must also preserve Money-style historical reconstruction. Portfolio should eventually support an explicit **Portfolio as of: Today ▾** control. Because holdings derive from dated events and prices have independent history, an as-of snapshot can reconstruct what was owned, account/portfolio value, allocation, basis state and cash at a selected date. This should answer questions such as “What did I own on January 1?”, “What was this account worth at year-end?”, “What was my allocation before that sale?”, and “How has my portfolio composition changed?” This capability need not ship in the first Portfolio UI, but event/price APIs must accept an as-of date rather than baking in “current” state.
+
+### 4.3 Watchlist (later)
+
+Once provider-neutral security search and minimal market data exist, Portfolio should gain a simple local companion view:
+
+**Portfolio | Watchlist**
+
+A watchlist entry references a Security the user wants to follow; it is **not** an InvestmentAccount holding or InvestmentEvent. It has no units, lots, basis or cash effect and contributes nothing to net worth, portfolio performance, investment income, allocation, imports, or broker reconciliation.
+
+Useful later capabilities include current/historical prices, a basic chart and security metadata, plus a local user note. A future AI task could answer questions about watched securities using explicitly identified market context, but watching a security must never grant the LLM trading authority or imply ownership. Watchlist is not part of Portfolio Foundation.
+
+### 4.4 Security detail
 
 Selecting a holding opens:
 - name / symbol / security type
@@ -236,11 +249,11 @@ Selecting a holding opens:
 
 Modern presentation can borrow Robinhood's clarity—shares, market value, average cost, portfolio weight, today/total return—but HomeLedger must distinguish display average cost from tax-lot basis and label unavailable basis honestly.
 
-### 4.4 Enter activity
+### 4.5 Enter activity
 
 **New investment activity** starts with a plain-language action chooser. Each action asks only relevant fields. Advanced fields (settlement date, external ID, lot allocation, basis adjustment) stay collapsed unless needed.
 
-### 4.5 Starting an existing account
+### 4.6 Starting an existing account
 
 Wizard:
 - account identity/currency/tax label (taxable, tax-deferred, tax-free/other informational label)
@@ -286,7 +299,7 @@ Do not key securities by ticker alone: tickers change and can collide across exc
 
 ### InvestmentEvent
 
-Immutable-ish authoritative economic event (editable through guarded correction workflows):
+Authoritative economic event with guarded correction semantics:
 - id
 - account_id
 - event_type
@@ -303,6 +316,8 @@ Immutable-ish authoritative economic event (editable through guarded correction 
 - external/provider ID nullable
 - import batch / broker sync provenance nullable
 - linked event/group ID for compound events
+
+**Integrity:** pending/review events may be edited directly. Once an event is cleared or reconciled, any correction that can affect holdings, cash, lots, basis, realized/unrealized gains, performance, or later derived history must use a guarded correction/replacement workflow. That workflow must warn about downstream effects, preserve the original event/provenance and correction relationship sufficiently for audit/review, then deterministically recalculate every dependent projection. HomeLedger need not be strictly append-only, but it must never allow a casual edit of an old acquisition, sale, transfer, split, or basis adjustment to silently rewrite years of derived history. Reconciled lot allocations receive the same protection.
 
 **Precision:** share quantities and prices need fixed decimal storage, not IEEE floating point. Choose integer-scaled decimals (e.g. units at 10^-8 or 10^-9; prices at a documented scale) or validated decimal strings converted to exact Rust decimal arithmetic. Ordinary currency cash remains integer minor units.
 
@@ -429,6 +444,12 @@ Rules:
 
 A yfinance/Yahoo-like source is acceptable as one future adapter, but no domain field should be named after it.
 
+### Minimal daily-driver market data vs richer enrichment
+
+Automatic price updating is important to the Money-style daily Portfolio experience, so the roadmap should not treat every market-data capability as one late phase. A **minimal read-only provider slice** may arrive with or immediately after the first Portfolio Manager UI: security search, current quote, basic security metadata and basic historical daily prices. It uses the same provider abstraction above, remains optional, and must degrade cleanly to manual/imported prices when offline or unconfigured.
+
+Richer enrichment—broader metadata, deeper chart/history features, refresh policies/caching, provider fallback/conflict handling and other nonessential market information—can follow investment import/reconciliation. Neither slice changes accounting truth.
+
 ---
 
 ## 9. Portfolio valuation, performance and reporting
@@ -443,6 +464,8 @@ For as-of date D:
 - portfolio value = sum selected investment accounts.
 
 Missing price => holding value is incomplete/unknown, not silently zero.
+
+The same deterministic snapshot function should power both today's Portfolio and future historical/as-of Portfolio views. “Current holdings” is therefore only the special case where D is today; repository/domain design must not require a separate historical reconstruction model.
 
 ### Gains
 
@@ -670,13 +693,15 @@ interface InvestmentRepository {
   listSecurities(...)
   create/updateSecurity(...)
   listInvestmentEvents(...)
-  create/update/deleteInvestmentEvent(...)
-  deriveHoldings(...)
+  createInvestmentEvent(...)
+  updatePendingOrReviewInvestmentEvent(...)
+  correctHistoricalInvestmentEvent(...)
+  deriveHoldings(asOfDate, ...)
   listOpenLots(...)
   allocateSaleLots(...)
   listPrices(...)
   upsertManual/importedPrices(...)
-  calculatePortfolioSnapshot(...)
+  calculatePortfolioSnapshot(asOfDate, ...)
   calculateInvestmentPerformance(...)
   // later import/reconciliation methods
 }
@@ -698,6 +723,7 @@ The Rust/native layer should own validation and authoritative calculations just 
 6. **Security identity:** stable internal ID plus multiple external identifiers; ticker is metadata.
 7. **Multi-currency:** foundation should probably require security/event cash in account currency unless foreign-currency accounting is designed explicitly. Do not fake FX.
 8. **Starting holdings:** formal opening-position event with unknown-basis support.
+9. **Historical correction representation:** choose the exact persisted correction/replacement linkage and audit metadata while preserving the rule that cleared/reconciled history cannot be casually overwritten.
 
 ### Important later edge cases
 
@@ -757,8 +783,24 @@ Goal: accounting truth before market polish.
 - initial investment reports
 - Overview/net-worth integration
 - contextual navigation
+- preserve an as-of-date portfolio snapshot contract even if the date-picker/history UI follows later
 
 **Why before imports:** it gives imported data a mature review destination and lets us dogfood accounting manually.
+
+### Phase IIb — Minimal read-only market data
+
+May ship alongside the latter part of Phase II or immediately after it, without becoming a Portfolio dependency:
+- provider-neutral MarketDataProvider adapter
+- security search
+- current quote
+- basic security metadata
+- basic historical daily prices
+- source/as-of/staleness display
+- manual-price/offline fallback remains first-class
+- enough price history to make the daily Portfolio and later as-of views useful
+- local Watchlist shell may begin here once search/quotes are dependable; Watchlist remains completely outside holdings/accounting
+
+This small network slice restores a fundamental Money-style daily-driver behavior—automatic valuation—without waiting for the richer market-data phase or making provider data authoritative.
 
 ### Phase III — Investment imports and statement reconciliation
 
@@ -769,17 +811,17 @@ Goal: accounting truth before market polish.
 - investment reconciliation
 - CSV mapping only with real samples
 
-### Phase IV — Market-data enrichment
+### Phase IV — Richer market-data enrichment
 
-- provider-neutral MarketDataProvider
-- security search/metadata
-- current quotes
-- historical prices
-- refresh/staleness UX
-- charts
+Build on the minimal provider slice rather than redefining it:
+- richer security metadata where useful
+- deeper historical/chart experiences
+- robust refresh/caching policy
+- provider fallback/conflict and identifier-mapping UX if needed
+- Watchlist notes and richer Watchlist presentation
 - no-provider/manual mode remains complete
 
-This comes after accounting/import because quotes should enrich a trustworthy portfolio, not become its source of truth.
+The accounting/import model remains independent of this enrichment. Market data makes Portfolio more useful; it never becomes holdings/history truth.
 
 ### Phase V — Optional broker read/reconciliation
 
@@ -809,7 +851,7 @@ Only if still desirable:
 - fills reconcile back into HomeLedger
 - no autonomous path
 
-**Roadmap change from the initial hypothesis:** keep market-data enrichment *after* investment import/reconciliation unless UI usability proves basic quote lookup is needed earlier. Manual/imported prices are sufficient to validate the foundation, while import work tests the harder accounting model before network enrichment adds another variable.
+**Roadmap refinement:** split market data in two. Keep Portfolio Foundation fully offline and manual-price capable, but allow the minimal read-only search/quote/basic-history slice with or immediately after the Money-style Portfolio UI because automatic valuation is fundamental to a useful daily Portfolio. Keep richer market-data enrichment after import/reconciliation. This preserves accounting independence while restoring Money's practical daily-driver experience earlier.
 
 ---
 
@@ -836,6 +878,7 @@ The Investment/Portfolio phase explicitly does **not** include:
 - investment AI tasks or new AI providers during foundation
 - a hard dependency on Yahoo Finance/yfinance
 - a hard dependency on Alpaca
+- Watchlist as part of Portfolio Foundation
 - v0.48 implementation as part of this design PR
 
 ---
