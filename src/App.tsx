@@ -20,6 +20,7 @@ import { AccountRegister, type RegisterDialogRequest } from "./AccountRegister";
 import { addDaysIso, formatDate, occurrenceDisplayState, occurrenceStateLabel, todayIso } from "./scheduledPresentation";
 import {calculateCashFlowForecast,forecastMonths} from "./forecastMath";
 import "./overviewCommand.css";
+import "./onboarding.css";
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -45,6 +46,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [dialog, setDialog] = useState<EditorDialog>(null);
   const [error, setError] = useState("");
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -211,7 +213,13 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <div className="summary-grid">
+              {activeAccounts.length === 0 && !onboardingDismissed && (
+                <FirstRunOnboarding
+                  onAddAccount={() => setDialog({ kind: "account" })}
+                  onDismiss={() => setOnboardingDismissed(true)}
+                />
+              )}
+                            <div className="summary-grid">
                 <Summary label="Available cash" value={formatMoney(assets)} detail="Positive tracked balances" tone="positive" />
                 <Summary label="Liabilities" value={formatMoney(Math.abs(liabilities))} detail="Credit and loan balances" tone="negative" />
                 <Summary label="Net worth" value={formatMoney(assets + liabilities)} detail="Based on tracked accounts" />
@@ -305,6 +313,23 @@ export default function App() {
       )}
     </div>
   );
+}
+
+
+function FirstRunOnboarding({onAddAccount,onDismiss}:{onAddAccount:()=>void;onDismiss:()=>void}) {
+  return <section className="panel first-run" aria-labelledby="first-run-title">
+    <div className="first-run-copy">
+      <span className="eyebrow">Welcome to HomeLedger</span>
+      <h2 id="first-run-title">Start with the accounts you use today</h2>
+      <p>HomeLedger keeps your financial history on this computer. Add one account now; you can add the rest, import old statements, budgets, and bills whenever you are ready.</p>
+      <div className="first-run-actions"><button className="primary" onClick={onAddAccount}>Add my first account</button><button onClick={onDismiss}>Explore HomeLedger first</button></div>
+    </div>
+    <div className="first-run-steps" aria-label="Getting started">
+      <div><strong>1</strong><span><b>Add an account</b><small>Checking, savings, card, loan, cash, or another asset.</small></span></div>
+      <div><strong>2</strong><span><b>Choose a starting point</b><small>Use today’s balance for a clean start, or start at zero before importing older history.</small></span></div>
+      <div><strong>3</strong><span><b>Bring in history when useful</b><small>Existing statement import stays optional. Nothing has to connect to your bank.</small></span></div>
+    </div>
+  </section>;
 }
 
 function StorageNotice() {
@@ -560,6 +585,7 @@ export function OverviewCommandCenter({accounts,transactions,templates,occurrenc
 function AccountDialog({ account, onClose, onSaved }: { account?: Account; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [startingPoint, setStartingPoint] = useState<"current"|"history">("current");
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -574,7 +600,7 @@ function AccountDialog({ account, onClose, onSaved }: { account?: Account; onClo
         ownerLabel: String(data.get("owner") || "Household").trim(),
       };
       if (account) await repository.updateAccount(account.id, details);
-      else await repository.createAccount({ ...details, openingBalanceMinor: parseMoney(String(data.get("balance") || "0")) });
+      else await repository.createAccount({ ...details, openingBalanceMinor: startingPoint === "history" ? 0 : parseMoney(String(data.get("balance") || "0")) });
       await onSaved();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -611,17 +637,17 @@ function AccountDialog({ account, onClose, onSaved }: { account?: Account; onClo
             </label>
           ) : (
             <label>
-              Opening balance
-              <input name="balance" inputMode="decimal" defaultValue="0.00" required />
+              Currency
+              <input name="currency" list="currency-codes" defaultValue="USD" required maxLength={3} pattern="[A-Za-z]{3}" autoCapitalize="characters" />
             </label>
           )}
         </div>
-        {!account && (
-          <label>
-            Currency
-            <input name="currency" list="currency-codes" defaultValue="USD" required maxLength={3} pattern="[A-Za-z]{3}" autoCapitalize="characters" />
-          </label>
-        )}
+        {!account && <fieldset className="starting-point"><legend>How do you want to start this account?</legend>
+          <label className="choice-card"><input type="radio" name="startingPoint" checked={startingPoint==="current"} onChange={()=>setStartingPoint("current")}/><span><strong>Start with what it is worth today</strong><small>Best if you mainly want to track from now on. Enter the current cleared balance; older statements can stay outside HomeLedger.</small></span></label>
+          <label className="choice-card"><input type="radio" name="startingPoint" checked={startingPoint==="history"} onChange={()=>setStartingPoint("history")}/><span><strong>I plan to import older history</strong><small>Starts at zero so imported transactions build the balance. Use this only when your imported history reaches the account’s true beginning.</small></span></label>
+          {startingPoint==="current" && <div className="balance-field"><label htmlFor="opening-balance">Current cleared balance</label><input id="opening-balance" name="balance" inputMode="decimal" defaultValue="0.00" required aria-describedby="opening-balance-help"/><small id="opening-balance-help" className="field-help">For credit cards and loans, enter what you owe as a negative amount (for example, -1250.00).</small></div>}
+          {startingPoint==="history" && <div className="history-guidance"><strong>Important</strong><span>Do not enter today’s balance and then import transactions that happened before today; that would count those transactions twice. After saving, use Imports to add the history you want.</span></div>}
+        </fieldset>}
         <datalist id="currency-codes"><option value="USD" /><option value="CAD" /><option value="EUR" /><option value="GBP" /><option value="AUD" /></datalist>
         <label>
           Owner
