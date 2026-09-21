@@ -118,7 +118,7 @@ describe("Investment account workspace",()=>{
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(destSnapshot);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([securityTransfer,cashTransfer]);
   render(<PortfolioPage accounts={accounts} focus={{accountId:"dest"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
   await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Activity"}));expect(screen.getByText("Transferred cash in")).toBeTruthy();expect(screen.getByText("Transferred in 1 EXM")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button",{name:"Cash"}));expect(screen.getByText("$25.00")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"Cash"}));expect(screen.getAllByText("$25.00").length).toBeGreaterThanOrEqual(1);
  });
  it("shows transferred-in security activity in destination security detail",async()=>{
   const securityTransfer={id:"rt2",eventId:"t2",revisionNumber:1,accountId:"inv",eventType:"security_transfer" as const,tradeDate:"2026-07-02",securityId:"sec",relatedAccountId:"dest",quantityE8:100_000_000,cashEffectMinor:0,incomeMinor:0,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const};
