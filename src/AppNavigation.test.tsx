@@ -70,6 +70,7 @@ describe("App navigation shell", () => {
 
     render(<App />);
     await screen.findByRole("heading", { name: "Overview" });
+    await screen.findByText("Household Checking");
     expect(screen.getAllByText("Needs review").length).toBeGreaterThan(1);
     expect(screen.queryByText("Emergency Savings")).toBeNull();
 
