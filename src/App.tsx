@@ -429,7 +429,7 @@ function AccountsPage({
         <div className="panel-heading">
           <div>
             <h2>Accounts</h2>
-            <p>Select an account to open its Money-style register</p>
+            <p>Select an account to open its register or investment portfolio</p>
           </div>
           <button onClick={onAdd}>+ Add account</button>
         </div>
@@ -455,8 +455,7 @@ function AccountsPage({
               <small>{[account.institution, account.ownerLabel, accountTypeLabel(account.type)].filter(Boolean).join(" · ")}</small>
             </div>
             <div className="account-balance">
-              <span className={account.balanceMinor < 0 ? "negative" : ""}>{formatMoney(account.balanceMinor, account.currency)}</span>
-              <div className="account-row-actions">
+              <span className={account.balanceMinor < 0 ? "negative" : ""}>{account.type === "investment" ? "Investment portfolio" : formatMoney(account.balanceMinor, account.currency)}</span>\n              <div className="account-row-actions">
                 <button
                   onClick={(event) => {
                     event.stopPropagation();
