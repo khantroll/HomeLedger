@@ -1,4 +1,4 @@
-export type AccountType = "checking" | "savings" | "credit" | "cash" | "loan" | "asset";
+export type AccountType = "checking" | "savings" | "credit" | "cash" | "loan" | "asset" | "investment";
 export type TransactionStatus = "pending" | "cleared" | "reconciled" | "review";
 export type ScheduledTemplateKind = "transaction" | "transfer";
 export type RecurrenceFrequency = "weekly" | "biweekly" | "semimonthly" | "monthly" | "annual" | "custom";
@@ -490,4 +490,37 @@ export function reconciliationBalance(openingMinor: number, transactions: readon
 
 export function reconciliationDifference(openingMinor: number, closingMinor: number, transactions: readonly Pick<Transaction, "amountMinor">[]): number {
   return sumMoney([closingMinor, -reconciliationBalance(openingMinor, transactions)]);
+}
+
+
+// Portfolio Foundation domain. Investment arithmetic is authoritative in Rust; *_E8 values are exact 8-decimal fixed-point integers.
+export type InvestmentAccountKind="brokerage"|"retirement"|"education"|"other";
+export type InvestmentTaxTreatment="taxable"|"tax_deferred"|"tax_exempt"|"unknown";
+export type SecurityType="stock"|"etf"|"mutual_fund"|"bond"|"cash_equivalent"|"other";
+export type InvestmentEventType="buy"|"sell"|"dividend"|"reinvest_dividend"|"interest"|"fee"|"split"|"return_of_capital"|"cash_transfer"|"security_transfer"|"opening_position"|"basis_adjustment";
+export type InvestmentEventSource="manual"|"import"|"broker";
+export interface InvestmentAccountSettings{accountId:string;accountKind:InvestmentAccountKind;taxTreatment:InvestmentTaxTreatment;defaultLotMethod:"fifo";openingCashMinor:number;openingDate:string;}
+export interface CreateInvestmentAccountInput{name:string;institution?:string;currency:string;ownerLabel:string;openingCashMinor:number;openingDate:string;accountKind:InvestmentAccountKind;taxTreatment:InvestmentTaxTreatment;}
+export interface Security{id:string;securityType:SecurityType;name:string;symbol?:string;exchangeMic?:string;currency:string;archived:boolean;}
+export type SecurityInput=Omit<Security,"id"|"archived">;
+export interface SecurityIdentifier{securityId:string;namespace:string;value:string;}
+export interface InvestmentEventInput{accountId:string;eventType:InvestmentEventType;tradeDate:string;settlementDate?:string;acquisitionDate?:string;securityId?:string;relatedAccountId?:string;quantityE8?:number;unitPriceE8?:number;grossCashMinor?:number;cashEffectMinor:number;incomeMinor:number;acquisitionFundingMinor:number;feeMinor:number;basisEffectMinor:number;splitNumerator?:number;splitDenominator?:number;status:TransactionStatus;source:InvestmentEventSource;memo?:string;externalId?:string;provenance?:string;groupId?:string;}
+export interface InvestmentEventRevision extends InvestmentEventInput{id:string;eventId:string;revisionNumber:number;supersedesRevisionId?:string;correctionReason?:string;}
+export interface LotAllocation{acquisitionEventId:string;quantityE8:number;}
+export interface SecurityPrice{id:string;securityId:string;observedAt:string;priceE8:number;currency:string;source:"manual"|"import"|"market_provider";provenance?:string;}
+export interface SecurityPriceInput{securityId:string;observedAt:string;priceE8:number;currency:string;provenance?:string;}
+export interface RealizedResult{knownBasisQuantityE8:number;knownDisposedBasisMinor:number;calculableProceedsMinor:number;calculableGainMinor:number;unknownBasisQuantityE8:number;unknownBasisProceedsMinor:number;incompleteUnknownBasis:boolean;}
+export interface LotSnapshot{acquisitionEventId:string;acquisitionDate?:string;quantityE8:number;basisMinor?:number;}
+export interface HoldingSnapshot{accountId:string;securityId:string;quantityE8:number;knownBasisMinor:number;unknownBasisQuantityE8:number;priceE8?:number;priceObservedAt?:string;marketValueMinor?:number;unrealizedGainMinor?:number;incompleteUnknownBasis:boolean;lots:LotSnapshot[];realized:RealizedResult;}
+export interface PortfolioAccountSnapshot{accountId:string;cashMinor:number;holdingsValueMinor?:number;totalValueMinor?:number;holdings:HoldingSnapshot[];}
+export interface PortfolioSnapshot{asOfDate:string;accounts:PortfolioAccountSnapshot[];}
+export interface InvestmentRepository{
+ createInvestmentAccount(input:CreateInvestmentAccountInput):Promise<InvestmentAccountSettings>;
+ getInvestmentAccountSettings(accountId:string):Promise<InvestmentAccountSettings|undefined>;
+ saveInvestmentAccountSettings(input:InvestmentAccountSettings):Promise<InvestmentAccountSettings>;
+ listSecurities(includeArchived?:boolean):Promise<Security[]>;createSecurity(input:SecurityInput):Promise<Security>;updateSecurity(id:string,input:SecurityInput):Promise<Security>;setSecurityArchived(id:string,archived:boolean):Promise<void>;
+ addSecurityIdentifier(securityId:string,namespace:string,value:string):Promise<SecurityIdentifier>;removeSecurityIdentifier(securityId:string,namespace:string,value:string):Promise<void>;
+ createInvestmentEvent(input:InvestmentEventInput):Promise<InvestmentEventRevision>;updatePendingInvestmentEvent(eventId:string,input:InvestmentEventInput):Promise<InvestmentEventRevision>;correctHistoricalInvestmentEvent(eventId:string,replacement:InvestmentEventInput,reason:string):Promise<InvestmentEventRevision>;getInvestmentEventHistory(eventId:string):Promise<InvestmentEventRevision[]>;
+ setSpecificLotAllocations(saleEventId:string,allocations:LotAllocation[]):Promise<void>;deriveInvestmentHoldings(accountId:string,asOfDate:string):Promise<HoldingSnapshot[]>;calculatePortfolioSnapshot(accountIds:string[]|undefined,asOfDate:string):Promise<PortfolioSnapshot>;
+ addManualSecurityPrice(input:SecurityPriceInput):Promise<SecurityPrice>;deleteManualSecurityPrice(priceId:string):Promise<void>;listSecurityPrices(securityId:string,fromDate?:string,toDate?:string):Promise<SecurityPrice[]>;
 }

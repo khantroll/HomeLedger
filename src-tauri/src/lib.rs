@@ -8,6 +8,8 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 
+mod investment;
+
 #[cfg(test)]
 mod tests;
 
@@ -1352,7 +1354,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 17;
+const CURRENT_SCHEMA_VERSION: i64 = 18;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_RECOVERY_RETENTION: usize = 7;
@@ -1569,6 +1571,16 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(17, 'privacy-preserving AI analysis audit')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+    if version < 18 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/018_portfolio_foundation.sql")).map_err(|e| e.to_string())?;
+        let account_schema: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='accounts'", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if !account_schema.contains("'asset','investment'") { return Err("Portfolio Foundation migration did not extend the account type constraint".into()); }
+        let fk_errors: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if fk_errors != 0 { return Err(format!("Portfolio Foundation migration failed foreign-key validation with {fk_errors} violation(s)")); }
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(18, 'Portfolio Foundation')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1578,7 +1590,13 @@ fn list_accounts(include_archived: Option<bool>, state: State<DbState>) -> Resul
     let sql = format!("SELECT a.id, a.name, a.institution, a.account_type, a.currency, a.opening_balance_minor + COALESCE(SUM(t.amount_minor), 0), a.owner_label, EXISTS(SELECT 1 FROM transactions review WHERE review.account_id = a.id AND review.status = 'review'), a.sort_order, a.archived_at IS NOT NULL FROM accounts a LEFT JOIN transactions t ON t.account_id = a.id {} GROUP BY a.id ORDER BY a.archived_at IS NOT NULL, a.sort_order, a.created_at", if include_archived.unwrap_or(false) { "" } else { "WHERE a.archived_at IS NULL" });
     let mut statement = connection.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = statement.query_map([], |row| Ok(Account { id: row.get(0)?, name: row.get(1)?, institution: row.get(2)?, r#type: row.get(3)?, currency: row.get(4)?, balance_minor: row.get(5)?, owner_label: row.get(6)?, needs_review: row.get(7)?, sort_order: row.get(8)?, archived: row.get(9)? })).map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    let mut accounts = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    for account in &mut accounts {
+        if account.r#type == "investment" {
+            if let Some(value) = investment::account_value_today(&connection, &account.id)? { account.balance_minor = value; }
+        }
+    }
+    Ok(accounts)
 }
 
 #[tauri::command]
@@ -1620,8 +1638,9 @@ fn refresh_label_memory(connection: &Connection) -> Result<(), String> {
 
 #[tauri::command]
 fn create_account(request: CreateAccountRequest, state: State<DbState>) -> Result<Account, String> {
-    const TYPES: &[&str] = &["checking", "savings", "credit", "cash", "loan", "asset"];
+    const TYPES: &[&str] = &["checking", "savings", "credit", "cash", "loan", "asset", "investment"];
     if !TYPES.contains(&request.r#type.as_str()) { return Err("Unsupported account type".into()); }
+    if request.r#type == "investment" { return Err("Use the investment account workflow to create an investment account".into()); }
     let currency = request.currency.trim().to_uppercase();
     if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) { return Err("Currency must be a three-letter code".into()); }
     let mut account = Account { id: Uuid::new_v4().to_string(), name: clean_required(request.name, "Account name", 80)?, institution: clean_optional(request.institution, 80)?, r#type: request.r#type, currency, balance_minor: request.opening_balance_minor, owner_label: clean_required(request.owner_label, "Owner", 80)?, needs_review: false, sort_order: 0, archived: false };
@@ -1632,7 +1651,7 @@ fn create_account(request: CreateAccountRequest, state: State<DbState>) -> Resul
 }
 
 fn validate_account_details(request: UpdateAccountRequest) -> Result<(String, Option<String>, String, String, String), String> {
-    const TYPES: &[&str] = &["checking", "savings", "credit", "cash", "loan", "asset"];
+    const TYPES: &[&str] = &["checking", "savings", "credit", "cash", "loan", "asset", "investment"];
     if !TYPES.contains(&request.r#type.as_str()) { return Err("Unsupported account type".into()); }
     let currency = request.currency.trim().to_uppercase();
     if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) { return Err("Currency must be a three-letter code".into()); }
@@ -1641,9 +1660,10 @@ fn validate_account_details(request: UpdateAccountRequest) -> Result<(String, Op
 
 fn update_account_inner(connection: &Connection, account_id: &str, request: UpdateAccountRequest) -> Result<Account, String> {
     let (name, institution, account_type, currency, owner_label) = validate_account_details(request)?;
-    let current_currency: String = connection.query_row("SELECT currency FROM accounts WHERE id = ?1", [account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?.ok_or("Account does not exist")?;
+    let (current_currency, current_type): (String,String) = connection.query_row("SELECT currency,account_type FROM accounts WHERE id = ?1", [account_id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?.ok_or("Account does not exist")?;
+    if current_type != account_type && (current_type == "investment" || account_type == "investment") { return Err("Use the investment account workflow when changing investment account type".into()); }
     if current_currency != currency {
-        let has_history: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id=?1 UNION ALL SELECT 1 FROM reconciliations WHERE account_id=?1 UNION ALL SELECT 1 FROM import_batches WHERE account_id=?1 UNION ALL SELECT 1 FROM scheduled_transactions WHERE account_id=?1 OR transfer_account_id=?1 UNION ALL SELECT 1 FROM savings_goals WHERE account_id=?1 UNION ALL SELECT 1 FROM debt_terms WHERE account_id=?1)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        let has_history: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id=?1 UNION ALL SELECT 1 FROM reconciliations WHERE account_id=?1 UNION ALL SELECT 1 FROM import_batches WHERE account_id=?1 UNION ALL SELECT 1 FROM scheduled_transactions WHERE account_id=?1 OR transfer_account_id=?1 UNION ALL SELECT 1 FROM savings_goals WHERE account_id=?1 UNION ALL SELECT 1 FROM debt_terms WHERE account_id=?1 UNION ALL SELECT 1 FROM investment_events WHERE account_id=?1 UNION ALL SELECT 1 FROM investment_account_settings WHERE account_id=?1)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
         if has_history { return Err("Currency cannot be changed after an account has activity or linked planning data".into()); }
     }
     if account_type != "savings" {
@@ -1669,7 +1689,7 @@ fn set_account_archived_inner(connection: &Connection, account_id: &str, archive
     let Some(current) = current else { return Err("Account does not exist".into()); };
     if current == archived { return Ok(()); }
     if archived {
-        let unresolved: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id=?1 AND status IN ('pending','review'))", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        let unresolved: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM transactions WHERE account_id=?1 AND status IN ('pending','review') UNION ALL SELECT 1 FROM investment_events e JOIN investment_event_revisions r ON r.id=e.current_revision_id WHERE e.account_id=?1 AND r.status IN ('pending','review'))", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
         if unresolved { return Err("Resolve pending and review transactions before archiving this account".into()); }
         let active_schedule: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM scheduled_transactions WHERE (account_id=?1 OR transfer_account_id=?1) AND enabled=1 AND archived_at IS NULL)", [account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
         if active_schedule { return Err("Disable or archive scheduled transactions for this account first".into()); }
@@ -1965,8 +1985,9 @@ fn insert_transaction_splits(connection: &Connection, transaction_id: &str, spli
 fn create_transaction_inner(connection: &mut Connection, request: CreateTransactionRequest) -> Result<LedgerTransaction, String> {
     let item = clean_transaction_request(request)?;
     let tx = connection.transaction().map_err(|e| e.to_string())?;
-    let exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![item.account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
-    if exists.is_none() { return Err("Account does not exist".into()); }
+    let account_type: Option<String> = tx.query_row("SELECT account_type FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![item.account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let account_type=account_type.ok_or("Account does not exist")?;
+    if account_type=="investment" { return Err("Investment activity must use the investment event workflow".into()); }
     tx.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, memo, source) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'manual')", params![item.id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo]).map_err(|e| e.to_string())?;
     insert_transaction_splits(&tx, &item.id, &item.splits)?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -1993,10 +2014,11 @@ fn clean_transfer_request(request: TransferRequest) -> Result<TransferRequest, S
 }
 
 fn transfer_accounts(connection: &Connection, from_id: &str, to_id: &str) -> Result<(String,String), String> {
-    let from: Option<(String,String)> = connection.query_row("SELECT name,currency FROM accounts WHERE id=?1 AND archived_at IS NULL", params![from_id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?;
-    let to: Option<(String,String)> = connection.query_row("SELECT name,currency FROM accounts WHERE id=?1 AND archived_at IS NULL", params![to_id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?;
-    let (from_name,from_currency)=from.ok_or("Source account does not exist")?;
-    let (to_name,to_currency)=to.ok_or("Destination account does not exist")?;
+    let from: Option<(String,String,String)> = connection.query_row("SELECT name,currency,account_type FROM accounts WHERE id=?1 AND archived_at IS NULL", params![from_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e| e.to_string())?;
+    let to: Option<(String,String,String)> = connection.query_row("SELECT name,currency,account_type FROM accounts WHERE id=?1 AND archived_at IS NULL", params![to_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e| e.to_string())?;
+    let (from_name,from_currency,from_type)=from.ok_or("Source account does not exist")?;
+    let (to_name,to_currency,to_type)=to.ok_or("Destination account does not exist")?;
+    if from_type=="investment"||to_type=="investment" { return Err("Investment cash transfers must use the investment transfer workflow".into()); }
     if from_currency != to_currency { return Err("Transfers between different currencies are not supported yet".into()); }
     Ok((from_name,to_name))
 }
@@ -2831,8 +2853,9 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
     }
 
     let tx = connection.transaction().map_err(|e| e.to_string())?;
-    let account_exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
-    if account_exists.is_none() { return Err("Account does not exist".into()); }
+    let account_type: Option<String> = tx.query_row("SELECT account_type FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let account_type=account_type.ok_or("Account does not exist")?;
+    if account_type=="investment" { return Err("Ordinary transaction import cannot target an investment account".into()); }
     let merchant_rules=load_merchant_rules(&tx)?;
 
     let batch_id = Uuid::new_v4().to_string();
@@ -3077,6 +3100,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if audit_tables!=1{return Err("The backup is missing AI analysis audit".into());}
     }
+    if version >= 18 {
+        let investment_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('investment_account_settings','securities','security_identifiers','investment_events','investment_event_revisions','investment_lot_allocations','security_prices')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if investment_tables!=7{return Err("The backup is missing Portfolio Foundation tables".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -3226,7 +3253,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::delete_manual_security_price, investment::list_security_prices, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

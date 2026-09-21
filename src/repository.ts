@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupHealth, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
+import type { Account, BackupHealth, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateInvestmentAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, HoldingSnapshot, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, InvestmentAccountSettings, InvestmentEventInput, InvestmentEventRevision, InvestmentRepository, LotAllocation, MerchantRule, MerchantRuleInput, PortfolioSnapshot, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Security, SecurityIdentifier, SecurityInput, SecurityPrice, SecurityPriceInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
 import type { ParsedWorkbook, WorkbookRepository } from "./workbookImport";
 import type { PdfExtraction, PdfRepository } from "./pdfImport";
 
@@ -150,3 +150,27 @@ class UnavailableAiRepository implements AiRepository {
   clearCredential():Promise<AiCredentialStatus>{return Promise.reject(new Error("AI credential vault access is available in the native desktop app"));}
 }
 export const aiRepository:AiRepository=isNativeApp?new TauriAiRepository():new UnavailableAiRepository();
+
+export class TauriInvestmentRepository implements InvestmentRepository {
+  createInvestmentAccount(input:CreateInvestmentAccountInput):Promise<InvestmentAccountSettings>{return invoke("create_investment_account",{request:input});}
+  getInvestmentAccountSettings(accountId:string):Promise<InvestmentAccountSettings|undefined>{return invoke("get_investment_account_settings",{accountId});}
+  saveInvestmentAccountSettings(input:InvestmentAccountSettings):Promise<InvestmentAccountSettings>{return invoke("save_investment_account_settings",{request:input});}
+  listSecurities(includeArchived=false):Promise<Security[]>{return invoke("list_securities",{includeArchived});}
+  createSecurity(input:SecurityInput):Promise<Security>{return invoke("create_security",{request:input});}
+  updateSecurity(id:string,input:SecurityInput):Promise<Security>{return invoke("update_security",{securityId:id,request:input});}
+  setSecurityArchived(id:string,archived:boolean):Promise<void>{return invoke("set_security_archived",{securityId:id,archived});}
+  addSecurityIdentifier(securityId:string,namespace:string,value:string):Promise<SecurityIdentifier>{return invoke("add_security_identifier",{securityId,namespace,value});}
+  removeSecurityIdentifier(securityId:string,namespace:string,value:string):Promise<void>{return invoke("remove_security_identifier",{securityId,namespace,value});}
+  createInvestmentEvent(input:InvestmentEventInput):Promise<InvestmentEventRevision>{return invoke("create_investment_event",{request:input});}
+  updatePendingInvestmentEvent(eventId:string,input:InvestmentEventInput):Promise<InvestmentEventRevision>{return invoke("update_pending_investment_event",{eventId,request:input});}
+  correctHistoricalInvestmentEvent(eventId:string,replacement:InvestmentEventInput,reason:string):Promise<InvestmentEventRevision>{return invoke("correct_historical_investment_event",{eventId,replacement,reason});}
+  getInvestmentEventHistory(eventId:string):Promise<InvestmentEventRevision[]>{return invoke("get_investment_event_history",{eventId});}
+  setSpecificLotAllocations(saleEventId:string,allocations:LotAllocation[]):Promise<void>{return invoke("set_specific_lot_allocations",{request:{saleEventId,allocations}});}
+  deriveInvestmentHoldings(accountId:string,asOfDate:string):Promise<HoldingSnapshot[]>{return invoke("derive_investment_holdings",{accountId,asOfDate});}
+  calculatePortfolioSnapshot(accountIds:string[]|undefined,asOfDate:string):Promise<PortfolioSnapshot>{return invoke("calculate_portfolio_snapshot",{accountIds:accountIds??null,asOfDate});}
+  addManualSecurityPrice(input:SecurityPriceInput):Promise<SecurityPrice>{return invoke("add_manual_security_price",{request:input});}
+  deleteManualSecurityPrice(priceId:string):Promise<void>{return invoke("delete_manual_security_price",{priceId});}
+  listSecurityPrices(securityId:string,fromDate?:string,toDate?:string):Promise<SecurityPrice[]>{return invoke("list_security_prices",{securityId,fromDate:fromDate??null,toDate:toDate??null});}
+}
+
+export const investmentRepository:InvestmentRepository=new TauriInvestmentRepository();
