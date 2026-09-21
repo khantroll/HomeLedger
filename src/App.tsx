@@ -429,7 +429,7 @@ function AccountsPage({
         <div className="panel-heading">
           <div>
             <h2>Accounts</h2>
-            <p>Select an account to open its register or investment portfolio</p>
+            <p>Select an account to open its Money-style register or investment portfolio</p>
           </div>
           <button onClick={onAdd}>+ Add account</button>
         </div>
