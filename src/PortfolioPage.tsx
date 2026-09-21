@@ -30,7 +30,8 @@ function eventDescription(event:InvestmentEventRevision,security?:Security,persp
   case "basis_adjustment":return `Basis adjustment${name?` — ${name}`:""}`;
  }
 }
-function displayCashMovement(event:InvestmentEventRevision,accountId:string):number{return event.eventType==="cash_transfer"&&event.relatedAccountId===accountId?-event.cashEffectMinor:event.cashEffectMinor;}\nfunction cashDetail(event:InvestmentEventRevision,currency:string):string{
+function displayCashMovement(event:InvestmentEventRevision,accountId:string):number{return event.eventType==="cash_transfer"&&event.relatedAccountId===accountId?-event.cashEffectMinor:event.cashEffectMinor;}
+function cashDetail(event:InvestmentEventRevision,currency:string):string{
  const parts:string[]=[];if(event.incomeMinor)parts.push(`Income ${formatMoney(event.incomeMinor,currency)}`);if(event.acquisitionFundingMinor)parts.push(`Acquisition ${formatMoney(event.acquisitionFundingMinor,currency)}`);if(event.feeMinor)parts.push(`Fee ${formatMoney(event.feeMinor,currency)}`);return parts.join(" · ");
 }
 function Summary({label,value,detail,tone}:{label:string;value:string;detail:string;tone?:"positive"|"negative"}){return <div className={`summary ${tone??""}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;}
