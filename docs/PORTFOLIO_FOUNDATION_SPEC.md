@@ -228,7 +228,7 @@ Requires security and positive disposed quantity. Decreases quantity and increas
 Requires security when attributable to one; quantity unchanged; increases cash and investment income.
 
 ### Reinvest dividend
-One user action with compound recoverable semantics: records investment income and an acquisition/new lot while net cash is normally zero. The model must not lose the income component merely because cash did not remain in the account.
+One user action with **deterministically recoverable income and acquisition components**, even when the net cash effect is zero. For example, a $100 dividend reinvested into $100 of shares represents +$100 investment income and −$100 acquisition funding, for net $0 cash; the acquisition creates the appropriate lot and basis. The persisted event/component representation and projection APIs must preserve both economic components independently enough that later income reporting can recover the full dividend and lot/basis calculation can recover the acquisition. The model must never infer “no income” merely because no dividend cash remained in the account.
 
 ### Interest
 Quantity unchanged; increases cash and investment income.
@@ -267,7 +267,8 @@ A holding snapshot for `account/security/asOfDate` contains:
 - price timestamp/source;
 - market value when price is available;
 - unrealized gain only for quantities with sufficient basis/price information;
-- completeness flags.
+- for dispositions/projections, separate known-basis disposed quantity, known disposed basis and calculable realized gain from unknown-basis disposed quantity and its attributable proceeds;
+- explicit completeness/unknown-basis flags. When any disposed quantity lacks basis, the calculable portion is a partial result and must not be presented as the complete realized gain.
 
 Do not persist a mutable authoritative holdings balance.
 
@@ -410,7 +411,8 @@ When the implementation migration lands:
 ### Unknown basis
 - unknown opening basis remains unknown;
 - mixed known/unknown lots do not produce false aggregate gain;
-- sell of unknown-basis quantity reports incomplete realized gain.
+- sell of unknown-basis quantity reports incomplete realized gain;
+- mixed known/unknown-basis disposition returns the known disposed quantity/basis and calculable gain separately from unknown-basis disposed quantity/proceeds, with an explicit incomplete/unknown-basis indicator; the calculable gain must never be labeled or exposed as the complete realized gain.
 
 ### Dates/as-of
 - trade appears in holdings on trade date;
