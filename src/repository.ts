@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
+import type { Account, BackupHealth, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateTransactionInput, CreateTransferInput, DebtPlan, DebtPlanInput, FinanceRepository, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, MerchantRule, MerchantRuleInput, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
 import type { ParsedWorkbook, WorkbookRepository } from "./workbookImport";
 import type { PdfExtraction, PdfRepository } from "./pdfImport";
 
@@ -76,6 +76,10 @@ class TauriBackupRepository implements BackupRepository {
   saveEncryptedFile(contents: string): Promise<boolean> { return invoke("save_backup_file", { contents }); }
   chooseEncryptedFile(): Promise<string | null> { return invoke("choose_backup_file"); }
   restoreSnapshot(snapshotBase64: string): Promise<RestoreResult> { return invoke("restore_backup_snapshot", { snapshotBase64 }); }
+  getHealth(): Promise<BackupHealth> { return invoke("get_backup_health"); }
+  setRetention(retention:number): Promise<BackupHealth> { return invoke("set_recovery_retention",{retention}); }
+  createRecoverySnapshot(): Promise<BackupHealth> { return invoke("create_automatic_recovery_snapshot"); }
+  restoreRecoverySnapshot(fileName:string): Promise<RestoreResult> { return invoke("restore_recovery_snapshot",{fileName}); }
 }
 
 class UnavailableBackupRepository implements BackupRepository {
@@ -84,6 +88,10 @@ class UnavailableBackupRepository implements BackupRepository {
   saveEncryptedFile(): Promise<boolean> { return Promise.reject(this.unavailable()); }
   chooseEncryptedFile(): Promise<string | null> { return Promise.reject(this.unavailable()); }
   restoreSnapshot(): Promise<RestoreResult> { return Promise.reject(this.unavailable()); }
+  getHealth(): Promise<BackupHealth> { return Promise.reject(this.unavailable()); }
+  setRetention(): Promise<BackupHealth> { return Promise.reject(this.unavailable()); }
+  createRecoverySnapshot(): Promise<BackupHealth> { return Promise.reject(this.unavailable()); }
+  restoreRecoverySnapshot(): Promise<RestoreResult> { return Promise.reject(this.unavailable()); }
 }
 
 export const backupRepository: BackupRepository = isNativeApp ? new TauriBackupRepository() : new UnavailableBackupRepository();
