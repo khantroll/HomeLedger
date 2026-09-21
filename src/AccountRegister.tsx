@@ -31,6 +31,8 @@ interface AccountRegisterProps {
   lockedAccountId?: string;
   /** Optional starting account for the global Transactions view. */
   initialAccountId?: string;
+  /** Optional starting status for contextual entry into the global register. */
+  initialStatus?: TransactionStatusFilter;
   refreshToken?: number;
   onRequestDialog: (request: RegisterDialogRequest) => void;
   onAccountChange?: (accountId: string | undefined) => void;
@@ -40,13 +42,14 @@ export function AccountRegister({
   accounts,
   lockedAccountId,
   initialAccountId,
+  initialStatus = "all",
   refreshToken = 0,
   onRequestDialog,
   onAccountChange,
 }: AccountRegisterProps) {
   const locked = Boolean(lockedAccountId);
   const [accountId, setAccountId] = useState(lockedAccountId ?? initialAccountId ?? "");
-  const [status, setStatus] = useState<TransactionStatusFilter>("all");
+  const [status, setStatus] = useState<TransactionStatusFilter>(initialStatus);
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [search, setSearch] = useState("");
@@ -68,6 +71,10 @@ export function AccountRegister({
   useEffect(() => {
     if (!locked && initialAccountId !== undefined) setAccountId(initialAccountId);
   }, [initialAccountId, locked]);
+
+  useEffect(() => {
+    if (!locked) setStatus(initialStatus);
+  }, [initialStatus, locked]);
 
   useEffect(() => {
     if (accountId && !accounts.some((item) => item.id === accountId)) {
