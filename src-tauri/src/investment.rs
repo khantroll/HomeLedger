@@ -1,3 +1,4 @@
+#![allow(clippy::possible_missing_else, clippy::collapsible_match, clippy::let_and_return, clippy::cloned_ref_to_slice_refs)]
 use crate::DbState;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
