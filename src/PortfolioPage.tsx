@@ -1,93 +1,80 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, BriefcaseBusiness } from "lucide-react";
-import { formatMoney, type Account, type PortfolioSnapshot, type Security } from "./domain";
+import { ArrowLeft, BriefcaseBusiness, ChevronDown, ChevronRight } from "lucide-react";
+import { formatMoney, type Account, type HoldingSnapshot, type InvestmentEventRevision, type PortfolioSnapshot, type Security } from "./domain";
 import { investmentRepository, isNativeApp } from "./repository";
 import { todayIso } from "./scheduledPresentation";
 import "./portfolio.css";
 
 export interface PortfolioNavigationFocus { accountId?: string; securityId?: string; }
+type AccountTab="portfolio"|"activity"|"cash";
 
-function formatQuantity(valueE8:number):string {
-  return new Intl.NumberFormat("en-US",{maximumFractionDigits:8}).format(valueE8/100_000_000);
+function formatQuantity(valueE8:number):string{return new Intl.NumberFormat("en-US",{maximumFractionDigits:8}).format(valueE8/100_000_000);}
+function formatPrice(valueE8:number|undefined,currency:string):string{return valueE8===undefined?"Price needed":new Intl.NumberFormat("en-US",{style:"currency",currency,maximumFractionDigits:4}).format(valueE8/100_000_000);}
+function displayDate(value:string|undefined,fallback="Unknown date"):string{if(!value)return fallback;const date=value.slice(0,10);return new Intl.DateTimeFormat("en-US",{dateStyle:"medium",timeZone:"UTC"}).format(new Date(`${date}T00:00:00Z`));}
+function eventVerb(type:InvestmentEventRevision["eventType"]):string{return ({buy:"Bought",sell:"Sold",dividend:"Dividend",reinvest_dividend:"Reinvested dividend",interest:"Interest",fee:"Fee",split:"Split",return_of_capital:"Return of capital",cash_transfer:"Cash transfer",security_transfer:"Security transfer",opening_position:"Opening position",basis_adjustment:"Basis adjustment"} as const)[type];}
+function eventDescription(event:InvestmentEventRevision,security?:Security):string{
+ const name=security?.symbol??security?.name;
+ const qty=event.quantityE8===undefined?"":formatQuantity(event.quantityE8);
+ switch(event.eventType){
+  case "buy":return `Bought ${qty}${name?` ${name}`:""}`;
+  case "sell":return `Sold ${qty}${name?` ${name}`:""}`;
+  case "dividend":return `Dividend${name?` from ${name}`:""}`;
+  case "reinvest_dividend":return `Reinvested dividend${name?` in ${name}`:""}`;
+  case "interest":return "Interest";
+  case "fee":return "Fee";
+  case "split":return `Split${name?` — ${name}`:""}`;
+  case "return_of_capital":return `Return of capital${name?` — ${name}`:""}`;
+  case "cash_transfer":return "Cash transfer";
+  case "security_transfer":return `Security transfer${name?` — ${name}`:""}`;
+  case "opening_position":return `Opening position${name?` — ${name}`:""}`;
+  case "basis_adjustment":return `Basis adjustment${name?` — ${name}`:""}`;
+ }
 }
-function formatPrice(valueE8:number|undefined,currency:string):string {
-  if(valueE8===undefined)return "Price needed";
-  return new Intl.NumberFormat("en-US",{style:"currency",currency,maximumFractionDigits:4}).format(valueE8/100_000_000);
+function cashDetail(event:InvestmentEventRevision,currency:string):string{
+ const parts:string[]=[];if(event.incomeMinor)parts.push(`Income ${formatMoney(event.incomeMinor,currency)}`);if(event.acquisitionFundingMinor)parts.push(`Acquisition ${formatMoney(event.acquisitionFundingMinor,currency)}`);if(event.feeMinor)parts.push(`Fee ${formatMoney(event.feeMinor,currency)}`);return parts.join(" · ");
 }
-function priceDate(value:string|undefined):string {
-  if(!value)return "No local price";
-  const date=value.slice(0,10);
-  return new Intl.DateTimeFormat("en-US",{dateStyle:"medium",timeZone:"UTC"}).format(new Date(`${date}T00:00:00Z`));
-}
+function Summary({label,value,detail,tone}:{label:string;value:string;detail:string;tone?:"positive"|"negative"}){return <div className={`summary ${tone??""}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;}
 
 export function PortfolioPage({accounts,focus,onShowAll,onOpenSecurity}:{accounts:Account[];focus?:PortfolioNavigationFocus;onShowAll:()=>void;onOpenSecurity:(accountId:string,securityId:string)=>void;}) {
-  const investmentAccounts=useMemo(()=>accounts.filter(a=>a.type==="investment"&&!a.archived),[accounts]);
-  const scopedAccounts=useMemo(()=>focus?.accountId?investmentAccounts.filter(a=>a.id===focus.accountId):investmentAccounts,[investmentAccounts,focus?.accountId]);
-  const [snapshot,setSnapshot]=useState<PortfolioSnapshot>();
-  const [securities,setSecurities]=useState<Security[]>([]);
-  const [error,setError]=useState("");
-  const asOfDate=todayIso();
-
-  useEffect(()=>{
-    let cancelled=false;
-    if(!isNativeApp){setSnapshot(undefined);setSecurities([]);setError("");return ()=>{cancelled=true;};}
-    if(scopedAccounts.length===0){setSnapshot({asOfDate,accounts:[]});setSecurities([]);setError("");return ()=>{cancelled=true;};}
-    void Promise.all([
-      investmentRepository.calculatePortfolioSnapshot(scopedAccounts.map(a=>a.id),asOfDate),
-      investmentRepository.listSecurities(false),
-    ]).then(([nextSnapshot,nextSecurities])=>{if(!cancelled){setSnapshot(nextSnapshot);setSecurities(nextSecurities);setError("");}})
-      .catch(reason=>{if(!cancelled)setError(reason instanceof Error?reason.message:String(reason));});
-    return ()=>{cancelled=true;};
-  },[asOfDate,scopedAccounts.map(a=>a.id).join("|")]);
-
-  const securityById=useMemo(()=>new Map(securities.map(s=>[s.id,s])),[securities]);
-  const accountById=useMemo(()=>new Map(investmentAccounts.map(a=>[a.id,a])),[investmentAccounts]);
-  const rows=useMemo(()=>snapshot?.accounts.flatMap(a=>a.holdings.map(h=>({account:a,holding:h})))??[],[snapshot]);
-  const cashMinor=useMemo(()=>snapshot?.accounts.reduce((sum,a)=>sum+a.cashMinor,0)??0,[snapshot]);
-  const investmentsKnown=snapshot!==undefined&&snapshot.accounts.every(a=>a.holdingsValueMinor!==undefined);
-  const investmentsMinor=investmentsKnown?snapshot!.accounts.reduce((sum,a)=>sum+(a.holdingsValueMinor??0),0):undefined;
-  const totalKnown=snapshot!==undefined&&snapshot.accounts.every(a=>a.totalValueMinor!==undefined);
-  const totalMinor=totalKnown?snapshot!.accounts.reduce((sum,a)=>sum+(a.totalValueMinor??0),0):undefined;
-  const knownBasisMinor=rows.reduce((sum,row)=>sum+row.holding.knownBasisMinor,0);
-  const gainRows=rows.filter(row=>row.holding.unrealizedGainMinor!==undefined);
-  const gainMinor=gainRows.reduce((sum,row)=>sum+(row.holding.unrealizedGainMinor??0),0);
-  const gainComplete=rows.length>0&&gainRows.length===rows.length&&rows.every(row=>!row.holding.incompleteUnknownBasis);
-  const currency=scopedAccounts[0]?.currency??investmentAccounts[0]?.currency??"USD";
-  const mixedCurrency=scopedAccounts.some(a=>a.currency!==currency);
-  const scopedName=focus?.accountId?accountById.get(focus.accountId)?.name:undefined;
-
-  if(!isNativeApp)return <div className="portfolio-page"><section className="panel portfolio-empty"><BriefcaseBusiness size={34}/><h2>Portfolio is available in the desktop app</h2><p>The Portfolio Manager reads your local investment Foundation and saved prices. Browser preview does not connect to that local database.</p></section></div>;
-
-  return <div className="portfolio-page">
-    {focus?.accountId&&<button className="portfolio-back" onClick={onShowAll}><ArrowLeft size={13}/> All investments</button>}
-    <section className="portfolio-intro">
-      <div><span className="eyebrow">{scopedName?"Investment account":"Portfolio Manager"}</span><h2>{scopedName??"Your investments at a glance"}</h2><p>What you own, what you paid, and what it is worth using prices saved on this computer.</p></div>
-      <div className="portfolio-asof"><span>As of</span><strong>{priceDate(asOfDate)}</strong></div>
-    </section>
-    {error&&<div className="error-banner" role="alert">{error}</div>}
-    {mixedCurrency&&<div className="notice"><strong>Separate currencies</strong><span>HomeLedger does not combine investment values across currencies without FX accounting.</span></div>}
-    <div className="summary-grid portfolio-summary">
-      <PortfolioSummary label="Portfolio value" value={!mixedCurrency&&totalMinor!==undefined?formatMoney(totalMinor,currency):"Unknown"} detail={totalMinor===undefined?"One or more holdings needs a price":"Cash plus investments"}/>
-      <PortfolioSummary label="Investments" value={!mixedCurrency&&investmentsMinor!==undefined?formatMoney(investmentsMinor,currency):"Unknown"} detail={investmentsMinor===undefined?"Missing prices stay unknown":"Securities with local prices"}/>
-      <PortfolioSummary label="Cash" value={!mixedCurrency?formatMoney(cashMinor,currency):"See accounts"} detail="Cash held inside investment accounts"/>
-      <PortfolioSummary label="Known cost basis" value={!mixedCurrency?formatMoney(knownBasisMinor,currency):"See holdings"} detail={rows.some(r=>r.holding.incompleteUnknownBasis)?"Some basis is unknown":"Basis HomeLedger can establish"}/>
-      <PortfolioSummary label="Unrealized gain/loss" value={!mixedCurrency&&gainRows.length?formatMoney(gainMinor,currency):"Unknown"} detail={gainComplete?"Calculated from known basis and prices":gainRows.length?"Partial — some gain/loss is unknown":"Needs basis and price data"} tone={gainRows.length?(gainMinor<0?"negative":"positive"):undefined}/>
-    </div>
-    <section className="panel portfolio-holdings">
-      <div className="panel-heading"><div><h2>Holdings</h2><p>Securities are separate from cash. Missing prices and basis are never treated as zero.</p></div></div>
-      {snapshot===undefined&&!error?<div className="empty-state">Loading portfolio…</div>:rows.length===0?<div className="empty-state">{investmentAccounts.length?"No securities are held in this view yet.":"Add an investment account to begin tracking a portfolio."}</div>:
-      <div className="table-wrap"><table><thead><tr><th>Security</th><th>Account</th><th className="amount">Shares</th><th className="amount">Price / date</th><th className="amount">Market value</th><th className="amount">Known basis</th><th className="amount">Gain / loss</th><th className="amount">Portfolio weight</th></tr></thead>
-      <tbody>{rows.map(({account,holding})=>{const security=securityById.get(holding.securityId);const accountInfo=accountById.get(holding.accountId);const basisUnknown=holding.incompleteUnknownBasis||holding.unknownBasisQuantityE8>0;const weight=investmentsMinor&&holding.marketValueMinor!==undefined?(holding.marketValueMinor/investmentsMinor)*100:undefined;return <tr key={`${holding.accountId}:${holding.securityId}`} className={focus?.securityId===holding.securityId?"portfolio-selected":undefined}>
-        <td><button className="portfolio-security-link" onClick={()=>onOpenSecurity(holding.accountId,holding.securityId)}><strong>{security?.symbol??security?.name??"Unknown security"}</strong><small>{security?.symbol?security.name:"Security details"}</small></button></td>
-        <td>{accountInfo?.name??"Investment account"}</td><td className="amount">{formatQuantity(holding.quantityE8)}</td>
-        <td className="amount"><span className={holding.priceE8===undefined?"portfolio-unknown":undefined}>{formatPrice(holding.priceE8,accountInfo?.currency??currency)}</span><small>{priceDate(holding.priceObservedAt)}</small></td>
-        <td className="amount">{holding.marketValueMinor===undefined?<span className="portfolio-unknown">Unknown</span>:formatMoney(holding.marketValueMinor,accountInfo?.currency??currency)}</td>
-        <td className="amount"><span>{formatMoney(holding.knownBasisMinor,accountInfo?.currency??currency)}</span>{basisUnknown&&<small className="portfolio-unknown">Partial — basis unavailable</small>}</td>
-        <td className="amount">{holding.unrealizedGainMinor===undefined?<span className="portfolio-unknown">Unknown</span>:<span className={holding.unrealizedGainMinor<0?"negative":"positive"}>{formatMoney(holding.unrealizedGainMinor,accountInfo?.currency??currency)}{basisUnknown?" (partial)":""}</span>}</td>
-        <td className="amount">{weight===undefined?<span className="portfolio-unknown">Unknown</span>:`${weight.toFixed(1)}%`}</td>
-      </tr>})}</tbody></table></div>}
-    </section>
-    {snapshot&&snapshot.accounts.length>0&&<section className="panel portfolio-cash"><div className="panel-heading"><div><h2>Cash in investment accounts</h2><p>Cash is part of account value, but it is not a security holding.</p></div></div>{snapshot.accounts.map(a=><div className="portfolio-cash-row" key={a.accountId}><span>{accountById.get(a.accountId)?.name??"Investment account"}</span><strong>{formatMoney(a.cashMinor,accountById.get(a.accountId)?.currency??currency)}</strong></div>)}</section>}
-  </div>;
+ const investmentAccounts=useMemo(()=>accounts.filter(a=>a.type==="investment"&&!a.archived),[accounts]);
+ const scopedAccounts=useMemo(()=>focus?.accountId?investmentAccounts.filter(a=>a.id===focus.accountId):investmentAccounts,[investmentAccounts,focus?.accountId]);
+ const [snapshot,setSnapshot]=useState<PortfolioSnapshot>();const [securities,setSecurities]=useState<Security[]>([]);const [events,setEvents]=useState<InvestmentEventRevision[]>([]);const [tab,setTab]=useState<AccountTab>("portfolio");const [error,setError]=useState("");const asOfDate=todayIso();
+ useEffect(()=>{setTab("portfolio");},[focus?.accountId,focus?.securityId]);
+ useEffect(()=>{let cancelled=false;if(!isNativeApp){setSnapshot(undefined);setSecurities([]);setEvents([]);setError("");return()=>{cancelled=true;};}if(scopedAccounts.length===0){setSnapshot({asOfDate,accounts:[]});setSecurities([]);setEvents([]);setError("");return()=>{cancelled=true;};}
+  const accountId=focus?.accountId;void Promise.all([investmentRepository.calculatePortfolioSnapshot(scopedAccounts.map(a=>a.id),asOfDate),investmentRepository.listSecurities(false),accountId?investmentRepository.listInvestmentEvents(accountId,undefined,asOfDate):Promise.resolve([])])
+   .then(([s,sec,e])=>{if(!cancelled){setSnapshot(s);setSecurities(sec);setEvents(e);setError("");}}).catch(reason=>{if(!cancelled)setError(reason instanceof Error?reason.message:String(reason));});return()=>{cancelled=true;};},[asOfDate,focus?.accountId,scopedAccounts.map(a=>a.id).join("|")]);
+ const securityById=useMemo(()=>new Map(securities.map(s=>[s.id,s])),[securities]);const accountById=useMemo(()=>new Map(investmentAccounts.map(a=>[a.id,a])),[investmentAccounts]);
+ const rows=useMemo(()=>snapshot?.accounts.flatMap(a=>a.holdings.map(h=>({account:a,holding:h})))??[],[snapshot]);const accountSnapshot=focus?.accountId?snapshot?.accounts.find(a=>a.accountId===focus.accountId):undefined;
+ const cashMinor=snapshot?.accounts.reduce((sum,a)=>sum+a.cashMinor,0)??0;const investmentsKnown=snapshot!==undefined&&snapshot.accounts.every(a=>a.holdingsValueMinor!==undefined);const investmentsMinor=investmentsKnown?snapshot!.accounts.reduce((sum,a)=>sum+(a.holdingsValueMinor??0),0):undefined;const totalKnown=snapshot!==undefined&&snapshot.accounts.every(a=>a.totalValueMinor!==undefined);const totalMinor=totalKnown?snapshot!.accounts.reduce((sum,a)=>sum+(a.totalValueMinor??0),0):undefined;
+ const knownBasisMinor=rows.reduce((sum,row)=>sum+row.holding.knownBasisMinor,0);const gainRows=rows.filter(row=>row.holding.unrealizedGainMinor!==undefined);const gainMinor=gainRows.reduce((sum,row)=>sum+(row.holding.unrealizedGainMinor??0),0);const gainComplete=rows.length>0&&gainRows.length===rows.length&&rows.every(row=>!row.holding.incompleteUnknownBasis);
+ const currency=scopedAccounts[0]?.currency??investmentAccounts[0]?.currency??"USD";const mixedCurrency=scopedAccounts.some(a=>a.currency!==currency);const scopedName=focus?.accountId?accountById.get(focus.accountId)?.name:undefined;
+ const selected=focus?.securityId?rows.find(r=>r.holding.securityId===focus.securityId):undefined;
+ if(!isNativeApp)return <div className="portfolio-page"><section className="panel portfolio-empty"><BriefcaseBusiness size={34}/><h2>Portfolio is available in the desktop app</h2><p>The Portfolio Manager reads your local investment Foundation and saved prices.</p></section></div>;
+ if(focus?.securityId&&selected)return <SecurityDetail holding={selected.holding} security={securityById.get(focus.securityId)} account={accountById.get(selected.holding.accountId)} events={events.filter(e=>e.securityId===focus.securityId)} onBack={()=>onOpenSecurity(selected.holding.accountId,"")}/>;
+ return <div className="portfolio-page">
+  {focus?.accountId&&<button className="portfolio-back" onClick={onShowAll}><ArrowLeft size={13}/> All investments</button>}
+  <section className="portfolio-intro"><div><span className="eyebrow">{scopedName?"Investment account":"Portfolio Manager"}</span><h2>{scopedName??"Your investments at a glance"}</h2><p>{scopedName?"Your holdings, investment activity, and intrinsic cash in one account workspace.":"What you own, what you paid, and what it is worth using prices saved on this computer."}</p></div><div className="portfolio-asof"><span>As of</span><strong>{displayDate(asOfDate)}</strong></div></section>
+  {error&&<div className="error-banner" role="alert">{error}</div>}{mixedCurrency&&<div className="notice"><strong>Separate currencies</strong><span>HomeLedger does not combine investment values across currencies without FX accounting.</span></div>}
+  <div className="summary-grid portfolio-summary"><Summary label={scopedName?"Account value":"Portfolio value"} value={!mixedCurrency&&totalMinor!==undefined?formatMoney(totalMinor,currency):"Unknown"} detail={totalMinor===undefined?"One or more holdings needs a price":"Cash plus investments"}/><Summary label="Investments" value={!mixedCurrency&&investmentsMinor!==undefined?formatMoney(investmentsMinor,currency):"Unknown"} detail={investmentsMinor===undefined?"Missing prices stay unknown":"Securities with local prices"}/><Summary label="Cash" value={!mixedCurrency?formatMoney(cashMinor,currency):"See accounts"} detail="Intrinsic investment cash"/><Summary label="Known cost basis" value={!mixedCurrency?formatMoney(knownBasisMinor,currency):"See holdings"} detail={rows.some(r=>r.holding.incompleteUnknownBasis)?"Partial — some basis is unknown":"Basis HomeLedger can establish"}/><Summary label="Calculable gain/loss" value={!mixedCurrency&&gainRows.length?formatMoney(gainMinor,currency):"Unknown"} detail={gainComplete?"Calculated from known basis and prices":gainRows.length?"Partial — some gain/loss is unknown":"Needs basis and price data"} tone={gainRows.length?(gainMinor<0?"negative":"positive"):undefined}/></div>
+  {focus?.accountId&&<nav className="portfolio-tabs" aria-label="Investment account views">{(["portfolio","activity","cash"] as AccountTab[]).map(v=><button key={v} className={tab===v?"active":""} onClick={()=>setTab(v)}>{v[0].toUpperCase()+v.slice(1)}</button>)}</nav>}
+  {(!focus?.accountId||tab==="portfolio")&&<HoldingsTable rows={rows} securityById={securityById} accountById={accountById} investmentsMinor={investmentsMinor} currency={currency} onOpenSecurity={onOpenSecurity}/>}
+  {focus?.accountId&&tab==="activity"&&<ActivityList events={events} securityById={securityById} currency={currency}/>}
+  {focus?.accountId&&tab==="cash"&&<CashView cashMinor={accountSnapshot?.cashMinor??0} events={events} securityById={securityById} currency={currency}/>}
+  {!focus?.accountId&&snapshot&&snapshot.accounts.length>0&&<section className="panel portfolio-cash"><div className="panel-heading"><div><h2>Cash in investment accounts</h2><p>Cash is part of account value, but it is not a security holding.</p></div></div>{snapshot.accounts.map(a=><div className="portfolio-cash-row" key={a.accountId}><span>{accountById.get(a.accountId)?.name??"Investment account"}</span><strong>{formatMoney(a.cashMinor,accountById.get(a.accountId)?.currency??currency)}</strong></div>)}</section>}
+ </div>;
 }
-function PortfolioSummary({label,value,detail,tone}:{label:string;value:string;detail:string;tone?:"positive"|"negative"}){return <div className={`summary ${tone??""}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>}
+
+function HoldingsTable({rows,securityById,accountById,investmentsMinor,currency,onOpenSecurity}:{rows:{account:{accountId:string};holding:HoldingSnapshot}[];securityById:Map<string,Security>;accountById:Map<string,Account>;investmentsMinor:number|undefined;currency:string;onOpenSecurity:(a:string,s:string)=>void}){
+ return <section className="panel portfolio-holdings"><div className="panel-heading"><div><h2>Holdings</h2><p>Securities are separate from cash. Missing prices and basis are never treated as zero.</p></div></div>{rows.length===0?<div className="empty-state">No securities are held in this view yet.</div>:<div className="table-wrap"><table><thead><tr><th>Security</th><th>Account</th><th className="amount">Shares</th><th className="amount">Price / date</th><th className="amount">Market value</th><th className="amount">Known basis</th><th className="amount">Gain / loss</th><th className="amount">Portfolio weight</th></tr></thead><tbody>{rows.map(({holding})=>{const security=securityById.get(holding.securityId),account=accountById.get(holding.accountId),basisUnknown=holding.incompleteUnknownBasis||holding.unknownBasisQuantityE8>0,weight=investmentsMinor&&holding.marketValueMinor!==undefined?(holding.marketValueMinor/investmentsMinor)*100:undefined;return <tr key={`${holding.accountId}:${holding.securityId}`}><td><button className="portfolio-security-link" onClick={()=>onOpenSecurity(holding.accountId,holding.securityId)}><strong>{security?.symbol??security?.name??"Unknown security"}</strong><small>{security?.symbol?security.name:"Security details"}</small></button></td><td>{account?.name??"Investment account"}</td><td className="amount">{formatQuantity(holding.quantityE8)}</td><td className="amount"><span className={holding.priceE8===undefined?"portfolio-unknown":undefined}>{formatPrice(holding.priceE8,account?.currency??currency)}</span><small>{displayDate(holding.priceObservedAt,"No local price")}</small></td><td className="amount">{holding.marketValueMinor===undefined?<span className="portfolio-unknown">Unknown</span>:formatMoney(holding.marketValueMinor,account?.currency??currency)}</td><td className="amount">{formatMoney(holding.knownBasisMinor,account?.currency??currency)}{basisUnknown&&<small className="portfolio-unknown">Partial — basis unavailable</small>}</td><td className="amount">{holding.unrealizedGainMinor===undefined?<span className="portfolio-unknown">Unknown</span>:<span>{formatMoney(holding.unrealizedGainMinor,account?.currency??currency)}{basisUnknown?" (partial)":""}</span>}</td><td className="amount">{weight===undefined?<span className="portfolio-unknown">Unknown</span>:`${weight.toFixed(1)}%`}</td></tr>})}</tbody></table></div>}</section>;
+}
+function ActivityList({events,securityById,currency}:{events:InvestmentEventRevision[];securityById:Map<string,Security>;currency:string}){
+ return <section className="panel investment-activity"><div className="panel-heading"><div><h2>Activity</h2><p>The current authoritative revision of each investment event, newest first.</p></div></div>{events.length===0?<div className="empty-state">No investment activity in this account yet.</div>:events.map(e=><article className="investment-event" key={e.eventId}><div><strong>{eventDescription(e,e.securityId?securityById.get(e.securityId):undefined)}</strong><small>{displayDate(e.tradeDate)} · {e.status}{e.memo?` · ${e.memo}`:""}</small></div><div className="investment-event-value">{e.cashEffectMinor!==0&&<strong>{formatMoney(e.cashEffectMinor,currency)}</strong>}<small>{cashDetail(e,currency)}</small></div></article>)}</section>;
+}
+function CashView({cashMinor,events,securityById,currency}:{cashMinor:number;events:InvestmentEventRevision[];securityById:Map<string,Security>;currency:string}){
+ const cashEvents=events.filter(e=>e.cashEffectMinor!==0||e.incomeMinor!==0||e.acquisitionFundingMinor!==0||e.feeMinor!==0);
+ return <section className="panel investment-cash"><div className="cash-hero"><span>Cash held in this investment account</span><strong>{formatMoney(cashMinor,currency)}</strong><p>This is intrinsic investment cash derived from the account opening cash and cash-affecting investment activity. It is not a synthetic security or separate account.</p></div><div className="panel-heading"><div><h2>Cash history</h2><p>Investment activity that affected cash or contains recoverable cash components.</p></div></div>{cashEvents.length===0?<div className="empty-state">No cash-affecting investment activity yet.</div>:cashEvents.map(e=><article className="investment-event" key={e.eventId}><div><strong>{eventDescription(e,e.securityId?securityById.get(e.securityId):undefined)}</strong><small>{displayDate(e.settlementDate??e.tradeDate)}{e.settlementDate&&e.settlementDate!==e.tradeDate?" · settled":""}</small></div><div className="investment-event-value"><strong>{formatMoney(e.cashEffectMinor,currency)}</strong><small>{cashDetail(e,currency)}</small></div></article>)}</section>;
+}
+function SecurityDetail({holding,security,account,events,onBack}:{holding:HoldingSnapshot;security?:Security;account?:Account;events:InvestmentEventRevision[];onBack:()=>void}){
+ const [lotsOpen,setLotsOpen]=useState(false),currency=account?.currency??security?.currency??"USD",basisUnknown=holding.incompleteUnknownBasis||holding.unknownBasisQuantityE8>0;
+ return <div className="portfolio-page"><button className="portfolio-back" onClick={onBack}><ArrowLeft size={13}/> Back to {account?.name??"investment account"}</button><section className="portfolio-intro"><div><span className="eyebrow">Security detail</span><h2>{security?.symbol??security?.name??"Unknown security"}</h2><p>{security?.symbol&&security.name}{security?.securityType?` · ${security.securityType.replace("_"," ")}`:""}{security?.exchangeMic?` · ${security.exchangeMic}`:""}</p></div></section><div className="summary-grid portfolio-summary"><Summary label="Shares" value={formatQuantity(holding.quantityE8)} detail="Units currently held"/><Summary label="Market value" value={holding.marketValueMinor===undefined?"Unknown":formatMoney(holding.marketValueMinor,currency)} detail={holding.priceE8===undefined?"Price needed":`${formatPrice(holding.priceE8,currency)} · ${displayDate(holding.priceObservedAt)}`}/><Summary label="Known cost basis" value={formatMoney(holding.knownBasisMinor,currency)} detail={basisUnknown?"Partial — some basis is unknown":"Basis HomeLedger can establish"}/><Summary label="Calculable gain/loss" value={holding.unrealizedGainMinor===undefined?"Unknown":formatMoney(holding.unrealizedGainMinor,currency)} detail={holding.unrealizedGainMinor===undefined?"Needs basis and price data":basisUnknown?"Partial — unknown basis excluded":"Known basis and saved price"}/></div><section className="panel security-lots"><button className="lots-toggle" onClick={()=>setLotsOpen(v=>!v)}>{lotsOpen?<ChevronDown size={15}/>:<ChevronRight size={15}/>} Lots <span>{holding.lots.length}</span></button>{lotsOpen&&<div>{holding.lots.map(l=><div className="lot-row" key={l.acquisitionEventId}><span>Acquired {displayDate(l.acquisitionDate,"Unknown acquisition date")}</span><span>{formatQuantity(l.quantityE8)} shares</span><strong>{l.basisMinor===undefined?"Unknown basis":formatMoney(l.basisMinor,currency)}</strong></div>)}</div>}</section><ActivityList events={events} securityById={new Map(security?[[security.id,security]]:[])} currency={currency}/></div>;
+}
