@@ -207,7 +207,7 @@ function normalizeHoldings(holdings:NativeHoldingSnapshot[]):HoldingSnapshot[] {
   return normalizePortfolioSnapshot({asOfDate:"",accounts:[{accountId:"",cashMinor:0,holdingsValueMinor:null,totalValueMinor:null,holdings}]}).accounts[0].holdings;
 }
 
-export class TauriInvestmentRepository implements InvestmentRepository {
+type NativeSecurityPrice=Omit<SecurityPrice,"provenance">&{provenance:string|null};\nexport function normalizeSecurityPrice(price:NativeSecurityPrice):SecurityPrice{return {...price,provenance:undefinedIfNull(price.provenance)};}\n\nexport class TauriInvestmentRepository implements InvestmentRepository {
   createInvestmentAccount(input:CreateInvestmentAccountInput):Promise<InvestmentAccountSettings>{return invoke("create_investment_account",{request:input});}
   getInvestmentAccountSettings(accountId:string):Promise<InvestmentAccountSettings|undefined>{return invoke("get_investment_account_settings",{accountId});}
   saveInvestmentAccountSettings(input:InvestmentAccountSettings):Promise<InvestmentAccountSettings>{return invoke("save_investment_account_settings",{request:input});}
@@ -225,9 +225,9 @@ export class TauriInvestmentRepository implements InvestmentRepository {
   setSpecificLotAllocations(saleEventId:string,allocations:LotAllocation[]):Promise<void>{return invoke("set_specific_lot_allocations",{request:{saleEventId,allocations}});}
   async deriveInvestmentHoldings(accountId:string,asOfDate:string):Promise<HoldingSnapshot[]>{const result=await invoke<NativeHoldingSnapshot[]>("derive_investment_holdings",{accountId,asOfDate});return normalizeHoldings(result);}
   async calculatePortfolioSnapshot(accountIds:string[]|undefined,asOfDate:string):Promise<PortfolioSnapshot>{const result=await invoke<NativePortfolioSnapshot>("calculate_portfolio_snapshot",{accountIds:accountIds??null,asOfDate});return normalizePortfolioSnapshot(result);}
-  addManualSecurityPrice(input:SecurityPriceInput):Promise<SecurityPrice>{return invoke("add_manual_security_price",{request:input});}
+  async addManualSecurityPrice(input:SecurityPriceInput):Promise<SecurityPrice>{return normalizeSecurityPrice(await invoke<NativeSecurityPrice>("add_manual_security_price",{request:input}));}
   deleteManualSecurityPrice(priceId:string):Promise<void>{return invoke("delete_manual_security_price",{priceId});}
-  listSecurityPrices(securityId:string,fromDate?:string,toDate?:string):Promise<SecurityPrice[]>{return invoke("list_security_prices",{securityId,fromDate:fromDate??null,toDate:toDate??null});}
+  async listSecurityPrices(securityId:string,fromDate?:string,toDate?:string):Promise<SecurityPrice[]>{const rows=await invoke<NativeSecurityPrice[]>("list_security_prices",{securityId,fromDate:fromDate??null,toDate:toDate??null});return rows.map(normalizeSecurityPrice);}
 }
 
 export const investmentRepository:InvestmentRepository=new TauriInvestmentRepository();
