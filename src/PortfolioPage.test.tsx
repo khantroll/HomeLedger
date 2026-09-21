@@ -50,7 +50,8 @@ describe("Portfolio native nullable snapshot boundary",()=>{
     expect(normalized.accounts[0].holdings[0].unrealizedGainMinor).toBeUndefined();
 
     vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(normalized);
-    vi.mocked(investmentRepository.listSecurities).mockResolvedValue([{id:"sec",securityType:"stock",name:"Example Corp",symbol:"EXM",currency:"USD",archived:false}]);\n    vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
+    vi.mocked(investmentRepository.listSecurities).mockResolvedValue([{id:"sec",securityType:"stock",name:"Example Corp",symbol:"EXM",currency:"USD",archived:false}]);
+    vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
 
     render(<PortfolioPage accounts={accounts} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
 
