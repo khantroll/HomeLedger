@@ -1640,6 +1640,7 @@ fn refresh_label_memory(connection: &Connection) -> Result<(), String> {
 fn create_account(request: CreateAccountRequest, state: State<DbState>) -> Result<Account, String> {
     const TYPES: &[&str] = &["checking", "savings", "credit", "cash", "loan", "asset", "investment"];
     if !TYPES.contains(&request.r#type.as_str()) { return Err("Unsupported account type".into()); }
+    if request.r#type == "investment" { return Err("Use the investment account workflow to create an investment account".into()); }
     let currency = request.currency.trim().to_uppercase();
     if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) { return Err("Currency must be a three-letter code".into()); }
     let mut account = Account { id: Uuid::new_v4().to_string(), name: clean_required(request.name, "Account name", 80)?, institution: clean_optional(request.institution, 80)?, r#type: request.r#type, currency, balance_minor: request.opening_balance_minor, owner_label: clean_required(request.owner_label, "Owner", 80)?, needs_review: false, sort_order: 0, archived: false };
