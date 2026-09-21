@@ -61,8 +61,8 @@ describe("Portfolio native nullable snapshot boundary",()=>{
     expect(within(row).getAllByText("Unknown").length).toBeGreaterThanOrEqual(3);
     expect(within(row).queryByText("$0.00")).toBeNull();
 
-    const investments=screen.getByText("Investments").closest(".summary");
-    const portfolioValue=screen.getByText("Portfolio value").closest(".summary");
+    const investments=screen.getByText("Investments").closest(".summary") as HTMLElement|null;
+    const portfolioValue=screen.getByText("Portfolio value").closest(".summary") as HTMLElement|null;
     expect(investments&&within(investments).getByText("Unknown")).toBeTruthy();
     expect(portfolioValue&&within(portfolioValue).getByText("Unknown")).toBeTruthy();
 
