@@ -1984,8 +1984,9 @@ fn insert_transaction_splits(connection: &Connection, transaction_id: &str, spli
 fn create_transaction_inner(connection: &mut Connection, request: CreateTransactionRequest) -> Result<LedgerTransaction, String> {
     let item = clean_transaction_request(request)?;
     let tx = connection.transaction().map_err(|e| e.to_string())?;
-    let exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![item.account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
-    if exists.is_none() { return Err("Account does not exist".into()); }
+    let account_type: Option<String> = tx.query_row("SELECT account_type FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![item.account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let account_type=account_type.ok_or("Account does not exist")?;
+    if account_type=="investment" { return Err("Investment activity must use the investment event workflow".into()); }
     tx.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, memo, source) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'manual')", params![item.id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo]).map_err(|e| e.to_string())?;
     insert_transaction_splits(&tx, &item.id, &item.splits)?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -2012,10 +2013,11 @@ fn clean_transfer_request(request: TransferRequest) -> Result<TransferRequest, S
 }
 
 fn transfer_accounts(connection: &Connection, from_id: &str, to_id: &str) -> Result<(String,String), String> {
-    let from: Option<(String,String)> = connection.query_row("SELECT name,currency FROM accounts WHERE id=?1 AND archived_at IS NULL", params![from_id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?;
-    let to: Option<(String,String)> = connection.query_row("SELECT name,currency FROM accounts WHERE id=?1 AND archived_at IS NULL", params![to_id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?;
-    let (from_name,from_currency)=from.ok_or("Source account does not exist")?;
-    let (to_name,to_currency)=to.ok_or("Destination account does not exist")?;
+    let from: Option<(String,String,String)> = connection.query_row("SELECT name,currency,account_type FROM accounts WHERE id=?1 AND archived_at IS NULL", params![from_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e| e.to_string())?;
+    let to: Option<(String,String,String)> = connection.query_row("SELECT name,currency,account_type FROM accounts WHERE id=?1 AND archived_at IS NULL", params![to_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e| e.to_string())?;
+    let (from_name,from_currency,from_type)=from.ok_or("Source account does not exist")?;
+    let (to_name,to_currency,to_type)=to.ok_or("Destination account does not exist")?;
+    if from_type=="investment"||to_type=="investment" { return Err("Investment cash transfers must use the investment transfer workflow".into()); }
     if from_currency != to_currency { return Err("Transfers between different currencies are not supported yet".into()); }
     Ok((from_name,to_name))
 }
@@ -2850,8 +2852,9 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
     }
 
     let tx = connection.transaction().map_err(|e| e.to_string())?;
-    let account_exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
-    if account_exists.is_none() { return Err("Account does not exist".into()); }
+    let account_type: Option<String> = tx.query_row("SELECT account_type FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let account_type=account_type.ok_or("Account does not exist")?;
+    if account_type=="investment" { return Err("Ordinary transaction import cannot target an investment account".into()); }
     let merchant_rules=load_merchant_rules(&tx)?;
 
     let batch_id = Uuid::new_v4().to_string();
