@@ -92,7 +92,9 @@ export function buildAiTaskFirewallPreview(input:{
     ?"Task-specific Spending Change Analysis"
     :input.taskContext.task==="budget-review-analysis"
       ?"Task-specific Budget Review"
-      :"Task-specific Affordability Analysis";
+      :input.taskContext.task==="debt-strategy-analysis"
+        ?"Task-specific Debt Strategy"
+        :"Task-specific Affordability Analysis";
   const taskPayload={
     model:provider.model,
     purpose:input.taskContext.question,

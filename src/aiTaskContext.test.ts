@@ -1,8 +1,9 @@
 import {describe,expect,it} from "vitest";
-import type {Account,BudgetMonth,ScheduledOccurrence,ScheduledTransaction,Transaction} from "./domain";
+import type {Account,BudgetMonth,DebtPlan,ScheduledOccurrence,ScheduledTransaction,Transaction} from "./domain";
 import {
   buildAffordabilityAnalysisContext,
   buildBudgetReviewAnalysisContext,
+  buildDebtStrategyAnalysisContext,
   buildSpendingChangeAnalysisContext,
   defaultSpendingChangePeriods,
   serializeAiTaskContext
@@ -13,7 +14,8 @@ import {calculateCashFlowForecast} from "./forecastMath";
 const accounts:Account[]=[
   {id:"checking-private",name:"Jeffrey Household Checking",type:"checking",currency:"USD",balanceMinor:250_000,ownerLabel:"Jeffrey"},
   {id:"savings-private",name:"Emergency Vault",type:"savings",currency:"USD",balanceMinor:100_000,ownerLabel:"Jeffrey"},
-  {id:"card-private",name:"Travel Card",type:"credit",currency:"USD",balanceMinor:-40_000,ownerLabel:"Jeffrey"}
+  {id:"card-private",name:"Travel Card",type:"credit",currency:"USD",balanceMinor:-40_000,ownerLabel:"Jeffrey"},
+  {id:"loan-private",name:"Auto Loan Secret",type:"loan",currency:"USD",balanceMinor:-300_000,ownerLabel:"Jeffrey"}
 ];
 const transactions:Transaction[]=[
   {id:"tx-secret-1",accountId:"checking-private",postedDate:"2026-07-05",payee:"Acme Payroll",category:"Income: Salary",amountMinor:400_000,status:"cleared",externalId:"bank-secret",memo:"private memo",source:"import",importBatchId:"batch-1"},
@@ -300,5 +302,163 @@ describe("Budget Review task context",()=>{
     expect(()=>buildBudgetReviewAnalysisContext({
       question:"How am I doing?",currency:"USD",asOfDate:"2026-09-20",budgetMonth:"2026-08",budget,accounts,transactions:reviewTx,templates:[],occurrences:[]
     })).toThrow(/does not match/i);
+  });
+});
+
+describe("Debt Strategy task context",()=>{
+  const debtPlan:DebtPlan={
+    currency:"USD",
+    strategy:"avalanche",
+    extraPaymentMinor:10_000,
+    terms:[
+      {accountId:"loan-private",annualRateBps:2000,minimumPaymentMinor:7_000,customPriority:1,enabled:true},
+      {accountId:"card-private",annualRateBps:500,minimumPaymentMinor:4_000,customPriority:2,enabled:true}
+    ]
+  };
+
+  it("compares minimum, avalanche, and snowball using calculateDebtProjection",()=>{
+    const context=buildDebtStrategyAnalysisContext({
+      question:"How should I approach my debt?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      extraPaymentMinor:10_000,
+      accounts,
+      transactions,
+      templates,
+      occurrences:[],
+      budgets:[],
+      debtPlan,
+      savingsGoals:[{id:"goal-1",name:"Emergency Fund",accountId:"savings-private",targetMinor:500_000,targetDate:"2027-09-01",plannedMonthlyMinor:20_000}]
+    });
+    expect(context.task).toBe("debt-strategy-analysis");
+    expect(context.completeDebtCount).toBe(2);
+    expect(context.extraPaymentMinor).toBe(10_000);
+    const minimum=context.scenarios.find(item=>item.kind==="minimum")!;
+    const avalanche=context.scenarios.find(item=>item.kind==="avalanche")!;
+    const snowball=context.scenarios.find(item=>item.kind==="snowball")!;
+    expect(minimum.extraPaymentMinor).toBe(0);
+    expect(avalanche.extraPaymentMinor).toBe(10_000);
+    expect(snowball.extraPaymentMinor).toBe(10_000);
+    expect(avalanche.runnable).toBe(true);
+    expect(snowball.runnable).toBe(true);
+    expect(snowball.payoffOrderAliases[0]).toBe("Debt 2");
+    expect(avalanche.totalInterestMinor!).toBeLessThan(snowball.totalInterestMinor!);
+    expect(avalanche.interestSavedVsMinimumMinor!).toBeGreaterThan(0);
+    expect(context.comparisonSummary.interestAdvantageKind).toBe("avalanche");
+    expect(context.debts.map(item=>item.alias)).toEqual(["Debt 1","Debt 2"]);
+    expect(context.cashFlowSafety.requiredMinimumPaymentsMinor).toBe(11_000);
+    expect(context.cashFlowSafety.savingsCommitmentsMonthlyMinor).toBe(20_000);
+    expect(context.debts.every(item=>item.alias.startsWith("Debt "))).toBe(true);
+    const payload=serializeAiTaskContext(context);
+    for(const secret of ["Jeffrey","Travel Card","Auto Loan Secret","Emergency Fund","card-private","loan-private","goal-1"]){
+      expect(payload).not.toContain(secret);
+    }
+    expect(payload).not.toMatch(/"accountId"|"payee"|"name"|"id"\s*:/);
+  });
+
+  it("marks missing APR or minimum as incomplete and excludes them from projections",()=>{
+    const context=buildDebtStrategyAnalysisContext({
+      question:"How should I approach my debt?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      extraPaymentMinor:5_000,
+      accounts,
+      transactions,
+      templates:[],
+      occurrences:[],
+      budgets:[],
+      debtPlan:{currency:"USD",strategy:"avalanche",extraPaymentMinor:0,terms:[
+        {accountId:"loan-private",annualRateBps:1999,minimumPaymentMinor:7_000,customPriority:1,enabled:true}
+      ]}
+    });
+    expect(context.completeDebtCount).toBe(1);
+    expect(context.incompleteDebtCount).toBe(1);
+    const incomplete=context.debts.find(item=>item.dataStatus==="incomplete")!;
+    expect(incomplete.incompleteReasons).toEqual(expect.arrayContaining(["missing-apr","missing-minimum"]));
+    expect(context.scenarios.every(item=>item.runnable)).toBe(true);
+    expect(context.limitations.note).toMatch(/incomplete/i);
+  });
+
+  it("handles zero-interest debt and insufficient monthly payment",()=>{
+    const zeroInterest=buildDebtStrategyAnalysisContext({
+      question:"How should I approach my debt?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      extraPaymentMinor:0,
+      accounts:[{id:"card-private",name:"Zero Card",type:"credit",currency:"USD",balanceMinor:-50_000,ownerLabel:"X"}],
+      transactions:[],
+      templates:[],
+      occurrences:[],
+      budgets:[],
+      debtPlan:{currency:"USD",strategy:"avalanche",extraPaymentMinor:0,terms:[
+        {accountId:"card-private",annualRateBps:0,minimumPaymentMinor:5_000,customPriority:1,enabled:true}
+      ]}
+    });
+    expect(zeroInterest.scenarios.find(item=>item.kind==="minimum")?.totalInterestMinor).toBe(0);
+    expect(zeroInterest.scenarios.find(item=>item.kind==="minimum")?.complete).toBe(true);
+
+    const insufficient=buildDebtStrategyAnalysisContext({
+      question:"How should I approach my debt?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      extraPaymentMinor:0,
+      accounts:[{id:"card-private",name:"Bad Card",type:"credit",currency:"USD",balanceMinor:-100_000,ownerLabel:"X"}],
+      transactions:[],
+      templates:[],
+      occurrences:[],
+      budgets:[],
+      debtPlan:{currency:"USD",strategy:"avalanche",extraPaymentMinor:0,terms:[
+        {accountId:"card-private",annualRateBps:1200,minimumPaymentMinor:100,customPriority:1,enabled:true}
+      ]}
+    });
+    const min=insufficient.scenarios.find(item=>item.kind==="minimum")!;
+    expect(min.complete).toBe(false);
+    expect(min.months).toBeNull();
+    expect(min.limitationNote).toMatch(/100 years/i);
+  });
+
+  it("flags cash-flow pressure when extra payment exceeds surplus",()=>{
+    const context=buildDebtStrategyAnalysisContext({
+      question:"How should I approach my debt?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      extraPaymentMinor:340_000,
+      accounts,
+      transactions,
+      templates,
+      occurrences:[],
+      budgets:[],
+      debtPlan,
+      savingsGoals:[{id:"goal-1",name:"Emergency Fund",accountId:"savings-private",targetMinor:500_000,targetDate:"2027-09-01",plannedMonthlyMinor:50_000}]
+    });
+    expect(context.cashFlowSafety.extraAppearsSupportableFromSurplus).toBe(false);
+    expect(context.cashFlowSafety.wouldRelyOnLiquidReserves).toBe(true);
+    expect(context.cashFlowSafety.note).toMatch(/liquid reserves/i);
+  });
+
+  it("rejects empty questions and negative extra payments",()=>{
+    expect(()=>buildDebtStrategyAnalysisContext({
+      question:" ",currency:"USD",asOfDate:"2026-09-20",accounts,transactions,templates:[],occurrences:[],budgets:[],debtPlan
+    })).toThrow(/debt-strategy question/i);
+    expect(()=>buildDebtStrategyAnalysisContext({
+      question:"How should I approach my debt?",currency:"USD",asOfDate:"2026-09-20",extraPaymentMinor:-1,accounts,transactions,templates:[],occurrences:[],budgets:[],debtPlan
+    })).toThrow(/Extra monthly debt payment/i);
+  });
+
+  it("keeps Affordability, Spending Change, and Budget Review task identities unchanged",()=>{
+    expect(buildAffordabilityAnalysisContext({
+      question:"Can I afford another $50 per month?",currency:"USD",proposedMonthlyCostMinor:5_000,asOfDate:"2026-09-20",
+      accounts,transactions,templates,occurrences:[],budgets:[]
+    }).task).toBe("affordability-analysis");
+    expect(buildSpendingChangeAnalysisContext({
+      question:"Why was this month expensive?",currency:"USD",asOfDate:"2026-09-20",accounts,transactions,templates:[]
+    }).task).toBe("spending-change-analysis");
+    expect(buildBudgetReviewAnalysisContext({
+      question:"How am I doing against my budget?",currency:"USD",asOfDate:"2026-09-20",
+      accounts,transactions,templates:[],occurrences:[],
+      budget:{month:"2026-09",plannedMinor:40_000,spentMinor:10_000,carryInMinor:0,availableMinor:30_000,lines:[
+        {id:"b1",category:"Food",rolloverEnabled:false,plannedMinor:40_000,spentMinor:10_000,carryInMinor:0,availableMinor:30_000}
+      ]}
+    }).task).toBe("budget-review-analysis");
   });
 });

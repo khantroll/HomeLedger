@@ -1,10 +1,11 @@
 import type {Account,BudgetMonth,DebtPlan,SavingsGoal,ScheduledOccurrence,ScheduledTransaction,Transaction} from "./domain";
+import {calculateDebtProjection} from "./debtMath";
 import {calculateCashFlowForecast} from "./forecastMath";
 import {calculateTransactionReport} from "./reportMath";
 import {calculateSavingsGoal} from "./savingsGoalMath";
 import {addDaysIso} from "./scheduledPresentation";
 
-export type AiTaskKind="affordability-analysis"|"spending-change-analysis"|"budget-review-analysis";
+export type AiTaskKind="affordability-analysis"|"spending-change-analysis"|"budget-review-analysis"|"debt-strategy-analysis";
 
 export interface AffordabilityAnalysisInput{
   question:string;
@@ -97,7 +98,95 @@ export interface AffordabilityAnalysisContext{
   };
 }
 
-export type AiTaskContext=AffordabilityAnalysisContext|SpendingChangeAnalysisContext|BudgetReviewAnalysisContext;
+export type AiTaskContext=AffordabilityAnalysisContext|SpendingChangeAnalysisContext|BudgetReviewAnalysisContext|DebtStrategyAnalysisContext;
+
+export type DebtStrategyScenarioKind="minimum"|"avalanche"|"snowball";
+export type DebtIncompleteReason="missing-apr"|"missing-minimum"|"missing-balance"|"disabled";
+
+export interface DebtStrategyAnalysisInput{
+  question:string;
+  currency:string;
+  asOfDate:string;
+  extraPaymentMinor?:number;
+  trailingMonths?:number;
+  forecastHorizonDays?:30|60|90|180|365;
+  accounts:readonly Account[];
+  transactions:readonly Transaction[];
+  templates:readonly ScheduledTransaction[];
+  occurrences:readonly ScheduledOccurrence[];
+  budgets:readonly BudgetMonth[];
+  debtPlan?:DebtPlan;
+  savingsGoals?:readonly SavingsGoal[];
+}
+
+export interface DebtStrategyDebtItem{
+  alias:string;
+  type:"credit"|"loan";
+  balanceMinor:number;
+  annualRateBps:number|null;
+  minimumPaymentMinor:number|null;
+  dataStatus:"complete"|"incomplete";
+  incompleteReasons:ReadonlyArray<DebtIncompleteReason>;
+}
+
+export interface DebtStrategyScenarioResult{
+  kind:DebtStrategyScenarioKind;
+  strategy:"avalanche"|"snowball";
+  extraPaymentMinor:number;
+  runnable:boolean;
+  startingTotalDebtMinor:number;
+  requiredMinimumPaymentsMinor:number;
+  monthlyPaymentMinor:number;
+  complete:boolean|null;
+  months:number|null;
+  debtFreeMonth:string|null;
+  totalInterestMinor:number|null;
+  interestSavedVsMinimumMinor:number|null;
+  payoffOrderAliases:ReadonlyArray<string>;
+  limitationNote:string|null;
+}
+
+export interface DebtStrategyAnalysisContext{
+  task:"debt-strategy-analysis";
+  schemaVersion:1;
+  question:string;
+  currency:string;
+  asOfDate:string;
+  startMonth:string;
+  extraPaymentMinor:number;
+  debts:ReadonlyArray<DebtStrategyDebtItem>;
+  completeDebtCount:number;
+  incompleteDebtCount:number;
+  scenarios:ReadonlyArray<DebtStrategyScenarioResult>;
+  cashFlowSafety:{
+    liquidReservesMinor:number;
+    averageMonthlyIncomeMinor:number;
+    averageMonthlySpendingMinor:number;
+    averageMonthlyNetMinor:number;
+    recurringMonthlyExpenseMinor:number;
+    savingsCommitmentsMonthlyMinor:number;
+    requiredMinimumPaymentsMinor:number;
+    availableMonthlySurplusMinor:number;
+    extraAppearsSupportableFromSurplus:boolean|null;
+    wouldRelyOnLiquidReserves:boolean;
+    forecastHorizonDays:number;
+    forecastLowestWithoutExtraMinor:number;
+    forecastLowestWithExtraMinor:number;
+    forecastWithExtraStaysNonNegative:boolean;
+    budgetAvailableMinor:number;
+    note:string;
+  };
+  comparisonSummary:{
+    minimumMonths:number|null;
+    avalancheMonths:number|null;
+    snowballMonths:number|null;
+    avalancheInterestMinor:number|null;
+    snowballInterestMinor:number|null;
+    interestAdvantageKind:"avalanche"|"snowball"|null;
+    firstPayoffOrderDiffers:boolean;
+  };
+  limitations:{note:string};
+}
 
 export type BudgetCategoryReviewStatus="already-over"|"projected-over"|"on-track"|"under-spending"|"insufficient-data";
 
@@ -821,6 +910,219 @@ export function buildBudgetReviewAnalysisContext(input:BudgetReviewAnalysisInput
       note:isPartialMonth
         ?`Review covers ${daysElapsed} of ${dayCount} days in ${month} (${elapsedPercent}% elapsed). Scheduled obligations still due this month are included in projections; remaining unscheduled discretionary spend is not assumed beyond known schedules.`
         :`Review covers the full month ${month}. Explain only states supported by the supplied budget totals, category rows, and scheduled obligations.`
+    }
+  };
+  assertNoProhibitedFields(context);
+  return context;
+}
+
+export function buildDebtStrategyAnalysisContext(input:DebtStrategyAnalysisInput):DebtStrategyAnalysisContext{
+  const question=input.question.trim();
+  if(!question)throw new Error("Describe the debt-strategy question before building a task context");
+  if(!/^[A-Z]{3}$/.test(input.currency))throw new Error("Debt strategy analysis requires a three-letter currency code");
+  const asOfDate=input.asOfDate;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate))throw new Error("Debt-strategy as-of date must use YYYY-MM-DD");
+  const trailingMonths=input.trailingMonths??3;
+  if(!Number.isInteger(trailingMonths)||trailingMonths<1||trailingMonths>24)throw new Error("Trailing month window is invalid");
+  const horizonDays=input.forecastHorizonDays??90;
+  const extraPaymentMinor=input.extraPaymentMinor??(input.debtPlan?.currency===input.currency?input.debtPlan.extraPaymentMinor:0);
+  if(!Number.isSafeInteger(extraPaymentMinor)||extraPaymentMinor<0)throw new Error("Extra monthly debt payment must be zero or greater");
+
+  const currencyAccounts=input.accounts.filter(item=>item.currency===input.currency&&!item.archived);
+  const liquid=currencyAccounts.filter(item=>["checking","savings","cash"].includes(item.type));
+  const debtAccounts=currencyAccounts.filter(item=>["credit","loan"].includes(item.type)&&item.balanceMinor<0)
+    .sort((left,right)=>Math.abs(right.balanceMinor)-Math.abs(left.balanceMinor)||left.type.localeCompare(right.type)||left.id.localeCompare(right.id));
+  const debtTerms=input.debtPlan?.currency===input.currency?input.debtPlan.terms:[];
+  const startMonth=asOfDate.slice(0,7);
+
+  const debts:DebtStrategyDebtItem[]=debtAccounts.map((account,index)=>{
+    const term=debtTerms.find(item=>item.accountId===account.id);
+    const reasons:DebtIncompleteReason[]=[];
+    if(!term){reasons.push("missing-apr","missing-minimum");}
+    else{
+      if(!term.enabled)reasons.push("disabled");
+      if(!Number.isInteger(term.annualRateBps)||term.annualRateBps<0||term.annualRateBps>100_000)reasons.push("missing-apr");
+      if(!Number.isSafeInteger(term.minimumPaymentMinor)||term.minimumPaymentMinor<=0)reasons.push("missing-minimum");
+    }
+    const balanceMinor=Math.abs(account.balanceMinor);
+    if(!Number.isSafeInteger(balanceMinor)||balanceMinor<=0)reasons.push("missing-balance");
+    const complete=reasons.length===0;
+    const aprKnown=Boolean(term&&Number.isInteger(term.annualRateBps)&&term.annualRateBps>=0&&term.annualRateBps<=100_000);
+    const minKnown=Boolean(term&&Number.isSafeInteger(term.minimumPaymentMinor)&&term.minimumPaymentMinor>0);
+    return{
+      alias:`Debt ${index+1}`,
+      type:account.type as"credit"|"loan",
+      balanceMinor,
+      annualRateBps:aprKnown?term!.annualRateBps:null,
+      minimumPaymentMinor:minKnown?term!.minimumPaymentMinor:null,
+      dataStatus:complete?"complete":"incomplete",
+      incompleteReasons:reasons
+    };
+  });
+
+  const aliasByAccountId=new Map(debtAccounts.map((account,index)=>[account.id,`Debt ${index+1}`]));
+  const projectionDebts=debtAccounts.flatMap(account=>{
+    const term=debtTerms.find(item=>item.accountId===account.id);
+    if(!term||!term.enabled)return[];
+    if(!Number.isInteger(term.annualRateBps)||term.annualRateBps<0||term.annualRateBps>100_000)return[];
+    if(!Number.isSafeInteger(term.minimumPaymentMinor)||term.minimumPaymentMinor<=0)return[];
+    const balanceMinor=Math.abs(account.balanceMinor);
+    if(balanceMinor<=0)return[];
+    return[{
+      accountId:account.id,
+      balanceMinor,
+      annualRateBps:term.annualRateBps,
+      minimumPaymentMinor:term.minimumPaymentMinor,
+      customPriority:term.customPriority,
+      enabled:true
+    }];
+  });
+  const completeDebtCount=debts.filter(item=>item.dataStatus==="complete").length;
+  const incompleteDebtCount=debts.length-completeDebtCount;
+  const requiredMinimumPaymentsMinor=projectionDebts.reduce((total,item)=>safeAdd(total,item.minimumPaymentMinor),0);
+  const startingTotalDebtMinor=projectionDebts.reduce((total,item)=>safeAdd(total,item.balanceMinor),0);
+
+  function runScenario(kind:DebtStrategyScenarioKind,strategy:"avalanche"|"snowball",extra:number):DebtStrategyScenarioResult{
+    if(!projectionDebts.length){
+      return{
+        kind,strategy,extraPaymentMinor:extra,runnable:false,
+        startingTotalDebtMinor:0,requiredMinimumPaymentsMinor:0,monthlyPaymentMinor:extra,
+        complete:null,months:null,debtFreeMonth:null,totalInterestMinor:null,interestSavedVsMinimumMinor:null,
+        payoffOrderAliases:[],
+        limitationNote:incompleteDebtCount
+          ?"No complete debts are available to project. Supply APR and minimum payment for each included debt."
+          :"No credit or loan balances are available to project."
+      };
+    }
+    const projection=calculateDebtProjection({strategy,extraPaymentMinor:extra,startMonth,debts:projectionDebts});
+    return{
+      kind,strategy,extraPaymentMinor:extra,runnable:true,
+      startingTotalDebtMinor:projection.startingBalanceMinor,
+      requiredMinimumPaymentsMinor,
+      monthlyPaymentMinor:projection.monthlyPaymentMinor,
+      complete:projection.complete,
+      months:projection.complete?projection.months:null,
+      debtFreeMonth:projection.debtFreeMonth??null,
+      totalInterestMinor:projection.totalInterestMinor,
+      interestSavedVsMinimumMinor:null,
+      payoffOrderAliases:projection.payoffOrder.map(id=>aliasByAccountId.get(id)??"Debt"),
+      limitationNote:projection.complete?null:"Projection does not reach payoff within 100 years under the entered payments."
+    };
+  }
+
+  const minimum=runScenario("minimum","avalanche",0);
+  const avalanche=runScenario("avalanche","avalanche",extraPaymentMinor);
+  const snowball=runScenario("snowball","snowball",extraPaymentMinor);
+  if(minimum.runnable&&minimum.totalInterestMinor!=null){
+    for(const scenario of [avalanche,snowball]){
+      if(scenario.runnable&&scenario.totalInterestMinor!=null){
+        scenario.interestSavedVsMinimumMinor=safeAdd(minimum.totalInterestMinor,-scenario.totalInterestMinor);
+      }
+    }
+  }
+  const scenarios=[minimum,avalanche,snowball];
+
+  const fromDate=shiftMonthStart(asOfDate,-(trailingMonths-1));
+  const report=calculateTransactionReport({
+    fromDate,toDate:asOfDate,currency:input.currency,accounts:currencyAccounts,transactions:input.transactions
+  });
+  const averageMonthlyIncomeMinor=divRound(report.incomeMinor,trailingMonths);
+  const averageMonthlySpendingMinor=divRound(report.spendingMinor,trailingMonths);
+  const averageMonthlyNetMinor=averageMonthlyIncomeMinor-averageMonthlySpendingMinor;
+  const liquidReservesMinor=liquid.reduce((total,item)=>safeAdd(total,item.balanceMinor),0);
+
+  const cashIds=new Set(liquid.map(item=>item.id));
+  const recurringMonthlyExpenseMinor=input.templates
+    .filter(item=>item.enabled&&!item.archived&&item.kind==="transaction"&&item.amountMinor<0&&cashIds.has(item.accountId))
+    .reduce((total,item)=>safeAdd(total,monthlyEquivalent(item)),0);
+
+  const goals=(input.savingsGoals??[]).filter(goal=>currencyAccounts.some(account=>account.id===goal.accountId));
+  const savingsCommitmentsMonthlyMinor=goals.reduce((total,goal)=>safeAdd(total,goal.plannedMonthlyMinor),0);
+  const availableMonthlySurplusMinor=averageMonthlyNetMinor-requiredMinimumPaymentsMinor-savingsCommitmentsMonthlyMinor;
+  const extraAppearsSupportableFromSurplus=projectionDebts.length?availableMonthlySurplusMinor>=extraPaymentMinor:null;
+  const wouldRelyOnLiquidReserves=Boolean(extraPaymentMinor>0&&extraAppearsSupportableFromSurplus===false&&liquidReservesMinor>=extraPaymentMinor);
+
+  const baseForecast=calculateCashFlowForecast({
+    today:asOfDate,horizonDays,currency:input.currency,scenario:"expected",
+    accounts:currencyAccounts,templates:input.templates,occurrences:input.occurrences,budgets:input.budgets
+  });
+  const withExtra=extraPaymentMinor>0
+    ?applyProposedMonthlyCost(baseForecast.days,extraPaymentMinor,asOfDate)
+    :{endingBalanceMinor:baseForecast.endingBalanceMinor,lowestBalanceMinor:baseForecast.lowestBalanceMinor,lowestBalanceDate:baseForecast.lowestBalanceDate,appliedMonthCount:0};
+
+  const budgetMonth=asOfDate.slice(0,7);
+  const budgetRow=input.budgets.find(item=>item.month===budgetMonth);
+  const budgetAvailableMinor=budgetRow?.availableMinor??0;
+
+  let interestAdvantageKind:"avalanche"|"snowball"|null=null;
+  if(avalanche.totalInterestMinor!=null&&snowball.totalInterestMinor!=null){
+    if(avalanche.totalInterestMinor<snowball.totalInterestMinor)interestAdvantageKind="avalanche";
+    else if(snowball.totalInterestMinor<avalanche.totalInterestMinor)interestAdvantageKind="snowball";
+  }
+  const avalancheFirst=avalanche.payoffOrderAliases[0];
+  const snowballFirst=snowball.payoffOrderAliases[0];
+  const firstPayoffOrderDiffers=Boolean(avalancheFirst&&snowballFirst&&avalancheFirst!==snowballFirst);
+
+  const cashNoteParts:string[]=[];
+  if(incompleteDebtCount)cashNoteParts.push(`${incompleteDebtCount} debt(s) lack complete APR/minimum data and are excluded from payoff projections.`);
+  if(extraAppearsSupportableFromSurplus===false&&extraPaymentMinor>0){
+    cashNoteParts.push("Requested extra payment exceeds the estimated monthly surplus after minimums and savings commitments.");
+  }
+  if(wouldRelyOnLiquidReserves){
+    cashNoteParts.push("Covering the extra payment would rely on liquid reserves rather than recurring surplus; HomeLedger does not recommend draining reserves solely to minimize interest.");
+  }
+  if(withExtra.lowestBalanceMinor<0){
+    cashNoteParts.push("Applying the extra payment in the expected cash-flow forecast produces a negative low balance.");
+  }
+  if(!cashNoteParts.length){
+    cashNoteParts.push("Compare interest, payoff timing, liquidity, and savings commitments; no single strategy is universally best.");
+  }
+
+  const context:DebtStrategyAnalysisContext={
+    task:"debt-strategy-analysis",
+    schemaVersion:1,
+    question,
+    currency:input.currency,
+    asOfDate,
+    startMonth,
+    extraPaymentMinor,
+    debts,
+    completeDebtCount,
+    incompleteDebtCount,
+    scenarios,
+    cashFlowSafety:{
+      liquidReservesMinor,
+      averageMonthlyIncomeMinor,
+      averageMonthlySpendingMinor,
+      averageMonthlyNetMinor,
+      recurringMonthlyExpenseMinor,
+      savingsCommitmentsMonthlyMinor,
+      requiredMinimumPaymentsMinor,
+      availableMonthlySurplusMinor,
+      extraAppearsSupportableFromSurplus,
+      wouldRelyOnLiquidReserves,
+      forecastHorizonDays:horizonDays,
+      forecastLowestWithoutExtraMinor:baseForecast.lowestBalanceMinor,
+      forecastLowestWithExtraMinor:withExtra.lowestBalanceMinor,
+      forecastWithExtraStaysNonNegative:withExtra.lowestBalanceMinor>=0,
+      budgetAvailableMinor,
+      note:cashNoteParts.join(" ")
+    },
+    comparisonSummary:{
+      minimumMonths:minimum.months,
+      avalancheMonths:avalanche.months,
+      snowballMonths:snowball.months,
+      avalancheInterestMinor:avalanche.totalInterestMinor,
+      snowballInterestMinor:snowball.totalInterestMinor,
+      interestAdvantageKind,
+      firstPayoffOrderDiffers
+    },
+    limitations:{
+      note:incompleteDebtCount
+        ?`Debt Strategy projections use only debts with complete balance, APR, and minimum payment. ${incompleteDebtCount} debt(s) are marked incomplete; HomeLedger does not invent missing terms. Strategies assume fixed APRs and fixed minimums from the debt plan.`
+        :projectionDebts.length
+          ?"Strategies assume fixed APRs and fixed minimum payments. Avalanche applies leftover payment to the highest APR first; snowball applies leftover payment to the smallest balance first. HomeLedger does not declare a universally best strategy."
+          :"No complete debts are available. Configure APR and minimum payments on the Debt page before relying on strategy comparisons."
     }
   };
   assertNoProhibitedFields(context);

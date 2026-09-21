@@ -18,11 +18,15 @@ import {
   validateProviderEndpoint
 } from "./aiProvider";
 import {buildAiTaskFirewallPreview,prepareReviewedTransmission} from "./aiPrivacy";
-import {buildAffordabilityAnalysisContext,buildBudgetReviewAnalysisContext,buildSpendingChangeAnalysisContext} from "./aiTaskContext";
+import {buildAffordabilityAnalysisContext,buildBudgetReviewAnalysisContext,buildDebtStrategyAnalysisContext,buildSpendingChangeAnalysisContext} from "./aiTaskContext";
 import type {Account,BudgetMonth,Transaction} from "./domain";
 import {readFileSync} from "node:fs";
 
-const accounts:Account[]=[{id:"checking-private",name:"Jeffrey Household Checking",type:"checking",currency:"USD",balanceMinor:100000,ownerLabel:"Jeffrey"}];
+const accounts:Account[]=[
+  {id:"checking-private",name:"Jeffrey Household Checking",type:"checking",currency:"USD",balanceMinor:100000,ownerLabel:"Jeffrey"},
+  {id:"card-private",name:"Travel Card",type:"credit",currency:"USD",balanceMinor:-40000,ownerLabel:"Jeffrey"},
+  {id:"loan-private",name:"Auto Loan",type:"loan",currency:"USD",balanceMinor:-300000,ownerLabel:"Jeffrey"}
+];
 const transactions:Transaction[]=[
   {id:"provider-id-1",accountId:"checking-private",postedDate:"2026-08-10",payee:"Neighborhood Market",category:"Food: Groceries",amountMinor:-8000,status:"cleared"},
   {id:"provider-id-2",accountId:"checking-private",postedDate:"2026-09-10",payee:"Neighborhood Market",category:"Food: Groceries",amountMinor:-12000,status:"cleared",externalId:"bank-secret",memo:"private memo",source:"import"},
@@ -158,6 +162,49 @@ describe("provider-neutral cloud adapters",()=>{
     expect(JSON.parse(geminiPreview.payload).data).toEqual(JSON.parse(openPreview.payload).data);
     expect(openPreview.payload).not.toContain("Jeffrey");
     expect(openPreview.payload).not.toContain("Neighborhood Market");
+  });
+
+  it("sends the same DebtStrategyAnalysisContext through OpenAI, Anthropic, and Gemini without financial transforms",()=>{
+    const task=buildDebtStrategyAnalysisContext({
+      question:"How should I approach my debt?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      extraPaymentMinor:10_000,
+      accounts,
+      transactions,
+      templates:[],
+      occurrences:[],
+      budgets:[],
+      debtPlan:{
+        currency:"USD",
+        strategy:"avalanche",
+        extraPaymentMinor:10_000,
+        terms:[
+          {accountId:"loan-private",annualRateBps:2000,minimumPaymentMinor:7_000,customPriority:1,enabled:true},
+          {accountId:"card-private",annualRateBps:500,minimumPaymentMinor:4_000,customPriority:2,enabled:true}
+        ]
+      }
+    });
+    const openai=validateProviderEndpoint(cloudProviderDescriptor({
+      type:"openai",endpoint:OPENAI_ENDPOINT,model:"gpt-4.1-mini",accountId:OPENAI_ACCOUNT_ID
+    }));
+    const anthropic=validateProviderEndpoint(cloudProviderDescriptor({
+      type:"anthropic",endpoint:ANTHROPIC_ENDPOINT,model:"claude-sonnet-4-5",accountId:ANTHROPIC_ACCOUNT_ID
+    }));
+    const gemini=validateProviderEndpoint(cloudProviderDescriptor({
+      type:"gemini",endpoint:GEMINI_ENDPOINT,model:"gemini-2.0-flash",accountId:GEMINI_ACCOUNT_ID
+    }));
+    const openPreview=buildAiTaskFirewallPreview({provider:openai,taskContext:task});
+    const anthropicPreview=buildAiTaskFirewallPreview({provider:anthropic,taskContext:task});
+    const geminiPreview=buildAiTaskFirewallPreview({provider:gemini,taskContext:task});
+    expect(openPreview.modeLabel).toMatch(/Debt Strategy/i);
+    expect(JSON.parse(openPreview.payload).task).toBe("debt-strategy-analysis");
+    expect(JSON.parse(openPreview.payload).data).toEqual(task);
+    expect(JSON.parse(anthropicPreview.payload).data).toEqual(JSON.parse(openPreview.payload).data);
+    expect(JSON.parse(geminiPreview.payload).data).toEqual(JSON.parse(openPreview.payload).data);
+    expect(openPreview.payload).not.toContain("Jeffrey");
+    expect(openPreview.payload).not.toContain("Travel Card");
+    expect(openPreview.payload).not.toContain("Auto Loan");
   });
 
   it("keeps model advice inert and adapters mutation-free",()=>{
