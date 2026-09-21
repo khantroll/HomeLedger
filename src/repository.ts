@@ -151,6 +151,51 @@ class UnavailableAiRepository implements AiRepository {
 }
 export const aiRepository:AiRepository=isNativeApp?new TauriAiRepository():new UnavailableAiRepository();
 
+type NativeHoldingSnapshot = Omit<HoldingSnapshot,"priceE8"|"priceObservedAt"|"marketValueMinor"|"unrealizedGainMinor"|"lots"> & {
+  priceE8:number|null;
+  priceObservedAt:string|null;
+  marketValueMinor:number|null;
+  unrealizedGainMinor:number|null;
+  lots:Array<Omit<HoldingSnapshot["lots"][number],"acquisitionDate"|"basisMinor"> & {acquisitionDate:string|null;basisMinor:number|null}>;
+};
+type NativePortfolioSnapshot = Omit<PortfolioSnapshot,"accounts"> & {
+  accounts:Array<Omit<PortfolioSnapshot["accounts"][number],"holdingsValueMinor"|"totalValueMinor"|"holdings"> & {
+    holdingsValueMinor:number|null;
+    totalValueMinor:number|null;
+    holdings:NativeHoldingSnapshot[];
+  }>;
+};
+
+function undefinedIfNull<T>(value:T|null):T|undefined{return value===null?undefined:value;}
+
+export function normalizePortfolioSnapshot(snapshot:NativePortfolioSnapshot):PortfolioSnapshot {
+  return {
+    asOfDate:snapshot.asOfDate,
+    accounts:snapshot.accounts.map(account=>({
+      accountId:account.accountId,
+      cashMinor:account.cashMinor,
+      holdingsValueMinor:undefinedIfNull(account.holdingsValueMinor),
+      totalValueMinor:undefinedIfNull(account.totalValueMinor),
+      holdings:account.holdings.map(holding=>({
+        ...holding,
+        priceE8:undefinedIfNull(holding.priceE8),
+        priceObservedAt:undefinedIfNull(holding.priceObservedAt),
+        marketValueMinor:undefinedIfNull(holding.marketValueMinor),
+        unrealizedGainMinor:undefinedIfNull(holding.unrealizedGainMinor),
+        lots:holding.lots.map(lot=>({
+          ...lot,
+          acquisitionDate:undefinedIfNull(lot.acquisitionDate),
+          basisMinor:undefinedIfNull(lot.basisMinor),
+        })),
+      })),
+    })),
+  };
+}
+
+function normalizeHoldings(holdings:NativeHoldingSnapshot[]):HoldingSnapshot[] {
+  return normalizePortfolioSnapshot({asOfDate:"",accounts:[{accountId:"",cashMinor:0,holdingsValueMinor:null,totalValueMinor:null,holdings}]}).accounts[0].holdings;
+}
+
 export class TauriInvestmentRepository implements InvestmentRepository {
   createInvestmentAccount(input:CreateInvestmentAccountInput):Promise<InvestmentAccountSettings>{return invoke("create_investment_account",{request:input});}
   getInvestmentAccountSettings(accountId:string):Promise<InvestmentAccountSettings|undefined>{return invoke("get_investment_account_settings",{accountId});}
@@ -166,8 +211,8 @@ export class TauriInvestmentRepository implements InvestmentRepository {
   correctHistoricalInvestmentEvent(eventId:string,replacement:InvestmentEventInput,reason:string):Promise<InvestmentEventRevision>{return invoke("correct_historical_investment_event",{eventId,replacement,reason});}
   getInvestmentEventHistory(eventId:string):Promise<InvestmentEventRevision[]>{return invoke("get_investment_event_history",{eventId});}
   setSpecificLotAllocations(saleEventId:string,allocations:LotAllocation[]):Promise<void>{return invoke("set_specific_lot_allocations",{request:{saleEventId,allocations}});}
-  deriveInvestmentHoldings(accountId:string,asOfDate:string):Promise<HoldingSnapshot[]>{return invoke("derive_investment_holdings",{accountId,asOfDate});}
-  calculatePortfolioSnapshot(accountIds:string[]|undefined,asOfDate:string):Promise<PortfolioSnapshot>{return invoke("calculate_portfolio_snapshot",{accountIds:accountIds??null,asOfDate});}
+  async deriveInvestmentHoldings(accountId:string,asOfDate:string):Promise<HoldingSnapshot[]>{const result=await invoke<NativeHoldingSnapshot[]>("derive_investment_holdings",{accountId,asOfDate});return normalizeHoldings(result);}
+  async calculatePortfolioSnapshot(accountIds:string[]|undefined,asOfDate:string):Promise<PortfolioSnapshot>{const result=await invoke<NativePortfolioSnapshot>("calculate_portfolio_snapshot",{accountIds:accountIds??null,asOfDate});return normalizePortfolioSnapshot(result);}
   addManualSecurityPrice(input:SecurityPriceInput):Promise<SecurityPrice>{return invoke("add_manual_security_price",{request:input});}
   deleteManualSecurityPrice(priceId:string):Promise<void>{return invoke("delete_manual_security_price",{priceId});}
   listSecurityPrices(securityId:string,fromDate?:string,toDate?:string):Promise<SecurityPrice[]>{return invoke("list_security_prices",{securityId,fromDate:fromDate??null,toDate:toDate??null});}
