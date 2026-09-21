@@ -6,7 +6,11 @@ import {AiInsightsPage} from "./AiInsightsPage";
 import type {Account,BudgetMonth,ScheduledOccurrence,ScheduledTransaction,Transaction} from "./domain";
 
 afterEach(cleanup);
-const accounts:Account[]=[{id:"checking",name:"Household Checking",type:"checking",currency:"USD",balanceMinor:100000,ownerLabel:"Household"}];
+const accounts:Account[]=[
+  {id:"checking",name:"Household Checking",type:"checking",currency:"USD",balanceMinor:100000,ownerLabel:"Household"},
+  {id:"card",name:"Everyday Card",type:"credit",currency:"USD",balanceMinor:-40000,ownerLabel:"Household"},
+  {id:"loan",name:"Vehicle Loan",type:"loan",currency:"USD",balanceMinor:-300000,ownerLabel:"Household"}
+];
 const transactions:Transaction[]=[
   {id:"t1",accountId:"checking",postedDate:"2026-09-18",payee:"Neighborhood Market",category:"Food",amountMinor:-1234,status:"cleared"},
   {id:"t2",accountId:"checking",postedDate:"2026-08-18",payee:"Payroll",category:"Income",amountMinor:300000,status:"cleared"}
@@ -76,6 +80,22 @@ describe("AI Insights privacy review",()=>{
     expect(screen.getByText(/"task": "budget-review-analysis"/)).toBeTruthy();
     expect(screen.queryByText(/Neighborhood Market/)).toBeNull();
     expect(screen.queryByText(/Household Checking/)).toBeNull();
+  });
+
+  it("builds a debt-strategy preview with local scenario comparison and sanitized payload",async()=>{
+    const user=userEvent.setup();
+    render(<AiInsightsPage accounts={accounts} transactions={transactions} templates={templates} occurrences={occurrences} budgets={budgets} today="2026-09-20"/>);
+    await user.click(screen.getByText(/^Debt Strategy$/i));
+    await user.type(screen.getByLabelText("Model name",{exact:true}),"qwen3.5:9b");
+    const extra=screen.getByLabelText(/Extra monthly debt payment/i);
+    await user.clear(extra);
+    await user.type(extra,"100.00");
+    await user.click(screen.getByRole("button",{name:/Build exact preview/}));
+    expect(screen.getByText(/HomeLedger debt strategy/i)).toBeTruthy();
+    expect(screen.getByText(/Task-specific Debt Strategy/)).toBeTruthy();
+    expect(screen.getByText(/"task": "debt-strategy-analysis"/)).toBeTruthy();
+    expect(screen.queryByText(/Everyday Card/)).toBeNull();
+    expect(screen.queryByText(/Vehicle Loan/)).toBeNull();
   });
 
   it("requires cloud confirmation before enabling OpenAI, Anthropic, or Gemini send",async()=>{

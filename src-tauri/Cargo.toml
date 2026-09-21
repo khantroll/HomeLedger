@@ -1,6 +1,6 @@
 [package]
 name = "homeledger"
-version = "0.42.0"
+version = "0.43.0"
 description = "Privacy-first local household finance"
 authors = ["HomeLedger contributors"]
 edition = "2021"
