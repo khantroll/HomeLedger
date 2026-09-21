@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Account, PortfolioSnapshot } from "./domain";
 
@@ -11,6 +11,7 @@ vi.mock("./repository", async (importOriginal) => {
 import { PortfolioPage } from "./PortfolioPage";
 import { investmentRepository, normalizeInvestmentEvent, normalizePortfolioSnapshot } from "./repository";
 
+beforeEach(()=>{vi.mocked(investmentRepository.listSecurityPrices).mockResolvedValue([]);});
 afterEach(()=>{cleanup();vi.clearAllMocks();});
 
 const accounts:Account[]=[
