@@ -1406,7 +1406,7 @@ fn list_recovery_snapshots(data_dir: &Path) -> Result<Vec<RecoverySnapshotInfo>,
         let created_at = meta.modified().ok().map(chrono::DateTime::<chrono::Utc>::from).map(|v| v.to_rfc3339()).unwrap_or_default();
         result.push(RecoverySnapshotInfo { file_name, created_at, reason, schema_version, size_bytes: meta.len() });
     }
-    result.sort_by(|a,b| b.file_name.cmp(&a.file_name));
+    result.sort_by(|a,b| b.created_at.cmp(&a.created_at));
     Ok(result)
 }
 
