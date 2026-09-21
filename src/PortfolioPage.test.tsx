@@ -15,6 +15,7 @@ afterEach(()=>{cleanup();vi.clearAllMocks();});
 
 const accounts:Account[]=[
   {id:"inv",name:"Household Brokerage",type:"investment",currency:"USD",balanceMinor:0,ownerLabel:"Household",archived:false},
+  {id:"dest",name:"Rollover IRA",type:"investment",currency:"USD",balanceMinor:0,ownerLabel:"Household",archived:false},
 ];
 
 describe("Portfolio native nullable snapshot boundary",()=>{
@@ -102,6 +103,29 @@ describe("Investment account workspace",()=>{
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(unknown);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
   render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
   expect(await screen.findByText("Price needed")).toBeTruthy();expect(screen.getAllByText("Unknown").length).toBeGreaterThan(0);expect(screen.getByText(/Partial — some basis is unknown/)).toBeTruthy();fireEvent.click(screen.getByRole("button",{name:/Lots/}));expect(screen.getByText(/Acquired Unknown acquisition date/)).toBeTruthy();expect(screen.getByText("Unknown basis")).toBeTruthy();
+ });
+
+ it("shows investment transfers in both accounts with correct direction and cash movement",async()=>{
+  const cashTransfer={id:"rt1",eventId:"t1",revisionNumber:1,accountId:"inv",eventType:"cash_transfer" as const,tradeDate:"2026-07-01",relatedAccountId:"dest",cashEffectMinor:-2500,incomeMinor:0,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const};
+  const securityTransfer={id:"rt2",eventId:"t2",revisionNumber:1,accountId:"inv",eventType:"security_transfer" as const,tradeDate:"2026-07-02",securityId:"sec",relatedAccountId:"dest",quantityE8:100_000_000,cashEffectMinor:0,incomeMinor:0,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const};
+  const sourceSnapshot:PortfolioSnapshot={...snapshot,accounts:[{...snapshot.accounts[0],accountId:"inv",cashMinor:2500}]};
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(sourceSnapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([securityTransfer,cashTransfer]);
+  const source=render(<PortfolioPage accounts={accounts} focus={{accountId:"inv"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
+  await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Activity"}));expect(screen.getByText("Transferred cash out")).toBeTruthy();expect(screen.getByText("Transferred out 1 EXM")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"Cash"}));expect(screen.getByText("-$25.00")).toBeTruthy();source.unmount();
+
+  const destSnapshot:PortfolioSnapshot={...snapshot,accounts:[{...snapshot.accounts[0],accountId:"dest",cashMinor:2500,holdings:[{...snapshot.accounts[0].holdings[0],accountId:"dest"}]}]};
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(destSnapshot);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([securityTransfer,cashTransfer]);
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"dest"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
+  await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Activity"}));expect(screen.getByText("Transferred cash in")).toBeTruthy();expect(screen.getByText("Transferred in 1 EXM")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button",{name:"Cash"}));expect(screen.getByText("$25.00")).toBeTruthy();
+ });
+ it("shows transferred-in security activity in destination security detail",async()=>{
+  const securityTransfer={id:"rt2",eventId:"t2",revisionNumber:1,accountId:"inv",eventType:"security_transfer" as const,tradeDate:"2026-07-02",securityId:"sec",relatedAccountId:"dest",quantityE8:100_000_000,cashEffectMinor:0,incomeMinor:0,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const};
+  const destSnapshot:PortfolioSnapshot={...snapshot,accounts:[{...snapshot.accounts[0],accountId:"dest",holdings:[{...snapshot.accounts[0].holdings[0],accountId:"dest"}]}]};
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(destSnapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([securityTransfer]);
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"dest",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
+  expect(await screen.findByText("Security detail")).toBeTruthy();expect(screen.getByText("Transferred in 1 EXM")).toBeTruthy();
  });
  it("normalizes native null activity fields to undefined",()=>{
   const normalized=normalizeInvestmentEvent({...buy,supersedesRevisionId:null,settlementDate:null,acquisitionDate:null,relatedAccountId:null,unitPriceE8:null,memo:null,externalId:null,provenance:null,groupId:null,correctionReason:null,securityId:null,quantityE8:null,grossCashMinor:null});
