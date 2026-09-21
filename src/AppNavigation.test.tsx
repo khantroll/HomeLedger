@@ -83,4 +83,26 @@ describe("App navigation shell", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(update).toHaveBeenCalledWith("checking", expect.objectContaining({ name: "Primary Checking", currency: "USD" }));
   });
+  it("guides a fresh ledger without double-counting imported history", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(repositoryModule.financeRepository, "listAccounts").mockResolvedValue([]);
+    vi.spyOn(repositoryModule.financeRepository, "listTransactions").mockResolvedValue([]);
+    vi.spyOn(repositoryModule.financeRepository, "listScheduledTransactions").mockResolvedValue([]);
+    vi.spyOn(repositoryModule.financeRepository, "generateScheduledOccurrences").mockResolvedValue(0);
+    vi.spyOn(repositoryModule.financeRepository, "listScheduledOccurrences").mockResolvedValue([]);
+    const create = vi.spyOn(repositoryModule.financeRepository, "createAccount").mockResolvedValue({ id:"new", name:"Checking", type:"checking", currency:"USD", balanceMinor:0, ownerLabel:"Household" });
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Start with the accounts you use today" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Add my first account" }));
+    expect(screen.getByText("How do you want to start this account?")).toBeTruthy();
+    expect(screen.getByLabelText("Current cleared balance")).toBeTruthy();
+    await user.click(screen.getByText("I plan to import older history"));
+    expect(screen.queryByLabelText("Current cleared balance")).toBeNull();
+    expect(screen.getByText(/count those transactions twice/i)).toBeTruthy();
+    await user.type(screen.getByLabelText("Account name"), "Checking");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name:"Checking", openingBalanceMinor:0 }));
+  });
+
 });
