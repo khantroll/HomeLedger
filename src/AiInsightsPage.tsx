@@ -23,7 +23,7 @@ import {
   type CloudProviderDraft,
   type EnabledCloudProviderType
 } from "./aiProvider";
-import {buildAffordabilityAnalysisContext,buildSpendingChangeAnalysisContext,defaultSpendingChangePeriods,type AiTaskKind,type SpendingChangeAnalysisContext} from "./aiTaskContext";
+import {buildAffordabilityAnalysisContext,buildBudgetReviewAnalysisContext,buildSpendingChangeAnalysisContext,defaultSpendingChangePeriods,type AiTaskKind,type BudgetReviewAnalysisContext,type SpendingChangeAnalysisContext} from "./aiTaskContext";
 import {assertCloudSendConfirmation,presentAiAdviceText} from "./aiCloud";
 import {validateCredentialAccountId,validateCredentialSecret} from "./aiCredentials";
 import {aiRepository,financeRepository as repository,isNativeApp} from "./repository";
@@ -72,11 +72,13 @@ export function AiInsightsPage({
   const [analysisTo,setAnalysisTo]=useState(defaultPeriods.analysis.toDate);
   const [comparisonFrom,setComparisonFrom]=useState(defaultPeriods.comparison.fromDate);
   const [comparisonTo,setComparisonTo]=useState(defaultPeriods.comparison.toDate);
+  const [budgetMonth,setBudgetMonth]=useState(today.slice(0,7));
   const [currency,setCurrency]=useState(currencies[0]??"USD");
   const [mode,setMode]=useState<AiDisclosureMode>("aggregate");
   const [customFields,setCustomFields]=useState<Set<CustomDisclosureField>>(new Set(["accountType","month","amountBand"]));
   const [preview,setPreview]=useState<AiFirewallPreview|null>(null);
   const [spendingFindings,setSpendingFindings]=useState<SpendingChangeAnalysisContext|null>(null);
+  const [budgetFindings,setBudgetFindings]=useState<BudgetReviewAnalysisContext|null>(null);
   const [error,setError]=useState("");
   const [connectionNotice,setConnectionNotice]=useState("");
   const [testing,setTesting]=useState(false);
@@ -102,7 +104,7 @@ export function AiInsightsPage({
   const cloudEnabled=isEnabledCloudProvider(cloudType);
   const cloudLabel=cloudType==="openai-compatible-remote"?"Remote OpenAI-compatible":CLOUD_PROVIDER_PRESETS[cloudType].label;
 
-  useEffect(()=>{setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);},[accounts,transactions,templates,occurrences,budgets]);
+  useEffect(()=>{setPreview(null);setSpendingFindings(null);setBudgetFindings(null);setAnswer("");setCloudConfirm(false);},[accounts,transactions,templates,occurrences,budgets]);
   useEffect(()=>{if(currencies.length&&!currencies.includes(currency))setCurrency(currencies[0]);},[currencies,currency]);
   useEffect(()=>{setTaskBudgets(budgets);setTaskOccurrences(occurrences);},[budgets,occurrences]);
   useEffect(()=>{
@@ -110,14 +112,15 @@ export function AiInsightsPage({
     setAnalysisTo(defaultPeriods.analysis.toDate);
     setComparisonFrom(defaultPeriods.comparison.fromDate);
     setComparisonTo(defaultPeriods.comparison.toDate);
-  },[defaultPeriods]);
+    setBudgetMonth(today.slice(0,7));
+  },[defaultPeriods,today]);
   useEffect(()=>{
     let current=true;
     void Promise.all([
       repository.getDebtPlan(currency).catch(()=>undefined),
       repository.listSavingsGoals().catch(()=>[] as SavingsGoal[]),
       repository.generateScheduledOccurrences({fromDate:today,toDate:addDaysIso(today,89)}).then(()=>repository.listScheduledOccurrences({fromDate:today,toDate:addDaysIso(today,89)})),
-      Promise.all(forecastMonths(today,90).map(month=>repository.getBudgetMonth(month)))
+      Promise.all([...new Set([...forecastMonths(today,90),budgetMonth])].map(month=>repository.getBudgetMonth(month)))
     ]).then(([nextDebt,nextGoals,nextOccurrences,nextBudgets])=>{
       if(!current)return;
       setDebtPlan(nextDebt);
@@ -126,7 +129,7 @@ export function AiInsightsPage({
       setTaskBudgets(nextBudgets);
     }).catch(()=>{/* keep overview data */});
     return()=>{current=false;};
-  },[currency,today]);
+  },[currency,today,budgetMonth]);
   useEffect(()=>{
     let current=true;
     if(!isNativeApp){setCloudConfigured(false);return;}
@@ -163,14 +166,38 @@ export function AiInsightsPage({
     });
   }
 
+  function buildBudgetReviewContext(){
+    const budget=taskBudgets.find(item=>item.month===budgetMonth);
+    if(!budget)throw new Error(`No budget is available for ${budgetMonth}. Open Budget and create planned amounts first.`);
+    return buildBudgetReviewAnalysisContext({
+      question:purpose,
+      currency,
+      asOfDate:today,
+      budgetMonth,
+      accounts,
+      transactions,
+      templates,
+      occurrences:taskOccurrences,
+      budget,
+      debtPlan,
+      savingsGoals
+    });
+  }
+
   function buildSelectedTaskContext(){
-    return taskKind==="spending-change-analysis"?buildSpendingChangeContext():buildAffordabilityContext();
+    if(taskKind==="spending-change-analysis")return buildSpendingChangeContext();
+    if(taskKind==="budget-review-analysis")return buildBudgetReviewContext();
+    return buildAffordabilityContext();
   }
 
   function changeTaskKind(next:AiTaskKind){
     setTaskKind(next);
-    setPurpose(next==="spending-change-analysis"?"Why was this month expensive?":"Can I afford another $50 per month?");
-    setPreview(null);setSpendingFindings(null);setAnswer("");setError("");setCloudConfirm(false);
+    setPurpose(
+      next==="spending-change-analysis"?"Why was this month expensive?"
+      :next==="budget-review-analysis"?"How am I doing against my budget?"
+      :"Can I afford another $50 per month?"
+    );
+    setPreview(null);setSpendingFindings(null);setBudgetFindings(null);setAnswer("");setError("");setCloudConfirm(false);
   }
 
   function changeKind(next:LocalAiProviderKind){
@@ -189,6 +216,12 @@ export function AiInsightsPage({
     setCloudSecret("");setCloudNotice("");setPreview(null);setAnswer("");setCloudConfirm(false);
   }
 
+  function applyTaskFindings(taskContext:ReturnType<typeof buildSelectedTaskContext>){
+    if(taskContext.task==="spending-change-analysis"){setSpendingFindings(taskContext);setBudgetFindings(null);}
+    else if(taskContext.task==="budget-review-analysis"){setBudgetFindings(taskContext);setSpendingFindings(null);}
+    else{setSpendingFindings(null);setBudgetFindings(null);}
+  }
+
   async function submit(event:FormEvent){
     event.preventDefault();
     setError("");setAnswer("");setCloudConfirm(false);
@@ -196,16 +229,17 @@ export function AiInsightsPage({
       if(analysisMode==="task"){
         const local=validateLocalAiProvider({kind,endpoint,model});
         const taskContext=buildSelectedTaskContext();
-        if(taskContext.task==="spending-change-analysis")setSpendingFindings(taskContext);
-        else setSpendingFindings(null);
+        applyTaskFindings(taskContext);
         setPreview(buildAiTaskFirewallPreview({provider:localProviderDescriptor(local),taskContext}));
       }else{
         setSpendingFindings(null);
+        setBudgetFindings(null);
         setPreview(buildAiFirewallPreview({provider:{kind,endpoint,model},purpose,mode,accounts,transactions,customFields:[...customFields]}));
       }
     }catch(reason){
       setPreview(null);
       setSpendingFindings(null);
+      setBudgetFindings(null);
       setError(reason instanceof Error?reason.message:String(reason));
     }
   }
@@ -302,13 +336,13 @@ export function AiInsightsPage({
         accountId:cloudAccountId
       }));
       const taskContext=buildSelectedTaskContext();
-      if(taskContext.task==="spending-change-analysis")setSpendingFindings(taskContext);
-      else setSpendingFindings(null);
+      applyTaskFindings(taskContext);
       setPreview(buildAiTaskFirewallPreview({provider,taskContext}));
       setCloudNotice(`Review the exact payload. ${provider.label} transmission leaves this device and requires explicit confirmation.`);
     }catch(reason){
       setPreview(null);
       setSpendingFindings(null);
+      setBudgetFindings(null);
       setError(reason instanceof Error?reason.message:String(reason));
     }
   }
@@ -331,7 +365,8 @@ export function AiInsightsPage({
           <fieldset><legend>Analysis mode</legend>
             <label className={analysisMode==="task"&&taskKind==="affordability-analysis"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="task"&&taskKind==="affordability-analysis"} onChange={()=>{setAnalysisMode("task");changeTaskKind("affordability-analysis");}}/><span><strong>Affordability Analysis</strong><small>Deterministic task context for questions like “Can I afford another $50 per month?”</small></span></label>
             <label className={analysisMode==="task"&&taskKind==="spending-change-analysis"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="task"&&taskKind==="spending-change-analysis"} onChange={()=>{setAnalysisMode("task");changeTaskKind("spending-change-analysis");}}/><span><strong>Spending Change Analysis</strong><small>Compare periods to explain “Why was this month expensive?”</small></span></label>
-            <label className={analysisMode==="adhoc"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="adhoc"} onChange={()=>{setAnalysisMode("adhoc");setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}/><span><strong>Custom / ad-hoc question</strong><small>Uses Aggregate Only, Redacted, Custom, or Full Local Context disclosure modes.</small></span></label>
+            <label className={analysisMode==="task"&&taskKind==="budget-review-analysis"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="task"&&taskKind==="budget-review-analysis"} onChange={()=>{setAnalysisMode("task");changeTaskKind("budget-review-analysis");}}/><span><strong>Budget Review</strong><small>Deterministic review for “How am I doing against my budget?”</small></span></label>
+            <label className={analysisMode==="adhoc"?"ai-mode selected":"ai-mode"}><input type="radio" name="analysis-mode" checked={analysisMode==="adhoc"} onChange={()=>{setAnalysisMode("adhoc");setPreview(null);setSpendingFindings(null);setBudgetFindings(null);setAnswer("");setCloudConfirm(false);}}/><span><strong>Custom / ad-hoc question</strong><small>Uses Aggregate Only, Redacted, Custom, or Full Local Context disclosure modes.</small></span></label>
           </fieldset>
           <label>Provider<select value={kind} onChange={event=>changeKind(event.target.value as LocalAiProviderKind)}><option value="ollama">Ollama</option><option value="lm-studio">LM Studio</option><option value="openai-compatible-local">OpenAI-compatible localhost</option></select></label>
           <label>Local endpoint<input value={endpoint} onChange={event=>{setEndpoint(event.target.value);setPreview(null);setAnswer("");setConnectionNotice("");setCloudConfirm(false);}} inputMode="url" spellCheck={false}/><small>Only HTTP on localhost, 127.0.0.1, or ::1 is accepted.</small></label>
@@ -352,6 +387,10 @@ export function AiInsightsPage({
               <label>To<input type="date" value={comparisonTo} onChange={event=>{setComparisonTo(event.target.value);setPreview(null);setSpendingFindings(null);setAnswer("");setCloudConfirm(false);}}/></label>
               <small>Defaults to month-to-date versus the same number of days in the prior month.</small>
             </fieldset>
+          </>}
+          {analysisMode==="task"&&taskKind==="budget-review-analysis"&&<>
+            <label>Currency<select value={currency} onChange={event=>{setCurrency(event.target.value);setPreview(null);setBudgetFindings(null);setAnswer("");setCloudConfirm(false);}}>{currencies.length?currencies.map(item=><option key={item}>{item}</option>):<option>USD</option>}</select></label>
+            <label>Budget month<input type="month" value={budgetMonth} onChange={event=>{setBudgetMonth(event.target.value);setPreview(null);setBudgetFindings(null);setAnswer("");setCloudConfirm(false);}}/><small>HomeLedger reviews the selected month’s planned vs actual amounts and remaining scheduled obligations.</small></label>
           </>}
           {analysisMode==="adhoc"&&<>
             <fieldset><legend>Disclosure mode</legend>{disclosureOptions.map(option=><label className={mode===option.value?"ai-mode selected":"ai-mode"} key={option.value}><input type="radio" name="disclosure" value={option.value} checked={mode===option.value} onChange={()=>{setMode(option.value);setPreview(null);setAnswer("");setCloudConfirm(false);}}/><span><strong>{option.label}</strong><small>{option.detail}</small></span></label>)}</fieldset>
@@ -376,6 +415,17 @@ export function AiInsightsPage({
             {spendingFindings.changeSummary.recurringExpenseChangeMinor!==0&&<li>Recurring/scheduled spending changed by {money(spendingFindings.changeSummary.recurringExpenseChangeMinor,spendingFindings.currency)}</li>}
           </ul>
           <small>{spendingFindings.periodLimitations.note}</small>
+        </div>}
+        {budgetFindings&&<div className="ai-findings" aria-live="polite">
+          <strong>HomeLedger budget review</strong>
+          <p>{budgetFindings.reviewSummary.categoriesAlreadyOver} categories already over budget · {budgetFindings.reviewSummary.categoriesProjectedOver} projected to exceed · {money(budgetFindings.reviewSummary.discretionaryRemainingMinor,budgetFindings.currency)} discretionary room remaining.</p>
+          <ul>
+            <li>{money(budgetFindings.reviewSummary.scheduledObligationsDueMinor,budgetFindings.currency)} of scheduled obligations still due this period</li>
+            <li>Projected period-end available cash: {money(budgetFindings.reviewSummary.projectedMonthEndCashMinor,budgetFindings.currency)}</li>
+            {budgetFindings.reviewSummary.largestVariances.slice(0,3).map(item=><li key={item.category}>{item.category}: {item.status.replace("-"," ")} ({money(item.remainingMinor,budgetFindings.currency)} remaining)</li>)}
+            {budgetFindings.spendingPace.spendingAheadOfElapsedPace&&<li>Overall budget consumption is ahead of elapsed-period pace ({budgetFindings.spendingPace.budgetConsumedPercent}% spent vs {budgetFindings.spendingPace.elapsedPercent}% elapsed)</li>}
+          </ul>
+          <small>{budgetFindings.periodLimitations.note}</small>
         </div>}
         {!preview?<div className="ai-preview-empty"><Bot size={30}/><strong>No payload constructed</strong><span>Prefer a structured task analysis, then build a preview.</span></div>:<>
           <dl className="ai-preview-meta">
@@ -412,7 +462,7 @@ export function AiInsightsPage({
         <div className="ai-control-actions">
           <button type="submit" disabled={!isNativeApp||cloudBusy||!cloudSecret}>{cloudBusy?"Saving…":cloudConfigured?"Replace credential in OS vault":"Save credential to OS vault"}</button>
           <button type="button" disabled={!isNativeApp||cloudBusy||!cloudConfigured} onClick={()=>void clearCloudCredential()}>Clear credential</button>
-          <button type="button" disabled={cloudBusy||!cloudEnabled||analysisMode!=="task"} onClick={previewCloudTask}><Eye size={15}/> Preview {taskKind==="spending-change-analysis"?"spending change":"affordability"} for {cloudLabel}</button>
+          <button type="button" disabled={cloudBusy||!cloudEnabled||analysisMode!=="task"} onClick={previewCloudTask}><Eye size={15}/> Preview {taskKind==="spending-change-analysis"?"spending change":taskKind==="budget-review-analysis"?"budget review":"affordability"} for {cloudLabel}</button>
         </div>
         {!isNativeApp&&<small className="ai-native-note">OS credential vault access and cloud transmission require the native desktop application.</small>}
         <div className="ai-warning"><LockKeyhole/><span>Cloud requests use native HTTPS adapters only, never browser networking. Each send requires exact payload review and explicit confirmation. Mistral and arbitrary remote endpoints remain disabled.</span></div>

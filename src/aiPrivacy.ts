@@ -90,7 +90,9 @@ export function buildAiTaskFirewallPreview(input:{
   const leavesDevice=provider.trust!=="local";
   const modeLabel=input.taskContext.task==="spending-change-analysis"
     ?"Task-specific Spending Change Analysis"
-    :"Task-specific Affordability Analysis";
+    :input.taskContext.task==="budget-review-analysis"
+      ?"Task-specific Budget Review"
+      :"Task-specific Affordability Analysis";
   const taskPayload={
     model:provider.model,
     purpose:input.taskContext.question,

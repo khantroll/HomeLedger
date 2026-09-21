@@ -4,7 +4,7 @@ import {calculateTransactionReport} from "./reportMath";
 import {calculateSavingsGoal} from "./savingsGoalMath";
 import {addDaysIso} from "./scheduledPresentation";
 
-export type AiTaskKind="affordability-analysis"|"spending-change-analysis";
+export type AiTaskKind="affordability-analysis"|"spending-change-analysis"|"budget-review-analysis";
 
 export interface AffordabilityAnalysisInput{
   question:string;
@@ -97,7 +97,117 @@ export interface AffordabilityAnalysisContext{
   };
 }
 
-export type AiTaskContext=AffordabilityAnalysisContext|SpendingChangeAnalysisContext;
+export type AiTaskContext=AffordabilityAnalysisContext|SpendingChangeAnalysisContext|BudgetReviewAnalysisContext;
+
+export type BudgetCategoryReviewStatus="already-over"|"projected-over"|"on-track"|"under-spending"|"insufficient-data";
+
+export interface BudgetReviewAnalysisInput{
+  question:string;
+  currency:string;
+  asOfDate:string;
+  budgetMonth?:string;
+  accounts:readonly Account[];
+  transactions:readonly Transaction[];
+  templates:readonly ScheduledTransaction[];
+  occurrences:readonly ScheduledOccurrence[];
+  budget:BudgetMonth;
+  debtPlan?:DebtPlan;
+  savingsGoals?:readonly SavingsGoal[];
+}
+
+export interface BudgetReviewCategoryRow{
+  category:string;
+  plannedMinor:number;
+  spentMinor:number;
+  carryInMinor:number;
+  remainingMinor:number;
+  spentPercentOfBudget:number|null;
+  scheduledRemainingMinor:number;
+  projectedSpendMinor:number;
+  status:BudgetCategoryReviewStatus;
+  projectionBasis:"scheduled-aware"|"linear-pace"|"actual-only"|"insufficient-data";
+}
+
+export interface BudgetReviewAnalysisContext{
+  task:"budget-review-analysis";
+  schemaVersion:1;
+  question:string;
+  currency:string;
+  asOfDate:string;
+  period:{
+    month:string;
+    fromDate:string;
+    toDate:string;
+    dayCount:number;
+    daysElapsed:number;
+    daysRemaining:number;
+    elapsedPercent:number;
+    isPartialMonth:boolean;
+  };
+  income:{
+    receivedMinor:number;
+    expectedRemainingMinor:number;
+    expectedTotalMinor:number;
+  };
+  budgetTotals:{
+    plannedMinor:number;
+    spentMinor:number;
+    carryInMinor:number;
+    remainingMinor:number;
+    spentPercentOfBudget:number|null;
+  };
+  categories:ReadonlyArray<BudgetReviewCategoryRow>;
+  statusCounts:{
+    alreadyOver:number;
+    projectedOver:number;
+    onTrack:number;
+    underSpending:number;
+    insufficientData:number;
+  };
+  spendingPace:{
+    elapsedPercent:number;
+    budgetConsumedPercent:number|null;
+    spendingAheadOfElapsedPace:boolean|null;
+  };
+  upcomingObligations:{
+    expenseTotalMinor:number;
+    incomeTotalMinor:number;
+    itemCount:number;
+    items:ReadonlyArray<{
+      kind:"transaction"|"transfer";
+      frequency:string;
+      amountMinor:number;
+      direction:"expense"|"income"|"transfer-boundary";
+      dueInPeriod:boolean;
+    }>;
+  };
+  projectedCash:{
+    horizonDays:number;
+    startBalanceMinor:number;
+    endingBalanceMinor:number;
+    lowestBalanceMinor:number;
+    lowestBalanceDate:string;
+  };
+  savingsCommitments:{
+    count:number;
+    totalPlannedMonthlyMinor:number;
+    totalRemainingMinor:number;
+  };
+  debtObligations:{
+    accountCount:number;
+    totalMinimumPaymentMinor:number;
+    totalBalanceMinor:number;
+  };
+  reviewSummary:{
+    categoriesAlreadyOver:number;
+    categoriesProjectedOver:number;
+    discretionaryRemainingMinor:number;
+    scheduledObligationsDueMinor:number;
+    projectedMonthEndCashMinor:number;
+    largestVariances:ReadonlyArray<{category:string;remainingMinor:number;status:BudgetCategoryReviewStatus}>;
+  };
+  periodLimitations:{note:string};
+}
 
 export interface SpendingChangePeriodSpec{
   fromDate:string;
@@ -501,6 +611,333 @@ export function buildSpendingChangeAnalysisContext(input:SpendingChangeAnalysisI
   };
   assertNoProhibitedFields(context);
   return context;
+}
+
+export function buildBudgetReviewAnalysisContext(input:BudgetReviewAnalysisInput):BudgetReviewAnalysisContext{
+  const question=input.question.trim();
+  if(!question)throw new Error("Describe the budget-review question before building a task context");
+  if(!/^[A-Z]{3}$/.test(input.currency))throw new Error("Budget review requires a three-letter currency code");
+  const asOfDate=input.asOfDate;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate))throw new Error("Budget-review as-of date must use YYYY-MM-DD");
+  const month=input.budgetMonth??asOfDate.slice(0,7);
+  if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw new Error("Budget month must use YYYY-MM");
+  if(input.budget.month!==month)throw new Error("Budget month does not match the selected review month");
+
+  const fromDate=`${month}-01`;
+  const monthEnd=lastDayOfMonthIso(fromDate);
+  const toDate=asOfDate.slice(0,7)===month?(asOfDate<monthEnd?asOfDate:monthEnd):monthEnd;
+  const dayCount=inclusiveDayCount(fromDate,monthEnd);
+  const daysElapsed=inclusiveDayCount(fromDate,toDate);
+  const daysRemaining=Math.max(0,dayCount-daysElapsed);
+  const elapsedPercent=dayCount?Math.round((daysElapsed/dayCount)*1000)/10:0;
+  const isPartialMonth=toDate<monthEnd;
+
+  const currencyAccounts=input.accounts.filter(item=>item.currency===input.currency&&!item.archived);
+  const incomeReport=calculateTransactionReport({
+    fromDate,toDate,currency:input.currency,accounts:currencyAccounts,transactions:input.transactions
+  });
+
+  const templatesById=new Map(input.templates.filter(item=>item.enabled&&!item.archived).map(item=>[item.id,item]));
+  const cashIds=new Set(currencyAccounts.filter(item=>["checking","savings","cash"].includes(item.type)).map(item=>item.id));
+  const remainingOccurrences=input.occurrences.filter(item=>{
+    if(item.status!=="expected")return false;
+    if(item.dueDate<=toDate||item.dueDate>monthEnd)return false;
+    const template=templatesById.get(item.scheduledTransactionId);
+    return Boolean(template&&(cashIds.has(template.accountId)||(template.kind==="transfer"&&template.transferAccountId&&cashIds.has(template.transferAccountId))));
+  });
+
+  let expectedIncomeRemaining=0;
+  let scheduledExpenseRemainingTotal=0;
+  const obligationItems:BudgetReviewAnalysisContext["upcomingObligations"]["items"][number][]=[];
+  for(const occurrence of remainingOccurrences){
+    const template=templatesById.get(occurrence.scheduledTransactionId)!;
+    if(template.kind==="transfer"){
+      const amount=transferBoundaryAmount(template,cashIds);
+      if(amount===0)continue;
+      obligationItems.push({
+        kind:"transfer",
+        frequency:template.frequency,
+        amountMinor:Math.abs(amount),
+        direction:"transfer-boundary",
+        dueInPeriod:true
+      });
+      if(amount<0)scheduledExpenseRemainingTotal=safeAdd(scheduledExpenseRemainingTotal,-amount);
+      else expectedIncomeRemaining=safeAdd(expectedIncomeRemaining,amount);
+      continue;
+    }
+    if(template.amountMinor>=0){
+      expectedIncomeRemaining=safeAdd(expectedIncomeRemaining,template.amountMinor);
+      obligationItems.push({
+        kind:"transaction",
+        frequency:template.frequency,
+        amountMinor:template.amountMinor,
+        direction:"income",
+        dueInPeriod:true
+      });
+    }else{
+      const spent=-template.amountMinor;
+      scheduledExpenseRemainingTotal=safeAdd(scheduledExpenseRemainingTotal,spent);
+      obligationItems.push({
+        kind:"transaction",
+        frequency:template.frequency,
+        amountMinor:spent,
+        direction:"expense",
+        dueInPeriod:true
+      });
+    }
+  }
+
+  const categories=input.budget.lines.map(line=>{
+    const category=sanitizeCategoryLabel(line.category);
+    const budgeted=safeAdd(line.plannedMinor,line.carryInMinor);
+    const scheduledRemainingMinor=remainingOccurrences.reduce((total,occurrence)=>{
+      const template=templatesById.get(occurrence.scheduledTransactionId);
+      if(!template||template.kind!=="transaction"||template.amountMinor>=0)return total;
+      if(template.category.trim().toLocaleLowerCase()!==line.category.trim().toLocaleLowerCase())return total;
+      return safeAdd(total,-template.amountMinor);
+    },0);
+    const row=classifyBudgetCategory({
+      category,
+      plannedMinor:line.plannedMinor,
+      spentMinor:line.spentMinor,
+      carryInMinor:line.carryInMinor,
+      remainingMinor:line.availableMinor,
+      budgeted,
+      scheduledRemainingMinor,
+      daysElapsed,
+      dayCount,
+      elapsedPercent
+    });
+    return row;
+  }).sort((left,right)=>{
+    const rank=(status:BudgetCategoryReviewStatus)=>status==="already-over"?0:status==="projected-over"?1:status==="on-track"?2:status==="under-spending"?3:4;
+    return rank(left.status)-rank(right.status)||left.remainingMinor-right.remainingMinor||left.category.localeCompare(right.category);
+  });
+
+  const statusCounts={
+    alreadyOver:categories.filter(item=>item.status==="already-over").length,
+    projectedOver:categories.filter(item=>item.status==="projected-over").length,
+    onTrack:categories.filter(item=>item.status==="on-track").length,
+    underSpending:categories.filter(item=>item.status==="under-spending").length,
+    insufficientData:categories.filter(item=>item.status==="insufficient-data").length
+  };
+
+  const budgetTotals={
+    plannedMinor:input.budget.plannedMinor,
+    spentMinor:input.budget.spentMinor,
+    carryInMinor:input.budget.carryInMinor,
+    remainingMinor:input.budget.availableMinor,
+    spentPercentOfBudget:percentOf(input.budget.spentMinor,safeAdd(input.budget.plannedMinor,input.budget.carryInMinor))
+  };
+  const spendingPace={
+    elapsedPercent,
+    budgetConsumedPercent:budgetTotals.spentPercentOfBudget,
+    spendingAheadOfElapsedPace:budgetTotals.spentPercentOfBudget==null?null:budgetTotals.spentPercentOfBudget>elapsedPercent+5
+  };
+
+  const forecastHorizonDays:30|60|90=daysRemaining<=30?30:daysRemaining<=60?60:90;
+  const forecast=calculateCashFlowForecast({
+    today:toDate,
+    horizonDays:forecastHorizonDays,
+    currency:input.currency,
+    scenario:"expected",
+    accounts:currencyAccounts,
+    templates:input.templates,
+    occurrences:input.occurrences,
+    budgets:[input.budget]
+  });
+
+  const goals=(input.savingsGoals??[]).filter(goal=>currencyAccounts.some(account=>account.id===goal.accountId));
+  const savingsItems=goals.map(goal=>{
+    const account=currencyAccounts.find(item=>item.id===goal.accountId)!;
+    const projection=calculateSavingsGoal(goal,account.balanceMinor,asOfDate);
+    return{remainingMinor:projection.remainingMinor,plannedMonthlyMinor:goal.plannedMonthlyMinor};
+  });
+  const debtAccounts=currencyAccounts.filter(item=>["credit","loan"].includes(item.type)&&item.balanceMinor<0);
+  const debtTerms=input.debtPlan?.currency===input.currency?input.debtPlan.terms:[];
+  const debtItems=debtAccounts.map(account=>{
+    const term=debtTerms.find(item=>item.accountId===account.id&&item.enabled);
+    return{balanceMinor:Math.abs(account.balanceMinor),minimumPaymentMinor:term?.minimumPaymentMinor??0};
+  });
+
+  const discretionaryRemainingMinor=categories
+    .filter(item=>item.status==="on-track"||item.status==="under-spending")
+    .reduce((total,item)=>safeAdd(total,Math.max(0,item.remainingMinor)),0);
+  const largestVariances=categories
+    .filter(item=>item.status==="already-over"||item.status==="projected-over"||item.remainingMinor<0)
+    .slice(0,5)
+    .map(item=>({category:item.category,remainingMinor:item.remainingMinor,status:item.status}));
+
+  const context:BudgetReviewAnalysisContext={
+    task:"budget-review-analysis",
+    schemaVersion:1,
+    question,
+    currency:input.currency,
+    asOfDate,
+    period:{month,fromDate,toDate,dayCount,daysElapsed,daysRemaining,elapsedPercent,isPartialMonth},
+    income:{
+      receivedMinor:incomeReport.incomeMinor,
+      expectedRemainingMinor:expectedIncomeRemaining,
+      expectedTotalMinor:safeAdd(incomeReport.incomeMinor,expectedIncomeRemaining)
+    },
+    budgetTotals,
+    categories,
+    statusCounts,
+    spendingPace,
+    upcomingObligations:{
+      expenseTotalMinor:scheduledExpenseRemainingTotal,
+      incomeTotalMinor:expectedIncomeRemaining,
+      itemCount:obligationItems.length,
+      items:obligationItems
+        .sort((left,right)=>right.amountMinor-left.amountMinor||left.frequency.localeCompare(right.frequency))
+        .slice(0,12)
+    },
+    projectedCash:{
+      horizonDays:forecast.horizonDays,
+      startBalanceMinor:forecast.startBalanceMinor,
+      endingBalanceMinor:forecast.endingBalanceMinor,
+      lowestBalanceMinor:forecast.lowestBalanceMinor,
+      lowestBalanceDate:forecast.lowestBalanceDate
+    },
+    savingsCommitments:{
+      count:savingsItems.length,
+      totalPlannedMonthlyMinor:savingsItems.reduce((total,item)=>safeAdd(total,item.plannedMonthlyMinor),0),
+      totalRemainingMinor:savingsItems.reduce((total,item)=>safeAdd(total,item.remainingMinor),0)
+    },
+    debtObligations:{
+      accountCount:debtItems.length,
+      totalMinimumPaymentMinor:debtItems.reduce((total,item)=>safeAdd(total,item.minimumPaymentMinor),0),
+      totalBalanceMinor:debtItems.reduce((total,item)=>safeAdd(total,item.balanceMinor),0)
+    },
+    reviewSummary:{
+      categoriesAlreadyOver:statusCounts.alreadyOver,
+      categoriesProjectedOver:statusCounts.projectedOver,
+      discretionaryRemainingMinor,
+      scheduledObligationsDueMinor:scheduledExpenseRemainingTotal,
+      projectedMonthEndCashMinor:forecast.endingBalanceMinor,
+      largestVariances
+    },
+    periodLimitations:{
+      note:isPartialMonth
+        ?`Review covers ${daysElapsed} of ${dayCount} days in ${month} (${elapsedPercent}% elapsed). Scheduled obligations still due this month are included in projections; remaining unscheduled discretionary spend is not assumed beyond known schedules.`
+        :`Review covers the full month ${month}. Explain only states supported by the supplied budget totals, category rows, and scheduled obligations.`
+    }
+  };
+  assertNoProhibitedFields(context);
+  return context;
+}
+
+function classifyBudgetCategory(input:{
+  category:string;
+  plannedMinor:number;
+  spentMinor:number;
+  carryInMinor:number;
+  remainingMinor:number;
+  budgeted:number;
+  scheduledRemainingMinor:number;
+  daysElapsed:number;
+  dayCount:number;
+  elapsedPercent:number;
+}):BudgetReviewCategoryRow{
+  const spentPercentOfBudget=percentOf(input.spentMinor,input.budgeted);
+  if(input.remainingMinor<0){
+    return{
+      category:input.category,
+      plannedMinor:input.plannedMinor,
+      spentMinor:input.spentMinor,
+      carryInMinor:input.carryInMinor,
+      remainingMinor:input.remainingMinor,
+      spentPercentOfBudget,
+      scheduledRemainingMinor:input.scheduledRemainingMinor,
+      projectedSpendMinor:safeAdd(input.spentMinor,input.scheduledRemainingMinor),
+      status:"already-over",
+      projectionBasis:"actual-only"
+    };
+  }
+
+  if(input.scheduledRemainingMinor>0){
+    const projectedSpendMinor=safeAdd(input.spentMinor,input.scheduledRemainingMinor);
+    const status:BudgetCategoryReviewStatus=projectedSpendMinor>input.budgeted
+      ?"projected-over"
+      :projectedSpendMinor+Math.max(0,Math.round((input.budgeted-projectedSpendMinor)*0.15))<input.budgeted&&input.elapsedPercent>25
+        ?"under-spending"
+        :"on-track";
+    return{
+      category:input.category,
+      plannedMinor:input.plannedMinor,
+      spentMinor:input.spentMinor,
+      carryInMinor:input.carryInMinor,
+      remainingMinor:input.remainingMinor,
+      spentPercentOfBudget,
+      scheduledRemainingMinor:input.scheduledRemainingMinor,
+      projectedSpendMinor,
+      status:input.budgeted<=0&&input.spentMinor===0&&input.scheduledRemainingMinor===0?"insufficient-data":status,
+      projectionBasis:"scheduled-aware"
+    };
+  }
+
+  if(input.budgeted<=0){
+    return{
+      category:input.category,
+      plannedMinor:input.plannedMinor,
+      spentMinor:input.spentMinor,
+      carryInMinor:input.carryInMinor,
+      remainingMinor:input.remainingMinor,
+      spentPercentOfBudget,
+      scheduledRemainingMinor:0,
+      projectedSpendMinor:input.spentMinor,
+      status:input.spentMinor>0?"already-over":"insufficient-data",
+      projectionBasis:input.spentMinor>0?"actual-only":"insufficient-data"
+    };
+  }
+
+  if(input.daysElapsed<3&&input.spentMinor===0){
+    return{
+      category:input.category,
+      plannedMinor:input.plannedMinor,
+      spentMinor:input.spentMinor,
+      carryInMinor:input.carryInMinor,
+      remainingMinor:input.remainingMinor,
+      spentPercentOfBudget,
+      scheduledRemainingMinor:0,
+      projectedSpendMinor:input.spentMinor,
+      status:"insufficient-data",
+      projectionBasis:"insufficient-data"
+    };
+  }
+
+  const projectedSpendMinor=input.daysElapsed>0
+    ?Math.round(input.spentMinor*input.dayCount/input.daysElapsed)
+    :input.spentMinor;
+  let status:BudgetCategoryReviewStatus="on-track";
+  if(projectedSpendMinor>input.budgeted)status="projected-over";
+  else if(spentPercentOfBudget!=null&&spentPercentOfBudget<input.elapsedPercent-10)status="under-spending";
+  return{
+    category:input.category,
+    plannedMinor:input.plannedMinor,
+    spentMinor:input.spentMinor,
+    carryInMinor:input.carryInMinor,
+    remainingMinor:input.remainingMinor,
+    spentPercentOfBudget,
+    scheduledRemainingMinor:0,
+    projectedSpendMinor,
+    status,
+    projectionBasis:"linear-pace"
+  };
+}
+
+function transferBoundaryAmount(template:ScheduledTransaction,cashIds:Set<string>):number{
+  if(template.kind!=="transfer"||!template.transferAccountId)return 0;
+  const fromCash=cashIds.has(template.accountId);
+  const toCash=cashIds.has(template.transferAccountId);
+  if(fromCash&&!toCash)return -Math.abs(template.amountMinor);
+  if(!fromCash&&toCash)return Math.abs(template.amountMinor);
+  return 0;
+}
+
+function percentOf(part:number,whole:number):number|null{
+  if(whole===0)return part===0?0:null;
+  return Math.round((part/whole)*1000)/10;
 }
 
 export function assertNoProhibitedFields(value:unknown,path="root"):void{

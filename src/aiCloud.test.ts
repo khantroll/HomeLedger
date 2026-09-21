@@ -18,8 +18,8 @@ import {
   validateProviderEndpoint
 } from "./aiProvider";
 import {buildAiTaskFirewallPreview,prepareReviewedTransmission} from "./aiPrivacy";
-import {buildAffordabilityAnalysisContext,buildSpendingChangeAnalysisContext} from "./aiTaskContext";
-import type {Account,Transaction} from "./domain";
+import {buildAffordabilityAnalysisContext,buildBudgetReviewAnalysisContext,buildSpendingChangeAnalysisContext} from "./aiTaskContext";
+import type {Account,BudgetMonth,Transaction} from "./domain";
 import {readFileSync} from "node:fs";
 
 const accounts:Account[]=[{id:"checking-private",name:"Jeffrey Household Checking",type:"checking",currency:"USD",balanceMinor:100000,ownerLabel:"Jeffrey"}];
@@ -28,6 +28,17 @@ const transactions:Transaction[]=[
   {id:"provider-id-2",accountId:"checking-private",postedDate:"2026-09-10",payee:"Neighborhood Market",category:"Food: Groceries",amountMinor:-12000,status:"cleared",externalId:"bank-secret",memo:"private memo",source:"import"},
   {id:"provider-id-3",accountId:"checking-private",postedDate:"2026-09-12",payee:"Appliance World",category:"Home",amountMinor:-60000,status:"cleared"}
 ];
+const budget:BudgetMonth={
+  month:"2026-09",
+  plannedMinor:100_000,
+  spentMinor:72_000,
+  carryInMinor:0,
+  availableMinor:28_000,
+  lines:[
+    {id:"b1",category:"Food: Groceries",rolloverEnabled:false,plannedMinor:40_000,spentMinor:12_000,carryInMinor:0,availableMinor:28_000},
+    {id:"b2",category:"Home",rolloverEnabled:false,plannedMinor:60_000,spentMinor:60_000,carryInMinor:0,availableMinor:0}
+  ]
+};
 
 function affordabilityContext(){
   return buildAffordabilityAnalysisContext({
@@ -115,6 +126,38 @@ describe("provider-neutral cloud adapters",()=>{
     assertCloudSendConfirmation({providerLabel:"OpenAI",previewPayload:openPreview.payload,confirmed:true});
     const request=prepareReviewedTransmission(openai,openPreview,{explicitConfirmation:true});
     expect(request.payload).toBe(openPreview.payload);
+  });
+
+  it("sends the same BudgetReviewAnalysisContext through OpenAI, Anthropic, and Gemini without financial transforms",()=>{
+    const task=buildBudgetReviewAnalysisContext({
+      question:"How am I doing against my budget?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      accounts,
+      transactions,
+      templates:[],
+      occurrences:[],
+      budget
+    });
+    const openai=validateProviderEndpoint(cloudProviderDescriptor({
+      type:"openai",endpoint:OPENAI_ENDPOINT,model:"gpt-4.1-mini",accountId:OPENAI_ACCOUNT_ID
+    }));
+    const anthropic=validateProviderEndpoint(cloudProviderDescriptor({
+      type:"anthropic",endpoint:ANTHROPIC_ENDPOINT,model:"claude-sonnet-4-5",accountId:ANTHROPIC_ACCOUNT_ID
+    }));
+    const gemini=validateProviderEndpoint(cloudProviderDescriptor({
+      type:"gemini",endpoint:GEMINI_ENDPOINT,model:"gemini-2.0-flash",accountId:GEMINI_ACCOUNT_ID
+    }));
+    const openPreview=buildAiTaskFirewallPreview({provider:openai,taskContext:task});
+    const anthropicPreview=buildAiTaskFirewallPreview({provider:anthropic,taskContext:task});
+    const geminiPreview=buildAiTaskFirewallPreview({provider:gemini,taskContext:task});
+    expect(openPreview.modeLabel).toMatch(/Budget Review/i);
+    expect(JSON.parse(openPreview.payload).task).toBe("budget-review-analysis");
+    expect(JSON.parse(openPreview.payload).data).toEqual(task);
+    expect(JSON.parse(anthropicPreview.payload).data).toEqual(JSON.parse(openPreview.payload).data);
+    expect(JSON.parse(geminiPreview.payload).data).toEqual(JSON.parse(openPreview.payload).data);
+    expect(openPreview.payload).not.toContain("Jeffrey");
+    expect(openPreview.payload).not.toContain("Neighborhood Market");
   });
 
   it("keeps model advice inert and adapters mutation-free",()=>{

@@ -1,7 +1,8 @@
 import {describe,expect,it} from "vitest";
-import type {Account,ScheduledTransaction,Transaction} from "./domain";
+import type {Account,BudgetMonth,ScheduledOccurrence,ScheduledTransaction,Transaction} from "./domain";
 import {
   buildAffordabilityAnalysisContext,
+  buildBudgetReviewAnalysisContext,
   buildSpendingChangeAnalysisContext,
   defaultSpendingChangePeriods,
   serializeAiTaskContext
@@ -146,5 +147,158 @@ describe("Spending Change Analysis task context",()=>{
     expect(context.comparisonPeriod.alignment).toBe("equivalent-prior-days");
     expect(context.periodLimitations.comparisonUsesEquivalentDays).toBe(true);
     expect(context.periodLimitations.note).toMatch(/same number of days/i);
+  });
+});
+
+describe("Budget Review task context",()=>{
+  const budget:BudgetMonth={
+    month:"2026-09",
+    plannedMinor:220_000,
+    spentMinor:95_000,
+    carryInMinor:0,
+    availableMinor:125_000,
+    lines:[
+      {id:"b-food",category:"Food: Groceries",rolloverEnabled:false,plannedMinor:40_000,spentMinor:30_000,carryInMinor:0,availableMinor:10_000},
+      {id:"b-housing",category:"Housing",rolloverEnabled:false,plannedMinor:150_000,spentMinor:0,carryInMinor:0,availableMinor:150_000},
+      {id:"b-fun",category:"Entertainment",rolloverEnabled:false,plannedMinor:20_000,spentMinor:25_000,carryInMinor:0,availableMinor:-5_000},
+      {id:"b-medical",category:"Medical",rolloverEnabled:false,plannedMinor:10_000,spentMinor:0,carryInMinor:0,availableMinor:10_000},
+      {id:"b-empty",category:"Unused",rolloverEnabled:false,plannedMinor:0,spentMinor:0,carryInMinor:0,availableMinor:0}
+    ]
+  };
+  const reviewTx:Transaction[]=[
+    {id:"r1",accountId:"checking-private",postedDate:"2026-09-05",payee:"Acme Payroll",category:"Income: Salary",amountMinor:400_000,status:"cleared"},
+    {id:"r2",accountId:"checking-private",postedDate:"2026-09-08",payee:"Neighborhood Market",category:"Food: Groceries",amountMinor:-30_000,status:"cleared",memo:"private"},
+    {id:"r3",accountId:"checking-private",postedDate:"2026-09-10",payee:"Cinema",category:"Entertainment",amountMinor:-25_000,status:"cleared"}
+  ];
+  const reviewTemplates:ScheduledTransaction[]=[
+    {id:"sched-rent",kind:"transaction",accountId:"checking-private",payee:"Oak Street Landlord",category:"Housing",amountMinor:-150_000,status:"pending",frequency:"monthly",anchorDate:"2026-01-01",enabled:true},
+    {id:"sched-pay",kind:"transaction",accountId:"checking-private",payee:"Acme Payroll",category:"Income: Salary",amountMinor:400_000,status:"pending",frequency:"monthly",anchorDate:"2026-01-05",enabled:true}
+  ];
+  const reviewOccurrences:ScheduledOccurrence[]=[
+    {id:"occ-rent",scheduledTransactionId:"sched-rent",dueDate:"2026-09-25",status:"expected"},
+    {id:"occ-pay",scheduledTransactionId:"sched-pay",dueDate:"2026-09-28",status:"expected"}
+  ];
+
+  it("classifies already-over, scheduled-aware projected-over, and sanitizes the payload",()=>{
+    const context=buildBudgetReviewAnalysisContext({
+      question:"How am I doing against my budget?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      budgetMonth:"2026-09",
+      accounts,
+      transactions:reviewTx,
+      templates:reviewTemplates,
+      occurrences:reviewOccurrences,
+      budget,
+      debtPlan:{currency:"USD",strategy:"avalanche",extraPaymentMinor:0,terms:[{accountId:"card-private",annualRateBps:1999,minimumPaymentMinor:5_000,customPriority:0,enabled:true}]},
+      savingsGoals:[{id:"goal-1",name:"Emergency Fund",accountId:"savings-private",targetMinor:500_000,targetDate:"2027-09-01",plannedMonthlyMinor:20_000}]
+    });
+    expect(context.task).toBe("budget-review-analysis");
+    expect(context.period.elapsedPercent).toBeGreaterThan(50);
+    expect(context.period.isPartialMonth).toBe(true);
+    expect(context.budgetTotals.plannedMinor).toBe(220_000);
+    expect(context.income.receivedMinor).toBe(400_000);
+    expect(context.income.expectedRemainingMinor).toBe(400_000);
+    expect(context.categories.find(item=>item.category==="Entertainment")?.status).toBe("already-over");
+    const housing=context.categories.find(item=>item.category==="Housing");
+    expect(housing?.projectionBasis).toBe("scheduled-aware");
+    expect(housing?.scheduledRemainingMinor).toBe(150_000);
+    expect(housing?.status).toBe("on-track");
+    expect(context.categories.find(item=>item.category==="Removed-sensitive")).toBeTruthy();
+    expect(context.categories.find(item=>item.category==="Unused")?.status).toBe("insufficient-data");
+    expect(context.reviewSummary.categoriesAlreadyOver).toBe(1);
+    expect(context.reviewSummary.scheduledObligationsDueMinor).toBe(150_000);
+    expect(context.savingsCommitments.totalPlannedMonthlyMinor).toBe(20_000);
+    expect(context.debtObligations.totalMinimumPaymentMinor).toBe(5_000);
+    const payload=serializeAiTaskContext(context);
+    for(const secret of ["Jeffrey","Neighborhood Market","Oak Street Landlord","Emergency Fund","Cinema","private","checking-private","b-food","sched-rent","goal-1"]){
+      expect(payload).not.toContain(secret);
+    }
+    expect(payload).not.toMatch(/"payee"|"memo"|"accountId"|"id"\s*:/);
+  });
+
+  it("uses linear pace only when schedules do not explain remaining spend",()=>{
+    const context=buildBudgetReviewAnalysisContext({
+      question:"Am I spending too quickly?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      budget:{
+        month:"2026-09",
+        plannedMinor:40_000,
+        spentMinor:30_000,
+        carryInMinor:0,
+        availableMinor:10_000,
+        lines:[{id:"b-food",category:"Food: Groceries",rolloverEnabled:false,plannedMinor:40_000,spentMinor:30_000,carryInMinor:0,availableMinor:10_000}]
+      },
+      accounts,
+      transactions:reviewTx,
+      templates:[],
+      occurrences:[]
+    });
+    const food=context.categories[0];
+    expect(food.projectionBasis).toBe("linear-pace");
+    expect(food.status).toBe("projected-over");
+    expect(food.projectedSpendMinor).toBeGreaterThan(food.plannedMinor);
+    expect(context.spendingPace.spendingAheadOfElapsedPace).toBe(true);
+  });
+
+  it("marks scheduled-aware projected-over when known bills exceed remaining budget",()=>{
+    const context=buildBudgetReviewAnalysisContext({
+      question:"Will rent push me over?",
+      currency:"USD",
+      asOfDate:"2026-09-20",
+      budget:{
+        month:"2026-09",
+        plannedMinor:100_000,
+        spentMinor:20_000,
+        carryInMinor:0,
+        availableMinor:80_000,
+        lines:[{id:"b-housing",category:"Housing",rolloverEnabled:false,plannedMinor:100_000,spentMinor:20_000,carryInMinor:0,availableMinor:80_000}]
+      },
+      accounts,
+      transactions:reviewTx,
+      templates:reviewTemplates,
+      occurrences:reviewOccurrences
+    });
+    const housing=context.categories[0];
+    expect(housing.projectionBasis).toBe("scheduled-aware");
+    expect(housing.scheduledRemainingMinor).toBe(150_000);
+    expect(housing.projectedSpendMinor).toBe(170_000);
+    expect(housing.status).toBe("projected-over");
+    expect(context.reviewSummary.categoriesProjectedOver).toBe(1);
+  });
+
+  it("reports insufficient data early in the month with no spending history",()=>{
+    const context=buildBudgetReviewAnalysisContext({
+      question:"How am I doing against my budget?",
+      currency:"USD",
+      asOfDate:"2026-09-02",
+      budget:{
+        month:"2026-09",
+        plannedMinor:40_000,
+        spentMinor:0,
+        carryInMinor:0,
+        availableMinor:40_000,
+        lines:[{id:"b-food",category:"Food: Groceries",rolloverEnabled:false,plannedMinor:40_000,spentMinor:0,carryInMinor:0,availableMinor:40_000}]
+      },
+      accounts,
+      transactions:[],
+      templates:[],
+      occurrences:[]
+    });
+    expect(context.period.isPartialMonth).toBe(true);
+    expect(context.period.daysElapsed).toBe(2);
+    expect(context.categories[0].status).toBe("insufficient-data");
+    expect(context.categories[0].projectionBasis).toBe("insufficient-data");
+    expect(context.statusCounts.insufficientData).toBe(1);
+  });
+
+  it("rejects empty questions and mismatched budget months",()=>{
+    expect(()=>buildBudgetReviewAnalysisContext({
+      question:" ",currency:"USD",asOfDate:"2026-09-20",budget,accounts,transactions:reviewTx,templates:[],occurrences:[]
+    })).toThrow(/budget-review question/i);
+    expect(()=>buildBudgetReviewAnalysisContext({
+      question:"How am I doing?",currency:"USD",asOfDate:"2026-09-20",budgetMonth:"2026-08",budget,accounts,transactions:reviewTx,templates:[],occurrences:[]
+    })).toThrow(/does not match/i);
   });
 });
