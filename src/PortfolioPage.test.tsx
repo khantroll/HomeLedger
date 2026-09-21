@@ -117,7 +117,7 @@ describe("Investment account workspace",()=>{
   const destSnapshot:PortfolioSnapshot={...snapshot,accounts:[{...snapshot.accounts[0],accountId:"dest",cashMinor:2500,holdings:[{...snapshot.accounts[0].holdings[0],accountId:"dest"}]}]};
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(destSnapshot);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([securityTransfer,cashTransfer]);
   render(<PortfolioPage accounts={accounts} focus={{accountId:"dest"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
-  await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Activity"}));expect(screen.getByText("Transferred cash in")).toBeTruthy();expect(screen.getByText("Transferred in 1 EXM")).toBeTruthy();
+  await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Activity"}));const incoming=screen.getByText("Transferred cash in").closest("article") as HTMLElement|null;expect(incoming).toBeTruthy();if(!incoming)throw new Error("Destination cash transfer activity was not rendered");expect(within(incoming).getByText("$25.00")).toBeTruthy();expect(within(incoming).queryByText("-$25.00")).toBeNull();expect(screen.getByText("Transferred in 1 EXM")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"Cash"}));expect(screen.getAllByText("$25.00").length).toBeGreaterThanOrEqual(1);
  });
  it("shows transferred-in security activity in destination security detail",async()=>{
