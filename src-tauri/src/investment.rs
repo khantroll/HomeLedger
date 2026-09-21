@@ -1,11 +1,15 @@
 use crate::DbState;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use tauri::State;
 use uuid::Uuid;
 
 pub const SCALE_E8: i64 = 100_000_000;
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct CreateInvestmentAccountRequest { pub name:String,pub institution:Option<String>,pub currency:String,pub owner_label:String,pub opening_cash_minor:i64,pub opening_date:String,pub account_kind:String,pub tax_treatment:String }
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all="camelCase")]
@@ -108,6 +112,15 @@ fn validate_settings(c:&Connection,r:&InvestmentAccountSettingsRequest)->Result<
     if !["taxable","tax_deferred","tax_exempt","unknown"].contains(&r.tax_treatment.as_str()){return Err("Unsupported tax treatment".into())}
     date(&r.opening_date,"Opening date")
 }
+#[tauri::command] pub fn create_investment_account(mut request:CreateInvestmentAccountRequest,state:State<DbState>)->Result<InvestmentAccountSettings,String>{
+ request.name=clean(request.name,"Account name",80)?;request.institution=optional(request.institution,80)?;request.owner_label=clean(request.owner_label,"Owner",80)?;request.currency=currency(request.currency)?;date(&request.opening_date,"Opening date")?;
+ if !["brokerage","retirement","education","other"].contains(&request.account_kind.as_str()){return Err("Unsupported investment account kind".into())}if !["taxable","tax_deferred","tax_exempt","unknown"].contains(&request.tax_treatment.as_str()){return Err("Unsupported tax treatment".into())}
+ let mut c=state.0.lock().map_err(|_|"Database lock failed")?;let tx=c.transaction().map_err(|e|e.to_string())?;let id=Uuid::new_v4().to_string();let sort:i64=tx.query_row("SELECT COALESCE(MAX(sort_order),-1)+1 FROM accounts WHERE archived_at IS NULL",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO accounts(id,name,institution,account_type,currency,opening_balance_minor,owner_label,sort_order) VALUES(?1,?2,?3,'investment',?4,0,?5,?6)",params![id,request.name,request.institution,request.currency,request.owner_label,sort]).map_err(|e|e.to_string())?;
+ tx.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,default_lot_method,opening_cash_minor,opening_date) VALUES(?1,?2,?3,'fifo',?4,?5)",params![id,request.account_kind,request.tax_treatment,request.opening_cash_minor,request.opening_date]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())?;
+ Ok(InvestmentAccountSettings{account_id:id,account_kind:request.account_kind,tax_treatment:request.tax_treatment,default_lot_method:"fifo".into(),opening_cash_minor:request.opening_cash_minor,opening_date:request.opening_date})
+}
+
 pub fn upsert_settings_inner(c:&Connection,r:InvestmentAccountSettingsRequest)->Result<InvestmentAccountSettings,String>{
     validate_settings(c,&r)?;
     c.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,default_lot_method,opening_cash_minor,opening_date) VALUES(?1,?2,?3,'fifo',?4,?5) ON CONFLICT(account_id) DO UPDATE SET account_kind=excluded.account_kind,tax_treatment=excluded.tax_treatment,opening_cash_minor=excluded.opening_cash_minor,opening_date=excluded.opening_date,modified_at=CURRENT_TIMESTAMP",params![r.account_id,r.account_kind,r.tax_treatment,r.opening_cash_minor,r.opening_date]).map_err(|e|e.to_string())?;
