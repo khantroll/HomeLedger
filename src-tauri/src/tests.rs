@@ -535,7 +535,7 @@ fn ordinary_ledger_rejects_investment_asset_conversions() {
     assert!(matches!(result,Err(ref e) if e.contains("investment event workflow")));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
     let transfer=create_transfer_inner(&mut connection,TransferRequest{from_account_id:"cash".into(),to_account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Funding".into(),amount_minor:10000,status:"cleared".into(),memo:None});
-    assert_eq!(transfer.err().as_deref(),Some("Investment cash transfers must use the investment transfer workflow"));
+    assert_eq!(transfer.err().as_deref(),Some("Ordinary↔investment cash transfers must use the dedicated transfer command; investment-to-investment cash transfers use investment activity"));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
 }
 

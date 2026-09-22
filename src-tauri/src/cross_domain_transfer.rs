@@ -21,7 +21,7 @@ pub struct CrossDomainCashTransferRequest {
     pub memo: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct CrossDomainCashTransferResult {
     pub link_id: String,
@@ -32,7 +32,6 @@ pub struct CrossDomainCashTransferResult {
 
 struct ResolvedAccounts {
     ordinary_id: String,
-    ordinary_name: String,
     investment_id: String,
     investment_name: String,
     currency: String,
@@ -125,7 +124,6 @@ fn resolve_accounts(c: &Connection, from_id: &str, to_id: &str, amount_minor: i6
     if from_inv {
         Ok(ResolvedAccounts {
             ordinary_id: to_id.into(),
-            ordinary_name: to_name,
             investment_id: from_id.into(),
             investment_name: from_name,
             currency: from_currency,
@@ -136,7 +134,6 @@ fn resolve_accounts(c: &Connection, from_id: &str, to_id: &str, amount_minor: i6
     } else {
         Ok(ResolvedAccounts {
             ordinary_id: from_id.into(),
-            ordinary_name: from_name,
             investment_id: to_id.into(),
             investment_name: to_name,
             currency: from_currency,
@@ -552,9 +549,10 @@ mod tests {
             provenance: None,
             group_id: None,
         };
-        assert!(create_event_inner(&mut c, event.clone())
-            .unwrap_err()
-            .contains("ordinary↔investment cash transfer"));
+        assert!(matches!(
+            create_event_inner(&mut c, event.clone()),
+            Err(ref e) if e.contains("ordinary↔investment cash transfer")
+        ));
         // Ensure no half-written event remains.
         let count: i64 = c.query_row("SELECT COUNT(*) FROM investment_events", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0);

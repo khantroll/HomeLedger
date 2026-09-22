@@ -287,9 +287,9 @@ export class DemoFinanceRepository implements FinanceRepository {
     const ordinaryAmount=fromInv?input.amountMinor:-input.amountMinor;
     const investmentCashEffect=fromInv?-input.amountMinor:input.amountMinor;
     const direction=fromInv?"investment_to_ordinary":"ordinary_to_investment";
-    let linkId=existingId??crypto.randomUUID();
-    let ordinaryTransactionId=crypto.randomUUID();
-    let investmentEventId=crypto.randomUUID();
+    let linkId:string=existingId??crypto.randomUUID();
+    let ordinaryTransactionId:string=crypto.randomUUID();
+    let investmentEventId:string=crypto.randomUUID();
     if(existingId){
       const existing=this.crossDomainLinks.get(existingId);
       if(!existing)throw new Error("Ordinary↔investment cash transfer does not exist");
