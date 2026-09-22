@@ -17,7 +17,7 @@ export function calculateInvestmentReport(input:{snapshot:PortfolioSnapshot;even
  for(const accountSnapshot of input.snapshot.accounts){
   const account=accountMap.get(accountSnapshot.accountId);if(!account||account.archived||account.type!=="investment"||account.currency!==input.currency)continue;
   for(const h of accountSnapshot.holdings){const security=securityMap.get(h.securityId);const basisPartial=h.incompleteUnknownBasis||h.unknownBasisQuantityE8>0,realizedPartial=h.realized.incompleteUnknownBasis||h.realized.unknownBasisQuantityE8>0;
-   rows.push(row(account,h,security));basis=add(basis,h.knownBasisMinor);if(h.marketValueMinor===undefined)unrealizedIncomplete=true;else market=add(market,h.marketValueMinor);if(h.unrealizedGainMinor===undefined||basisPartial)unrealizedIncomplete=true;else unrealized=add(unrealized,h.unrealizedGainMinor);
+   rows.push(row(account,h,security));basis=add(basis,h.knownBasisMinor);if(h.marketValueMinor===undefined)unrealizedIncomplete=true;else market=add(market,h.marketValueMinor);if(h.unrealizedGainMinor===undefined)unrealizedIncomplete=true;else unrealized=add(unrealized,h.unrealizedGainMinor);if(basisPartial)unrealizedIncomplete=true;
    realizedBasis=add(realizedBasis,h.realized.knownDisposedBasisMinor);realizedProceeds=add(realizedProceeds,h.realized.calculableProceedsMinor);realizedGain=add(realizedGain,h.realized.calculableGainMinor);unknownProceeds=add(unknownProceeds,h.realized.unknownBasisProceedsMinor);if(realizedPartial)realizedIncomplete=true;
   }
  }
