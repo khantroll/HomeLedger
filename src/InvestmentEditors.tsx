@@ -61,7 +61,7 @@ export function InvestmentActivityDialog({account,accounts,securities,holdings,e
    if(kind==="buy"){const amount=positiveMoney(d.get("amount"),"Total purchase amount");input.grossCashMinor=amount;input.acquisitionFundingMinor=amount;input.feeMinor=fee;input.cashEffectMinor=-(amount+fee);}
    if(kind==="sell"){const amount=positiveMoney(d.get("amount"),"Gross proceeds");if(amount<=fee)throw new Error("Gross proceeds must be greater than fees.");input.grossCashMinor=amount;input.feeMinor=fee;input.cashEffectMinor=amount-fee;}
    if(kind==="dividend"){const amount=positiveMoney(d.get("amount"),"Dividend");input.incomeMinor=amount;input.cashEffectMinor=amount;}
-   if(kind==="reinvest_dividend"){const amount=positiveMoney(d.get("amount"),"Dividend");input.incomeMinor=amount;input.acquisitionFundingMinor=amount;input.grossCashMinor=amount;input.feeMinor=fee;input.cashEffectMinor=-fee;}
+   if(kind==="reinvest_dividend"){const amount=positiveMoney(d.get("amount"),"Dividend");input.incomeMinor=amount;input.acquisitionFundingMinor=amount;input.grossCashMinor=amount;input.feeMinor=fee;input.cashEffectMinor=fee===0?0:-fee;}
    if(kind==="interest"){const amount=positiveMoney(d.get("amount"),"Interest");input.incomeMinor=amount;input.cashEffectMinor=amount;}
    if(kind==="fee"){const amount=positiveMoney(d.get("amount"),"Fee");input.feeMinor=amount;input.cashEffectMinor=-amount;}
    if(kind==="split"){const n=Number(d.get("numerator")),den=Number(d.get("denominator"));if(!Number.isSafeInteger(n)||n<=0||!Number.isSafeInteger(den)||den<=0)throw new Error("Enter a positive whole-number split ratio.");input.splitNumerator=n;input.splitDenominator=den;}
