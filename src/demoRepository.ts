@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
+import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
@@ -41,6 +41,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   private debtPlans=new Map<string,DebtPlan>();
   private categoryMemory=new Set(initialTransactions.map(item=>item.category).filter(isRememberedCategory));
   private payeeMemory=new Set(initialTransactions.map(item=>item.payee));
+  private crossDomainLinks=new Map<string,{ordinaryTransactionId:string;investmentEventId:string;ordinaryAccountId:string;investmentAccountId:string;investmentCashEffectMinor:number;status:string;amountMinor:number}>();
 
   async listAccounts(includeArchived = false): Promise<Account[]> {
     return structuredClone(this.accounts
@@ -248,6 +249,71 @@ export class DemoFinanceRepository implements FinanceRepository {
     for(const item of pair){const account=this.accounts.find(account=>account.id===item.accountId);if(account)account.balanceMinor-=item.amountMinor;}
     this.transactions=this.transactions.filter(item=>item.transferLinkId!==id);
   }
+  async createOrdinaryInvestmentCashTransfer(input:CreateTransferInput):Promise<CrossDomainCashTransferResult>{
+    return this.saveCrossDomainTransfer(undefined,input);
+  }
+  async updateOrdinaryInvestmentCashTransfer(id:string,input:CreateTransferInput):Promise<CrossDomainCashTransferResult>{
+    return this.saveCrossDomainTransfer(id,input);
+  }
+  async deleteOrdinaryInvestmentCashTransfer(id:string):Promise<void>{
+    const link=this.crossDomainLinks.get(id);
+    if(!link)throw new Error("Ordinary↔investment cash transfer does not exist");
+    if(link.status!=="pending"&&link.status!=="review")throw new Error("Cleared or reconciled investment-linked transfers cannot be rewritten. Record an opposite transfer to reverse the cash movement.");
+    if(this.reconciledTransactionIds.has(link.ordinaryTransactionId))throw new Error("A reconciled ordinary↔investment cash transfer cannot be rewritten");
+    const ordinary=this.transactions.find(item=>item.id===link.ordinaryTransactionId);
+    if(!ordinary)throw new Error("Ordinary transfer leg is incomplete; nothing was deleted");
+    const ordinaryAccount=this.accounts.find(item=>item.id===ordinary.accountId);
+    if(ordinaryAccount)ordinaryAccount.balanceMinor-=ordinary.amountMinor;
+    const investmentAccount=this.accounts.find(item=>item.id===link.investmentAccountId);
+    if(investmentAccount)investmentAccount.balanceMinor-=link.investmentCashEffectMinor;
+    this.transactions=this.transactions.filter(item=>item.id!==ordinary.id);
+    this.crossDomainLinks.delete(id);
+  }
+  private saveCrossDomainTransfer(existingId:string|undefined,input:CreateTransferInput):CrossDomainCashTransferResult{
+    if(input.amountMinor<=0)throw new Error("Transfer amount must be greater than zero");
+    if(input.fromAccountId===input.toAccountId)throw new Error("Source and destination accounts must differ");
+    const from=this.accounts.find(item=>item.id===input.fromAccountId&&!item.archived);
+    const to=this.accounts.find(item=>item.id===input.toAccountId&&!item.archived);
+    if(!from||!to)throw new Error("Account does not exist");
+    if(from.currency!==to.currency)throw new Error("Ordinary↔investment cash transfers require the same currency; FX accounting is not supported");
+    const fromInv=from.type==="investment",toInv=to.type==="investment";
+    if(fromInv===toInv){
+      if(fromInv)throw new Error("Investment-to-investment cash transfers use the investment activity workflow");
+      throw new Error("Ordinary-to-ordinary transfers use the linked transfer workflow");
+    }
+    if(input.status==="reconciled")throw new Error("Transfers are marked reconciled through account reconciliation");
+    const ordinary=fromInv?to:from;
+    const investment=fromInv?from:to;
+    const ordinaryAmount=fromInv?input.amountMinor:-input.amountMinor;
+    const investmentCashEffect=fromInv?-input.amountMinor:input.amountMinor;
+    const direction=fromInv?"investment_to_ordinary":"ordinary_to_investment";
+    let linkId=existingId??crypto.randomUUID();
+    let ordinaryTransactionId=crypto.randomUUID();
+    let investmentEventId=crypto.randomUUID();
+    if(existingId){
+      const existing=this.crossDomainLinks.get(existingId);
+      if(!existing)throw new Error("Ordinary↔investment cash transfer does not exist");
+      if(existing.investmentAccountId!==investment.id)throw new Error("Cross-domain transfer investment account cannot be changed");
+      if(existing.status!=="pending"&&existing.status!=="review")throw new Error("Cleared or reconciled investment-linked transfers cannot be rewritten. Record an opposite transfer to reverse the cash movement.");
+      if(this.reconciledTransactionIds.has(existing.ordinaryTransactionId))throw new Error("A reconciled ordinary↔investment cash transfer cannot be rewritten");
+      const ordinaryTxn=this.transactions.find(item=>item.id===existing.ordinaryTransactionId);
+      if(!ordinaryTxn)throw new Error("Ordinary transfer leg is incomplete; nothing was changed");
+      const oldOrdinaryAccount=this.accounts.find(item=>item.id===ordinaryTxn.accountId);
+      if(oldOrdinaryAccount)oldOrdinaryAccount.balanceMinor-=ordinaryTxn.amountMinor;
+      const oldInvestmentAccount=this.accounts.find(item=>item.id===existing.investmentAccountId);
+      if(oldInvestmentAccount)oldInvestmentAccount.balanceMinor-=existing.investmentCashEffectMinor;
+      Object.assign(ordinaryTxn,{accountId:ordinary.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${investment.name}`,amountMinor:ordinaryAmount,status:input.status,memo:input.memo,transferAccountId:investment.id});
+      ordinaryTransactionId=ordinaryTxn.id;
+      investmentEventId=existing.investmentEventId;
+      linkId=existingId;
+    }else{
+      this.transactions.unshift({id:ordinaryTransactionId,accountId:ordinary.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${investment.name}`,amountMinor:ordinaryAmount,status:input.status,memo:input.memo,source:"transfer",transferLinkId:linkId,transferAccountId:investment.id});
+    }
+    ordinary.balanceMinor+=ordinaryAmount;
+    investment.balanceMinor+=investmentCashEffect;
+    this.crossDomainLinks.set(linkId,{ordinaryTransactionId,investmentEventId,ordinaryAccountId:ordinary.id,investmentAccountId:investment.id,investmentCashEffectMinor:investmentCashEffect,status:input.status,amountMinor:input.amountMinor});
+    return{linkId,ordinaryTransactionId,investmentEventId,direction};
+  }
   async listMerchantRules():Promise<MerchantRule[]>{return structuredClone([...this.merchantRules].sort((a,b)=>b.priority-a.priority||a.id.localeCompare(b.id)));}
   async createMerchantRule(input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const rule={id:crypto.randomUUID(),...input};this.merchantRules.push(rule);return structuredClone(rule);}
   async updateMerchantRule(id:string,input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");const rule={id,...input};this.merchantRules[index]=rule;return structuredClone(rule);}
@@ -451,6 +517,7 @@ function validateTransferInput(input:CreateTransferInput,accounts:Account[]){
   if(input.amountMinor<=0)throw new Error("Transfer amount must be greater than zero");
   const from=accounts.find(item=>item.id===input.fromAccountId),to=accounts.find(item=>item.id===input.toAccountId);
   if(!from||!to)throw new Error("Transfer account does not exist");
+  if(from.type==="investment"||to.type==="investment")throw new Error("Ordinary↔investment cash transfers must use the dedicated transfer command; investment-to-investment cash transfers use investment activity");
   if(from.currency!==to.currency)throw new Error("Transfers between different currencies are not supported yet");
 }
 

@@ -33,7 +33,9 @@ fn migration_creates_local_ledger_tables() {
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
     let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
     let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (18, 2, 1, 1, 2, 2,1,2,1,2,5,1));
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (19, 2, 1, 1, 2, 2,1,2,1,2,5,1));
+    let oict: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'", [], |row| row.get(0)).unwrap();
+    assert_eq!(oict, 1);
 }
 
 #[test]
@@ -59,7 +61,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -111,7 +113,7 @@ fn migration_upgrades_populated_v17_without_breaking_account_foreign_keys() {
     let fk_count:i64=connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get(0)).unwrap();
     let related:(i64,i64,i64,i64,i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions WHERE account_id='a'),(SELECT COUNT(*) FROM import_batches WHERE account_id='a'),(SELECT COUNT(*) FROM reconciliations WHERE account_id='a'),(SELECT COUNT(*) FROM import_profiles WHERE account_id='a'),(SELECT COUNT(*) FROM debt_terms WHERE account_id='b'),(SELECT COUNT(*) FROM savings_goals WHERE account_id='a')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household')",[]).unwrap();
-    assert_eq!(version,18);
+    assert_eq!(version,19);
     assert_eq!(fk_count,0);
     assert_eq!(related,(1,1,1,1,1,1));
 }

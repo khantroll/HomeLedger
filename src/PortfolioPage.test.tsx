@@ -173,6 +173,23 @@ describe("Investment account workspace",()=>{
   await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Activity"}));const incoming=screen.getByText("Transferred cash in").closest("article") as HTMLElement|null;expect(incoming).toBeTruthy();if(!incoming)throw new Error("Destination cash transfer activity was not rendered");expect(within(incoming).getByText("$25.00")).toBeTruthy();expect(within(incoming).queryByText("-$25.00")).toBeNull();expect(screen.getByText("Transferred in 1 EXM")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:"Cash"}));expect(screen.getAllByText("$25.00").length).toBeGreaterThanOrEqual(1);
  });
+ it("labels ordinary↔investment cash transfers with clear direction",async()=>{
+  const checking:Account={id:"checking",name:"Checking",type:"checking",currency:"USD",balanceMinor:0,ownerLabel:"Household",archived:false};
+  const deposit={id:"in",eventId:"xin",revisionNumber:1,accountId:"inv",eventType:"cash_transfer" as const,tradeDate:"2026-07-01",relatedAccountId:"checking",cashEffectMinor:10000,incomeMinor:0,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const,provenance:"Ordinary↔investment cash transfer"};
+  const withdrawal={id:"out",eventId:"xout",revisionNumber:1,accountId:"inv",eventType:"cash_transfer" as const,tradeDate:"2026-07-02",relatedAccountId:"checking",cashEffectMinor:-5000,incomeMinor:0,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const,provenance:"Ordinary↔investment cash transfer"};
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue({...snapshot,accounts:[{...snapshot.accounts[0],cashMinor:15000}]});
+  vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);
+  vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([withdrawal,deposit]);
+  render(<PortfolioPage accounts={[...accounts,checking]} focus={{accountId:"inv"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
+  await screen.findByText("Account value");
+  fireEvent.click(screen.getByRole("button",{name:"Activity"}));
+  expect(screen.getByText("Transfer from Checking")).toBeTruthy();
+  expect(screen.getByText("Transfer to Checking")).toBeTruthy();
+  expect(screen.queryByText("Transferred cash out")).toBeNull();
+  fireEvent.click(screen.getByRole("button",{name:"Cash"}));
+  expect(screen.getByText("Transfer from Checking")).toBeTruthy();
+  expect(screen.getByText("Transfer to Checking")).toBeTruthy();
+ });
  it("shows transferred-in security activity in destination security detail",async()=>{
   const securityTransfer={id:"rt2",eventId:"t2",revisionNumber:1,accountId:"inv",eventType:"security_transfer" as const,tradeDate:"2026-07-02",securityId:"sec",relatedAccountId:"dest",quantityE8:100_000_000,cashEffectMinor:0,incomeMinor:0,acquisitionFundingMinor:0,feeMinor:0,basisEffectMinor:0,status:"cleared" as const,source:"manual" as const};
   const destSnapshot:PortfolioSnapshot={...snapshot,accounts:[{...snapshot.accounts[0],accountId:"dest",holdings:[{...snapshot.accounts[0].holdings[0],accountId:"dest"}]}]};

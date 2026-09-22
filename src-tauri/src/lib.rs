@@ -9,6 +9,7 @@ use uuid::Uuid;
 use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 
 mod investment;
+mod cross_domain_transfer;
 
 #[cfg(test)]
 mod tests;
@@ -1354,7 +1355,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 18;
+const CURRENT_SCHEMA_VERSION: i64 = 19;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_RECOVERY_RETENTION: usize = 7;
@@ -1579,6 +1580,16 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let fk_errors: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
         if fk_errors != 0 { return Err(format!("Portfolio Foundation migration failed foreign-key validation with {fk_errors} violation(s)")); }
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(18, 'Portfolio Foundation')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 19 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/019_ordinary_investment_cash_transfers.sql")).map_err(|e| e.to_string())?;
+        let link_tables: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if link_tables != 1 { return Err("Ordinary↔investment cash transfer migration did not create the link table".into()); }
+        let fk_errors: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if fk_errors != 0 { return Err(format!("Ordinary↔investment cash transfer migration failed foreign-key validation with {fk_errors} violation(s)")); }
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(19, 'ordinary↔investment cash transfers')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1897,6 +1908,10 @@ fn list_transactions_page_inner(connection: &Connection, request: TransactionQue
     for item in &mut items {
         let link: Option<(String,String)> = transfer_statement.query_row(params![item.id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?;
         if let Some((link_id, linked_account_id)) = link { item.transfer_link_id = Some(link_id); item.transfer_account_id = Some(linked_account_id); }
+        else if let Some((link_id, investment_account_id)) = cross_domain_transfer::lookup_cross_domain_link(connection, &item.id)? {
+            item.transfer_link_id = Some(link_id);
+            item.transfer_account_id = Some(investment_account_id);
+        }
     }
     let prior_balance_minor = if let Some(account_id) = account_id {
         let opening: i64 = connection.query_row("SELECT opening_balance_minor FROM accounts WHERE id = ?1", params![account_id], |row| row.get(0)).map_err(|e| e.to_string())?;
@@ -2018,7 +2033,9 @@ fn transfer_accounts(connection: &Connection, from_id: &str, to_id: &str) -> Res
     let to: Option<(String,String,String)> = connection.query_row("SELECT name,currency,account_type FROM accounts WHERE id=?1 AND archived_at IS NULL", params![to_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e| e.to_string())?;
     let (from_name,from_currency,from_type)=from.ok_or("Source account does not exist")?;
     let (to_name,to_currency,to_type)=to.ok_or("Destination account does not exist")?;
-    if from_type=="investment"||to_type=="investment" { return Err("Investment cash transfers must use the investment transfer workflow".into()); }
+    if from_type=="investment"||to_type=="investment" {
+        return Err("Ordinary↔investment cash transfers must use the dedicated transfer command; investment-to-investment cash transfers use investment activity".into());
+    }
     if from_currency != to_currency { return Err("Transfers between different currencies are not supported yet".into()); }
     Ok((from_name,to_name))
 }
@@ -2779,6 +2796,9 @@ fn update_transaction_inner(connection: &mut Connection, transaction_id: String,
     if scheduled.is_some() { return Err("Transactions linked to scheduled occurrences cannot be edited".into()); }
     let linked: Option<i64> = tx.query_row("SELECT 1 FROM transfer_links WHERE from_transaction_id = ?1 OR to_transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if linked.is_some() { return Err("Linked transfers must be edited through the transfer editor".into()); }
+    if cross_domain_transfer::transaction_is_cross_domain_linked(&tx, &transaction_id)? {
+        return Err("Ordinary↔investment cash transfers must be edited through the transfer editor".into());
+    }
     let existing: Option<(Option<String>, String, Option<String>, String)> = tx.query_row("SELECT external_id, source, import_batch_id, account_id FROM transactions WHERE id = ?1", params![transaction_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(|e| e.to_string())?;
     let (external_id, source, import_batch_id, existing_account_id) = existing.ok_or("Transaction does not exist")?;
     if import_batch_id.is_some() && item.account_id != existing_account_id { return Err("Imported transactions cannot be moved to another account; undo and re-import the batch instead".into()); }
@@ -2812,6 +2832,9 @@ fn delete_transaction_inner(connection: &Connection, transaction_id: String) -> 
     if import_batch_id.is_some() { return Err("Imported transactions must be removed by undoing their complete import batch".into()); }
     let linked: Option<i64> = connection.query_row("SELECT 1 FROM transfer_links WHERE from_transaction_id = ?1 OR to_transaction_id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if linked.is_some() { return Err("Linked transfers must be removed through the transfer editor".into()); }
+    if cross_domain_transfer::transaction_is_cross_domain_linked(connection, &transaction_id)? {
+        return Err("Ordinary↔investment cash transfers must be removed through the transfer editor".into());
+    }
     connection.execute("DELETE FROM transactions WHERE id = ?1", params![transaction_id]).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -3104,6 +3127,10 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let investment_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('investment_account_settings','securities','security_identifiers','investment_events','investment_event_revisions','investment_lot_allocations','security_prices')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if investment_tables!=7{return Err("The backup is missing Portfolio Foundation tables".into());}
     }
+    if version >= 19 {
+        let link_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if link_tables!=1{return Err("The backup is missing ordinary↔investment cash transfer linkage".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -3253,7 +3280,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

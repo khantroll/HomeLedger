@@ -99,6 +99,9 @@ export interface FinanceRepository {
   createTransfer(input: CreateTransferInput): Promise<TransferResult>;
   updateTransfer(id: string, input: CreateTransferInput): Promise<TransferResult>;
   deleteTransfer(id: string): Promise<void>;
+  createOrdinaryInvestmentCashTransfer(input: CreateTransferInput): Promise<CrossDomainCashTransferResult>;
+  updateOrdinaryInvestmentCashTransfer(id: string, input: CreateTransferInput): Promise<CrossDomainCashTransferResult>;
+  deleteOrdinaryInvestmentCashTransfer(id: string): Promise<void>;
   listMerchantRules(): Promise<MerchantRule[]>;
   createMerchantRule(input: MerchantRuleInput): Promise<MerchantRule>;
   updateMerchantRule(id: string, input: MerchantRuleInput): Promise<MerchantRule>;
@@ -405,6 +408,13 @@ export interface TransferResult {
   linkId: string;
   fromTransactionId: string;
   toTransactionId: string;
+}
+
+export interface CrossDomainCashTransferResult {
+  linkId: string;
+  ordinaryTransactionId: string;
+  investmentEventId: string;
+  direction: "ordinary_to_investment" | "investment_to_ordinary" | string;
 }
 
 export type MerchantRuleMatchType = "contains" | "starts_with" | "exact";
