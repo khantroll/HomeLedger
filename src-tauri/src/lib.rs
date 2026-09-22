@@ -2984,6 +2984,9 @@ fn complete_reconciliation_inner(connection: &mut Connection, request: CompleteR
         if transaction_account_id != account_id { return Err("Every selected transaction must belong to the reconciled account".into()); }
         if posted_date > request.statement_end_date { return Err("A selected transaction is after the statement end date".into()); }
         if already_reconciled || status == "reconciled" { return Err("A selected transaction has already been reconciled".into()); }
+        if cross_domain_transfer::transaction_is_cross_domain_linked(&tx, transaction_id)? {
+            return Err("Ordinary↔investment cash transfers cannot be reconciled through the ordinary ledger; use the cross-domain transfer workflow".into());
+        }
         adjustment_total_minor = adjustment_total_minor.checked_add(amount_minor).ok_or("Reconciliation total is too large")?;
         selected.push((transaction_id, amount_minor, status));
     }
