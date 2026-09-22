@@ -191,9 +191,9 @@ describe("manual investment entry refresh",()=>{
   fireEvent.click(screen.getByRole("button",{name:"+ Add activity"}));
   const dialog=screen.getByRole("dialog");
   fireEvent.change(within(dialog).getByLabelText("Activity"),{target:{value:"opening_position"}});
-  fireEvent.change(within(dialog).getByLabelText("Quantity"),{target:{value:"1"}});
-  fireEvent.change(within(dialog).getByLabelText("Cost basis"),{target:{value:"100.00"}});
-  fireEvent.change(within(dialog).getByLabelText("Acquisition date"),{target:{value:"2020-01-01"}});
+  fireEvent.change(dialog.querySelector('[name="quantity"]')!,{target:{value:"1"}});
+  fireEvent.change(dialog.querySelector('[name="basis"]')!,{target:{value:"100.00"}});
+  fireEvent.change(dialog.querySelector('[name="acquisitionDate"]')!,{target:{value:"2020-01-01"}});
   fireEvent.submit(within(dialog).getByRole("button",{name:"Add activity"}).closest("form")!);
   await vi.waitFor(()=>expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledTimes(2));
   expect(await screen.findByText("EXM")).toBeTruthy();
