@@ -555,6 +555,8 @@ function accountTypeLabel(type: Account["type"]) {
       return "Loan";
     case "asset":
       return "Asset";
+    case "investment":
+      return "Investment";
   }
 }
 
