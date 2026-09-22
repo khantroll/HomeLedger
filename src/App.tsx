@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
 import { formatMoney, parseMoney, sumMoney, type Account, type AccountType, type BudgetMonth, type ScheduledOccurrence, type ScheduledTransaction, type Transaction } from "./domain";
-import { financeRepository as repository, isNativeApp } from "./repository";
+import { financeRepository as repository, investmentRepository, isNativeApp } from "./repository";
+import { calculateHouseholdValuation, householdCurrencies } from "./householdValuation";
+import type { PortfolioSnapshot } from "./domain";
 import { ImportPage } from "./ImportPage";
 import { BackupPage } from "./BackupPage";
 import { TransactionDialog } from "./TransactionDialog";
@@ -58,6 +60,8 @@ export default function App() {
   const [dialog, setDialog] = useState<EditorDialog>(null);
   const [error, setError] = useState("");
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [overviewPortfolio, setOverviewPortfolio] = useState<PortfolioSnapshot>();
+  const [valuationCurrency, setValuationCurrency] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -95,8 +99,10 @@ export default function App() {
   }, [refresh]);
 
   const activeAccounts = useMemo(() => accounts.filter(account => !account.archived), [accounts]);
-  const assets = useMemo(() => sumMoney(activeAccounts.filter((a) => a.balanceMinor > 0).map((a) => a.balanceMinor)), [activeAccounts]);
-  const liabilities = useMemo(() => sumMoney(activeAccounts.filter((a) => a.balanceMinor < 0).map((a) => a.balanceMinor)), [activeAccounts]);
+  const valuationCurrencies = useMemo(() => householdCurrencies(activeAccounts), [activeAccounts]);
+  useEffect(() => { if (!valuationCurrencies.includes(valuationCurrency)) setValuationCurrency(valuationCurrencies[0] ?? "USD"); }, [valuationCurrencies, valuationCurrency]);
+  useEffect(() => { if (active !== "Overview") return; const ids=activeAccounts.filter(a=>a.type==="investment").map(a=>a.id); if(!ids.length){setOverviewPortfolio({asOfDate:todayIso(),accounts:[]});return;} let cancelled=false; investmentRepository.calculatePortfolioSnapshot(ids,todayIso()).then(value=>{if(!cancelled)setOverviewPortfolio(value);}).catch(reason=>{if(!cancelled){setOverviewPortfolio(undefined);setError(reason instanceof Error?reason.message:String(reason));}}); return()=>{cancelled=true}; }, [active, activeAccounts]);
+  const household = useMemo(() => calculateHouseholdValuation(activeAccounts, overviewPortfolio, valuationCurrency || valuationCurrencies[0] || "USD"), [activeAccounts, overviewPortfolio, valuationCurrency, valuationCurrencies]);
   const reviewCount = useMemo(() => transactions.filter((item) => item.status === "review").length, [transactions]);
 
   function openNav(label: string, intent?: NavigationIntent) {
@@ -256,10 +262,11 @@ export default function App() {
                   onDismiss={() => setOnboardingDismissed(true)}
                 />
               )}
-                            <div className="summary-grid">
-                <Summary label="Available cash" value={formatMoney(assets)} detail="Positive tracked balances" tone="positive" />
-                <Summary label="Liabilities" value={formatMoney(Math.abs(liabilities))} detail="Credit and loan balances" tone="negative" />
-                <Summary label="Net worth" value={formatMoney(assets + liabilities)} detail="Based on tracked accounts" />
+                            <div className="overview-valuation-scope"><label>Household currency <select aria-label="Household valuation currency" value={household.currency} onChange={event=>setValuationCurrency(event.target.value)}>{valuationCurrencies.length?valuationCurrencies.map(currency=><option key={currency}>{currency}</option>):<option>USD</option>}</select></label>{household.incompleteInvestment&&<span className="notice">Net worth is incomplete because some investment holdings have no eligible price.</span>}</div>
+              <div className="summary-grid">
+                <Summary label="Available cash" value={formatMoney(household.availableCashMinor,household.currency)} detail="Checking, savings, and cash" tone="positive" />
+                <Summary label="Liabilities" value={formatMoney(Math.abs(household.liabilitiesMinor),household.currency)} detail="Credit and loan balances" tone="negative" />
+                <Summary label="Net worth" value={formatMoney(household.netWorthKnownMinor,household.currency)} detail={household.incompleteInvestment?`Known subtotal · ${household.unvaluedHoldingCount} unvalued investment${household.unvaluedHoldingCount===1?"":"s"}`:"Ordinary + investment value"} />
                 <Summary label="Needs review" value={String(reviewCount)} detail="Transactions requiring attention" tone="warning" />
               </div>
               <OverviewCommandCenter accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} onNavigate={openIntent}/>
@@ -515,7 +522,7 @@ function AccountsPage({
               <div className={`account-icon ${account.type}`}><WalletCards size={17} /></div>
               <div><strong>{account.name}</strong><small>{[account.institution, account.ownerLabel, accountTypeLabel(account.type)].filter(Boolean).join(" · ")}</small></div>
               <div className="account-balance">
-                <span className={account.balanceMinor < 0 ? "negative" : ""}>{formatMoney(account.balanceMinor, account.currency)}</span>
+                <span className={account.balanceMinor < 0 ? "negative" : ""}>{account.type === "investment" ? "Investment portfolio" : formatMoney(account.balanceMinor, account.currency)}</span>
                 <div className="account-row-actions">
                   <button onClick={() => onEdit(account)}>Edit</button>
                   <button disabled={busyId === account.id} onClick={() => void runAction(account.id, () => repository.setAccountArchived(account.id, false))}>Restore</button>
