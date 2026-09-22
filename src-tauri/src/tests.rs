@@ -1080,7 +1080,7 @@ fn cross_domain_ordinary_leg_rejects_generic_edit_delete_and_reconciliation() {
         status: "cleared".into(),
         memo: None,
         splits: None,
-    }).unwrap_err();
+    }).err().unwrap();
     assert!(edit.contains("transfer editor"));
 
     let delete = delete_transaction_inner(&connection, created.ordinary_transaction_id.clone()).unwrap_err();
@@ -1092,7 +1092,7 @@ fn cross_domain_ordinary_leg_rejects_generic_edit_delete_and_reconciliation() {
         opening_balance_minor: 10000,
         closing_balance_minor: 9000,
         transaction_ids: vec![created.ordinary_transaction_id.clone()],
-    }).unwrap_err();
+    }).err().unwrap();
     assert!(reconcile.contains("cross-domain transfer workflow"));
 
     let row: (i64, String) = connection.query_row(
