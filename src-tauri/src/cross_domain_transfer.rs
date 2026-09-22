@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn ordinary_to_investment_moves_cash_without_income_or_security() {
         let mut c = db();
-        let result = create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 100_00)).unwrap();
+        let result = create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 1_0000)).unwrap();
         assert_eq!(result.direction, "ordinary_to_investment");
         let ordinary: i64 = c
             .query_row(
@@ -458,7 +458,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ordinary, -100_00);
+        assert_eq!(ordinary, -1_0000);
         let source: String = c
             .query_row(
                 "SELECT source FROM transactions WHERE id=?1",
@@ -468,7 +468,7 @@ mod tests {
             .unwrap();
         assert_eq!(source, "transfer");
         let cash = snapshot_inner(&c, Some(&["inv".into()]), "2026-09-22").unwrap().accounts[0].cash_minor;
-        assert_eq!(cash, 100000 + 100_00);
+        assert_eq!(cash, 100000 + 1_0000);
         assert!(snapshot_inner(&c, Some(&["inv".into()]), "2026-09-22").unwrap().accounts[0].holdings.is_empty());
         let income: i64 = c
             .query_row(
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn investment_to_ordinary_moves_cash_both_ways() {
         let mut c = db();
-        let result = create_cross_domain_cash_transfer_inner(&mut c, req("inv", "checking", 50_00)).unwrap();
+        let result = create_cross_domain_cash_transfer_inner(&mut c, req("inv", "checking", 5_000)).unwrap();
         assert_eq!(result.direction, "investment_to_ordinary");
         let ordinary: i64 = c
             .query_row(
@@ -492,18 +492,18 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(ordinary, 50_00);
+        assert_eq!(ordinary, 5_000);
         let cash = snapshot_inner(&c, Some(&["inv".into()]), "2026-09-22").unwrap().accounts[0].cash_minor;
-        assert_eq!(cash, 100000 - 50_00);
+        assert_eq!(cash, 100000 - 5_000);
     }
 
     #[test]
     fn currency_mismatch_and_same_domain_are_rejected() {
         let mut c = db();
-        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "eur", 10_00))
+        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "eur", 1_000))
             .unwrap_err()
             .contains("same currency"));
-        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "checking", 10_00))
+        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "checking", 1_000))
             .unwrap_err()
             .contains("must differ"));
         c.execute(
@@ -516,7 +516,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("inv", "inv2", 10_00))
+        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("inv", "inv2", 1_000))
             .unwrap_err()
             .contains("investment activity"));
     }
@@ -572,7 +572,7 @@ mod tests {
             .unwrap();
         let before_inv = snapshot_inner(&c, Some(&["inv".into()]), "2026-09-22").unwrap().accounts[0].cash_minor;
         let before_total = before_checking + before_inv;
-        create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 100_00)).unwrap();
+        create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 1_0000)).unwrap();
         let after_checking: i64 = c
             .query_row(
                 "SELECT opening_balance_minor + COALESCE((SELECT SUM(amount_minor) FROM transactions WHERE account_id='checking'),0) FROM accounts WHERE id='checking'",
@@ -581,15 +581,15 @@ mod tests {
             )
             .unwrap();
         let after_inv = snapshot_inner(&c, Some(&["inv".into()]), "2026-09-22").unwrap().accounts[0].cash_minor;
-        assert_eq!(after_checking, before_checking - 100_00);
-        assert_eq!(after_inv, before_inv + 100_00);
+        assert_eq!(after_checking, before_checking - 1_0000);
+        assert_eq!(after_inv, before_inv + 1_0000);
         assert_eq!(after_checking + after_inv, before_total);
     }
 
     #[test]
     fn failed_create_and_update_leave_no_mismatched_halves() {
         let mut c = db();
-        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "missing", 10_00)).is_err());
+        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "missing", 1_000)).is_err());
         let links: i64 = c
             .query_row("SELECT COUNT(*) FROM ordinary_investment_cash_transfers", [], |r| r.get(0))
             .unwrap();
@@ -599,10 +599,10 @@ mod tests {
             .unwrap();
         assert_eq!((links, events, txns), (0, 0, 0));
 
-        let mut pending = req("checking", "inv", 15_00);
+        let mut pending = req("checking", "inv", 1_500);
         pending.status = "pending".into();
         let created = create_cross_domain_cash_transfer_inner(&mut c, pending).unwrap();
-        assert!(update_cross_domain_cash_transfer_inner(&mut c, created.link_id.clone(), req("checking", "eur", 20_00))
+        assert!(update_cross_domain_cash_transfer_inner(&mut c, created.link_id.clone(), req("checking", "eur", 2_000))
             .unwrap_err()
             .contains("same currency"));
         let amount: i64 = c
@@ -612,9 +612,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(amount, -15_00);
+        assert_eq!(amount, -1_500);
         let cash = snapshot_inner(&c, Some(&["inv".into()]), "2026-09-22").unwrap().accounts[0].cash_minor;
-        assert_eq!(cash, 100000 + 15_00);
+        assert_eq!(cash, 100000 + 1_500);
         let link_amount: i64 = c
             .query_row(
                 "SELECT amount_minor FROM ordinary_investment_cash_transfers WHERE id=?1",
@@ -622,7 +622,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(link_amount, 15_00);
+        assert_eq!(link_amount, 1_500);
     }
 
     #[test]
@@ -632,7 +632,7 @@ mod tests {
             .unwrap_err()
             .contains("greater than zero"));
         c.execute("UPDATE accounts SET archived_at=CURRENT_TIMESTAMP WHERE id='inv'", []).unwrap();
-        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 10_00))
+        assert!(create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 1_000))
             .unwrap_err()
             .contains("Archived"));
     }
@@ -640,10 +640,10 @@ mod tests {
     #[test]
     fn pending_edit_and_delete_keep_both_sides_aligned() {
         let mut c = db();
-        let mut pending = req("checking", "inv", 25_00);
+        let mut pending = req("checking", "inv", 2_500);
         pending.status = "pending".into();
         let created = create_cross_domain_cash_transfer_inner(&mut c, pending.clone()).unwrap();
-        let mut updated = req("checking", "inv", 40_00);
+        let mut updated = req("checking", "inv", 4_000);
         updated.status = "pending".into();
         updated.memo = Some("Adjusted".into());
         let saved = update_cross_domain_cash_transfer_inner(&mut c, created.link_id.clone(), updated).unwrap();
@@ -654,9 +654,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(amount, -40_00);
+        assert_eq!(amount, -4_000);
         let cash = snapshot_inner(&c, Some(&["inv".into()]), "2026-09-22").unwrap().accounts[0].cash_minor;
-        assert_eq!(cash, 100000 + 40_00);
+        assert_eq!(cash, 100000 + 4_000);
         delete_cross_domain_cash_transfer_inner(&mut c, saved.link_id).unwrap();
         let links: i64 = c
             .query_row("SELECT COUNT(*) FROM ordinary_investment_cash_transfers", [], |r| r.get(0))
@@ -675,8 +675,8 @@ mod tests {
     #[test]
     fn cleared_cross_domain_transfer_cannot_be_silently_rewritten() {
         let mut c = db();
-        let created = create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 10_00)).unwrap();
-        assert!(update_cross_domain_cash_transfer_inner(&mut c, created.link_id.clone(), req("checking", "inv", 20_00))
+        let created = create_cross_domain_cash_transfer_inner(&mut c, req("checking", "inv", 1_000)).unwrap();
+        assert!(update_cross_domain_cash_transfer_inner(&mut c, created.link_id.clone(), req("checking", "inv", 2_000))
             .unwrap_err()
             .contains("cannot be rewritten"));
         assert!(delete_cross_domain_cash_transfer_inner(&mut c, created.link_id)
