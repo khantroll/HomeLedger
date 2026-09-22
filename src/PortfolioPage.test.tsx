@@ -196,6 +196,7 @@ describe("manual investment entry refresh",()=>{
   fireEvent.change(dialog.querySelector('[name="acquisitionDate"]')!,{target:{value:"2020-01-01"}});
   fireEvent.submit(within(dialog).getByRole("button",{name:"Add activity"}).closest("form")!);
   await vi.waitFor(()=>expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByRole("button",{name:"Portfolio"}));
   expect(await screen.findByText("EXM")).toBeTruthy();
   view.unmount();
  });
