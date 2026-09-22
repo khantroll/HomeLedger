@@ -6,7 +6,7 @@ HomeLedger is a privacy-first, local-first household finance desktop application
 
 ## Current status
 
-HomeLedger v0.50 includes a substantial daily-driver personal-finance core plus a dedicated local-first investment foundation and Portfolio workspace:
+HomeLedger v0.51 closes the first investment milestone: a substantial daily-driver personal-finance core plus a dedicated local-first investment foundation and Portfolio workspace:
 
 - **Accounts and registers:** checking, savings, cash, credit-card and loan accounts; Money-style per-account registers; a global transaction register; true running balances; splits; linked transfers; filtering, search and explicit pagination.
 - **Account lifecycle and reconciliation:** editing, ordering, guarded archive/restore, review indicators, statement reconciliation, retained reconciliation history and protection of reconciled entries.
@@ -18,7 +18,10 @@ HomeLedger v0.50 includes a substantial daily-driver personal-finance core plus 
 - **Backup and recovery:** portable password-encrypted `.hlb` backups plus rotating machine-local automatic recovery snapshots, pre-migration protection, retention controls, health status and guarded restore.
 - **First-run experience:** guided account setup distinguishes starting from today's cleared balance from reconstructing complete historical activity, avoiding accidental double counting.
 - **Overview attention center:** deterministic, prioritized attention for overdue scheduled activity, due auto-posts, review transactions, negative cash forecasts and budget pressure, with a quiet all-clear/setup state.
-- **Contextual workflows:** Overview attention can enter Transactions with Needs Review selected, focus Bills on the relevant overdue date or auto-post queue, report drill-down can open the contributing account destination, and investment accounts route to their Portfolio workspace. Ordinary sidebar navigation clears contextual state.\n- **Investments and Portfolio:** dedicated investment accounts, securities, event history, intrinsic cash, FIFO/specific lots, known/unknown basis, deterministic historical As-of holdings, manual price observations, local price history, and guarded historical corrections. Portfolio/account/security views remain separate from the ordinary spending ledger.\n- **Optional market prices:** an explicit, provider-neutral Refresh prices workflow can map a security and save validated price observations. Portfolio opening/navigation never requires a network request, and saved/manual observations remain usable offline.
+- **Contextual workflows:** Overview attention can enter Transactions with Needs Review selected, focus Bills on the relevant overdue date or auto-post queue, report drill-down can open the contributing account destination, and investment accounts route to their Portfolio workspace. Ordinary sidebar navigation clears contextual state.
+- **Investments and Portfolio:** Portfolio Foundation and Portfolio Manager workflows with dedicated investment accounts, securities, account/security drill-down, manual activity entry, event history, intrinsic cash, FIFO/specific lots, known/unknown basis, deterministic historical as-of holdings, manual/historical price observations, local price history, guarded historical corrections, and investment-aware household valuation/reporting. Portfolio activity remains separate from ordinary spending/income semantics.
+- **Optional market prices:** an explicit, provider-neutral Refresh prices workflow can map a security and save validated price observations. Portfolio opening/navigation never requires a network request, saved/manual observations remain usable offline, and missing/stale observations are surfaced rather than silently treated as current market value.
+- **Cross-domain cash transfers:** ordinary ↔ investment cash movement is written atomically as linked ordinary-ledger and investment-event legs. The bridge is the mutation boundary, so one side cannot be independently edited, reconciled, corrected, or deleted through generic domain workflows.
 
 Shared category and payee memory supplies one local autocomplete catalog across transaction, split, scheduled-item, merchant-rule and budget editors. Colon-delimited categories such as `Food: Groceries` provide lightweight hierarchy without rewriting historical transaction text.
 
@@ -83,6 +86,6 @@ Every push to a development branch and every pull request runs the browser tests
 
 ## Investment import boundary
 
-Investment activity remains separate from ordinary spending transactions. HomeLedger has a dedicated investment model for securities, event history, intrinsic cash, lots/cost basis, price history and Portfolio valuation. Investment-account file import is not yet implemented; unsupported investment records are rejected rather than being misclassified as ordinary transactions. Manual investment activity entry is the next planned workflow milestone.
+Investment activity remains separate from ordinary spending transactions. HomeLedger has a dedicated investment model for securities, event history, intrinsic cash, lots/cost basis, price history and Portfolio valuation. Investment-account file import is not yet implemented; unsupported investment records are rejected rather than being misclassified as ordinary transactions. Manual investment setup and activity entry are implemented. Investment-account file import remains intentionally out of scope for this milestone.
 
 See `HomeLedger_Codex_Build_Spec.md` for the phased product specification.
