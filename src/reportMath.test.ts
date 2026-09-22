@@ -14,7 +14,7 @@ const transactions:Transaction[]=[
   {id:"rent",accountId:"checking",postedDate:"2026-09-05",payee:"Landlord",category:"Housing",amountMinor:-80000,status:"cleared",source:"manual"},
   {id:"transfer",accountId:"checking",postedDate:"2026-09-06",payee:"Savings",category:"Transfer",amountMinor:-10000,status:"cleared",source:"transfer",transferLinkId:"link"},
   {id:"adjustment",accountId:"checking",postedDate:"2026-09-07",payee:"Balance adjustment",category:"Reconciliation",amountMinor:500,status:"reconciled",source:"adjustment"},
-  {id:"cad",accountId:"cad",postedDate:"2026-09-08",payee:"Canada",category:"Food",amountMinor:-5000,status:"cleared",source:"manual"},
+  {id:"cad",accountId:"cad",postedDate:"2026-09-08",payee:"Canada",category:"Food",amountMinor:-5000,status:"cleared",source:"manual"},\n  {id:"investment-ordinary-shaped",accountId:"investment",postedDate:"2026-09-09",payee:"Broker activity",category:"Investments",amountMinor:500000,status:"cleared",source:"manual"},
 ];
 
 describe("transaction reports",()=>{
