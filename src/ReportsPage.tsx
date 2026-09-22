@@ -4,12 +4,14 @@ import {formatMoney,type Account,type Transaction} from "./domain";
 import {formatDate,todayIso} from "./scheduledPresentation";
 import {calculateTransactionReport,reportRange,type ReportGroup,type ReportPreset} from "./reportMath";
 import {buildReportCsv,exportFileName} from "./csvExport";
-import {csvExportRepository} from "./repository";\nimport {InvestmentReportPanel} from "./InvestmentReportPanel";
+import {csvExportRepository} from "./repository";
+import {InvestmentReportPanel} from "./InvestmentReportPanel";
 import "./reports.css";
 import "./reportExport.css";
 
 export function ReportsPage({accounts,transactions,today=todayIso(),onOpenAccount}:{accounts:Account[];transactions:Transaction[];today?:string;onOpenAccount?:(accountId:string)=>void}){
-  const [view,setView]=useState<"household"|"investments">("household");\n  const currencies=useMemo(()=>[...new Set(accounts.filter(item=>item.type!=="investment").map(item=>item.currency))].sort(),[accounts]);
+  const [view,setView]=useState<"household"|"investments">("household");
+  const currencies=useMemo(()=>[...new Set(accounts.filter(item=>item.type!=="investment").map(item=>item.currency))].sort(),[accounts]);
   const [currency,setCurrency]=useState(currencies[0]??"USD"),[accountId,setAccountId]=useState("all"),[preset,setPreset]=useState<ReportPreset>("quarter");
   const initial=reportRange("quarter",today),[fromDate,setFromDate]=useState(initial.fromDate),[toDate,setToDate]=useState(initial.toDate);
   const [grouping,setGrouping]=useState<"category"|"payee">("category"),[selectedKey,setSelectedKey]=useState("");
