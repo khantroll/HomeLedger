@@ -219,6 +219,7 @@ export class TauriInvestmentRepository implements InvestmentRepository {
   updateSecurity(id:string,input:SecurityInput):Promise<Security>{return invoke("update_security",{securityId:id,request:input});}
   setSecurityArchived(id:string,archived:boolean):Promise<void>{return invoke("set_security_archived",{securityId:id,archived});}
   addSecurityIdentifier(securityId:string,namespace:string,value:string):Promise<SecurityIdentifier>{return invoke("add_security_identifier",{securityId,namespace,value});}
+  listSecurityIdentifiers(securityId:string):Promise<SecurityIdentifier[]>{return invoke("list_security_identifiers",{securityId});}
   removeSecurityIdentifier(securityId:string,namespace:string,value:string):Promise<void>{return invoke("remove_security_identifier",{securityId,namespace,value});}
   createInvestmentEvent(input:InvestmentEventInput):Promise<InvestmentEventRevision>{return invoke("create_investment_event",{request:input});}
   updatePendingInvestmentEvent(eventId:string,input:InvestmentEventInput):Promise<InvestmentEventRevision>{return invoke("update_pending_investment_event",{eventId,request:input});}
@@ -229,6 +230,7 @@ export class TauriInvestmentRepository implements InvestmentRepository {
   async deriveInvestmentHoldings(accountId:string,asOfDate:string):Promise<HoldingSnapshot[]>{const result=await invoke<NativeHoldingSnapshot[]>("derive_investment_holdings",{accountId,asOfDate});return normalizeHoldings(result);}
   async calculatePortfolioSnapshot(accountIds:string[]|undefined,asOfDate:string):Promise<PortfolioSnapshot>{const result=await invoke<NativePortfolioSnapshot>("calculate_portfolio_snapshot",{accountIds:accountIds??null,asOfDate});return normalizePortfolioSnapshot(result);}
   async addManualSecurityPrice(input:SecurityPriceInput):Promise<SecurityPrice>{return normalizeSecurityPrice(await invoke<NativeSecurityPrice>("add_manual_security_price",{request:input}));}
+  async addMarketProviderSecurityPrice(input:SecurityPriceInput):Promise<SecurityPrice>{return normalizeSecurityPrice(await invoke<NativeSecurityPrice>("add_market_provider_security_price",{request:input}));}
   deleteManualSecurityPrice(priceId:string):Promise<void>{return invoke("delete_manual_security_price",{priceId});}
   async listSecurityPrices(securityId:string,fromDate?:string,toDate?:string):Promise<SecurityPrice[]>{const rows=await invoke<NativeSecurityPrice[]>("list_security_prices",{securityId,fromDate:fromDate??null,toDate:toDate??null});return rows.map(normalizeSecurityPrice);}
 }
