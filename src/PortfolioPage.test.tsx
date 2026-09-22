@@ -1,16 +1,17 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { Account, PortfolioSnapshot } from "./domain";
 
 vi.mock("./repository", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./repository")>();
-  return { ...actual, isNativeApp:true, investmentRepository:{ ...actual.investmentRepository, calculatePortfolioSnapshot:vi.fn(), listSecurities:vi.fn(), listInvestmentEvents:vi.fn() } };
+  return { ...actual, isNativeApp:true, investmentRepository:{ ...actual.investmentRepository, calculatePortfolioSnapshot:vi.fn(), listSecurities:vi.fn(), listInvestmentEvents:vi.fn(), listSecurityPrices:vi.fn(), addManualSecurityPrice:vi.fn() } };
 });
 
 import { PortfolioPage } from "./PortfolioPage";
-import { investmentRepository, normalizeInvestmentEvent, normalizePortfolioSnapshot } from "./repository";
+import { investmentRepository, normalizeInvestmentEvent, normalizePortfolioSnapshot, normalizeSecurityPrice } from "./repository";
 
+beforeEach(()=>{vi.mocked(investmentRepository.listSecurityPrices).mockResolvedValue([]);});
 afterEach(()=>{cleanup();vi.clearAllMocks();});
 
 const accounts:Account[]=[
@@ -127,6 +128,44 @@ describe("Investment account workspace",()=>{
   render(<PortfolioPage accounts={accounts} focus={{accountId:"dest",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
   expect(await screen.findByText("Security detail")).toBeTruthy();expect(screen.getByText("Transferred in 1 EXM")).toBeTruthy();
  });
+
+ it("persists a manual price observation without creating investment activity",async()=>{
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(snapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([buy]);vi.mocked(investmentRepository.listSecurityPrices).mockResolvedValue([]);
+  vi.mocked(investmentRepository.addManualSecurityPrice).mockResolvedValue({id:"p",securityId:"sec",observedAt:"2026-09-20",priceE8:123_450_000,currency:"USD",source:"manual",provenance:"Manual entry"});
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);await screen.findByText("Security detail");
+  fireEvent.change(screen.getByLabelText("Manual price"),{target:{value:"1.2345"}});fireEvent.change(screen.getByLabelText("Price observation date"),{target:{value:"2026-09-21"}});fireEvent.submit(screen.getByRole("button",{name:"Update price"}).closest("form")!);
+  await vi.waitFor(()=>expect(investmentRepository.addManualSecurityPrice).toHaveBeenCalledWith({securityId:"sec",observedAt:"2026-09-21",priceE8:123450000,currency:"USD",provenance:"Manual entry"}));
+ });
+ it("bounds manual price entry to a historical as-of date while allowing that date",async()=>{
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockImplementation(async(_ids,date)=>({...snapshot,asOfDate:date}));vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);vi.mocked(investmentRepository.addManualSecurityPrice).mockResolvedValue({id:"p",securityId:"sec",observedAt:"2026-01-15",priceE8:123_000_000,currency:"USD",source:"manual"});
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);await screen.findByText("Security detail");fireEvent.click(screen.getByRole("button",{name:"Choose date"}));fireEvent.change(screen.getByLabelText("Historical as of date"),{target:{value:"2026-01-15"}});await vi.waitFor(()=>expect((screen.getByLabelText("Price observation date") as HTMLInputElement).max).toBe("2026-01-15"));
+  fireEvent.change(screen.getByLabelText("Manual price"),{target:{value:"1.23"}});fireEvent.change(screen.getByLabelText("Price observation date"),{target:{value:"2026-01-16"}});fireEvent.submit(screen.getByRole("button",{name:"Update price"}).closest("form")!);expect((await screen.findByRole("alert")).textContent).toBe("Observation date cannot be after the selected as-of date.");expect(investmentRepository.addManualSecurityPrice).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Price observation date"),{target:{value:"2026-01-15"}});fireEvent.submit(screen.getByRole("button",{name:"Update price"}).closest("form")!);await vi.waitFor(()=>expect(investmentRepository.addManualSecurityPrice).toHaveBeenCalledWith({securityId:"sec",observedAt:"2026-01-15",priceE8:123000000,currency:"USD",provenance:"Manual entry"}));
+ });
+ it("allows today's observation in the Today view",async()=>{
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(snapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);vi.mocked(investmentRepository.addManualSecurityPrice).mockResolvedValue({id:"today",securityId:"sec",observedAt:"2026-09-21",priceE8:200_000_000,currency:"USD",source:"manual"});
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);await screen.findByText("Security detail");const today=(screen.getByLabelText("Price observation date") as HTMLInputElement).max;expect((screen.getByLabelText("Price observation date") as HTMLInputElement).value).toBe(today);fireEvent.change(screen.getByLabelText("Manual price"),{target:{value:"2"}});fireEvent.submit(screen.getByRole("button",{name:"Update price"}).closest("form")!);await vi.waitFor(()=>expect(investmentRepository.addManualSecurityPrice).toHaveBeenCalledWith(expect.objectContaining({observedAt:today,priceE8:200000000})));
+ });
+ it("recomputes historical snapshots and bounds activity to the selected as-of date",async()=>{
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockImplementation(async(_ids,date)=>({...snapshot,asOfDate:date}));vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"inv"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Choose date"}));fireEvent.change(screen.getByLabelText("Historical as of date"),{target:{value:"2026-01-15"}});
+  await vi.waitFor(()=>expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledWith(["inv"],"2026-01-15"));expect(investmentRepository.listInvestmentEvents).toHaveBeenCalledWith("inv",undefined,"2026-01-15");
+ });
+ it("keeps missing historical valuation unknown and does not leak future observations",async()=>{
+  const historical:PortfolioSnapshot={asOfDate:"2026-01-15",accounts:[{...snapshot.accounts[0],holdingsValueMinor:undefined,totalValueMinor:undefined,holdings:[{...snapshot.accounts[0].holdings[0],priceE8:undefined,priceObservedAt:undefined,marketValueMinor:undefined,unrealizedGainMinor:undefined}]}]};
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockImplementation(async(_ids,date)=>date==="2026-01-15"?historical:snapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);vi.mocked(investmentRepository.listSecurityPrices).mockImplementation(async(_id,_from,to)=>to==="2026-01-15"?[]:[{id:"future",securityId:"sec",observedAt:"2026-02-01",priceE8:200_000_000,currency:"USD",source:"manual"}]);
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);await screen.findByText("Security detail");fireEvent.click(screen.getByRole("button",{name:"Choose date"}));fireEvent.change(screen.getByLabelText("Historical as of date"),{target:{value:"2026-01-15"}});
+  await screen.findByText("Price needed");expect(screen.getByText("No saved observations through this date.")).toBeTruthy();expect(screen.queryByText(/Feb 1, 2026/)).toBeNull();
+ });
+ it("shows saved price source/date and local chart observations",async()=>{
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(snapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);vi.mocked(investmentRepository.listSecurityPrices).mockResolvedValue([{id:"p1",securityId:"sec",observedAt:"2026-09-10",priceE8:110_000_000,currency:"USD",source:"manual"},{id:"p2",securityId:"sec",observedAt:"2026-09-20",priceE8:125_000_000,currency:"USD",source:"manual"}]);
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);expect(await screen.findByRole("img",{name:"Local price history chart"})).toBeTruthy();expect(screen.getByText(/Selected observation:/)).toBeTruthy();expect(screen.getAllByText(/Sep 20, 2026 · Manual/).length).toBeGreaterThanOrEqual(1);expect(screen.getByText(/older than selected as-of date/)).toBeTruthy();
+ });
+ it("retains the selected as-of date when drilling from account holdings into security detail",async()=>{
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockImplementation(async(_ids,date)=>({...snapshot,asOfDate:date}));vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);const open=vi.fn();
+  const view=render(<PortfolioPage accounts={accounts} focus={{accountId:"inv"}} onShowAll={()=>{}} onOpenSecurity={open}/>);await screen.findByText("Account value");fireEvent.click(screen.getByRole("button",{name:"Choose date"}));fireEvent.change(screen.getByLabelText("Historical as of date"),{target:{value:"2026-01-15"}});await vi.waitFor(()=>expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledWith(["inv"],"2026-01-15"));fireEvent.click(screen.getByRole("button",{name:/EXM/}));expect(open).toHaveBeenCalledWith("inv","sec");view.rerender(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={open}/>);await vi.waitFor(()=>expect((screen.getByLabelText("Historical as of date") as HTMLInputElement).value).toBe("2026-01-15"));
+ });
+ it("normalizes nullable native price provenance",()=>{expect(normalizeSecurityPrice({id:"p",securityId:"sec",observedAt:"2026-01-01",priceE8:100_000_000,currency:"USD",source:"manual",provenance:null}).provenance).toBeUndefined();});
  it("normalizes native null activity fields to undefined",()=>{
   const normalized=normalizeInvestmentEvent({...buy,supersedesRevisionId:null,settlementDate:null,acquisitionDate:null,relatedAccountId:null,unitPriceE8:null,memo:null,externalId:null,provenance:null,groupId:null,correctionReason:null,securityId:null,quantityE8:null,grossCashMinor:null});
   expect(normalized.securityId).toBeUndefined();expect(normalized.quantityE8).toBeUndefined();expect(normalized.grossCashMinor).toBeUndefined();expect(normalized.acquisitionDate).toBeUndefined();expect(normalized.provenance).toBeUndefined();
