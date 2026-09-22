@@ -19,6 +19,10 @@ const accounts:Account[]=[
   {id:"dest",name:"Rollover IRA",type:"investment",currency:"USD",balanceMinor:0,ownerLabel:"Household",archived:false},
 ];
 
+describe("Market refresh remains explicit",()=>{
+ it("opening Portfolio and changing As-of make no market-data request",async()=>{const network=vi.spyOn(globalThis,"fetch");vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue({asOfDate:"2026-09-21",accounts:[]});vi.mocked(investmentRepository.listSecurities).mockResolvedValue([]);render(<PortfolioPage accounts={accounts} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);await screen.findByText("Update prices");expect(network).not.toHaveBeenCalled();fireEvent.click(screen.getByRole("button",{name:"Choose date"}));fireEvent.change(screen.getByLabelText("Historical as of date"),{target:{value:"2026-01-15"}});await vi.waitFor(()=>expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledWith(expect.any(Array),"2026-01-15"));expect(network).not.toHaveBeenCalled();network.mockRestore();});
+});
+
 describe("Portfolio native nullable snapshot boundary",()=>{
   it("keeps native null valuations visibly unknown instead of formatting them as zero",async()=>{
     const nativeSnapshot={
