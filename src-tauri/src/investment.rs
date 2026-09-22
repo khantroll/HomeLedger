@@ -156,7 +156,7 @@ fn validate_event(c:&Connection,r:&mut InvestmentEventRequest)->Result<(),String
  if !["review","pending","cleared","reconciled"].contains(&r.status.as_str()){return Err("Unsupported investment event status".into())}
  if !["manual","import","broker"].contains(&r.source.as_str()){return Err("Unsupported investment event source".into())}
  date(&r.trade_date,"Trade date")?;if let Some(v)=&r.settlement_date{date(v,"Settlement date")?}if let Some(v)=&r.acquisition_date{date(v,"Acquisition date")?}
- if let Some(id)=&r.security_id{if !security_exists(c,id)?{return Err("Security does not exist".into())}}
+ if let Some(id)=&r.security_id{if !security_exists(c,id)?{return Err("Security does not exist".into())}let security_currency:String=c.query_row("SELECT currency FROM securities WHERE id=?1",[id],|x|x.get(0)).map_err(|e|e.to_string())?;let account_currency:String=c.query_row("SELECT currency FROM accounts WHERE id=?1",[&r.account_id],|x|x.get(0)).map_err(|e|e.to_string())?;if security_currency!=account_currency{return Err("Security currency must match the investment account currency; FX accounting is not supported.".into())}}
  r.memo=optional(r.memo.take(),500)?;r.external_id=optional(r.external_id.take(),200)?;r.provenance=optional(r.provenance.take(),1000)?;
  let needs_security=!matches!(r.event_type.as_str(),"interest"|"fee"|"cash_transfer");
  if needs_security&&r.security_id.is_none(){return Err("This event type requires a security".into())}
