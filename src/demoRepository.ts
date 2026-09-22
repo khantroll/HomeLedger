@@ -484,7 +484,7 @@ function validateAccountDetails(input:UpdateAccountInput):Pick<Account,"name"|"i
   const name=input.name.trim(),institution=input.institution?.trim()||undefined,ownerLabel=input.ownerLabel.trim();
   if(!name)throw new Error("Account name is required");if(name.length>80)throw new Error("Account name is too long");
   if(institution&&institution.length>80)throw new Error("Institution is too long");
-  if(!["checking","savings","credit","cash","loan","asset"].includes(input.type))throw new Error("Unsupported account type");
+  if(!["checking","savings","credit","cash","loan","asset","investment"].includes(input.type))throw new Error("Unsupported account type");
   if(!ownerLabel)throw new Error("Owner is required");if(ownerLabel.length>80)throw new Error("Owner is too long");
   return{name,institution,type:input.type,currency:cleanCurrency(input.currency),ownerLabel};
 }
