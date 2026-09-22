@@ -22,6 +22,7 @@ import {calculateCashFlowForecast,forecastMonths} from "./forecastMath";
 import "./overviewCommand.css";
 import "./onboarding.css";
 import { PortfolioPage, type PortfolioNavigationFocus } from "./PortfolioPage";
+import { InvestmentAccountDialog } from "./InvestmentEditors";
 
 type NavigationIntent =
   | { page: "Transactions"; status: "review" }
@@ -32,6 +33,7 @@ type NavigationIntent =
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
+  | { kind: "investmentAccount" }
   | { kind: "transaction"; transaction?: Transaction; accountId?: string }
   | { kind: "transfer"; transaction?: Transaction; accountId?: string }
   | { kind: "reconciliation"; account: Account }
@@ -237,7 +239,7 @@ export default function App() {
                   />
                 </div>
               ) : (
-                <AccountsPage accounts={accounts} onAdd={() => setDialog({ kind: "account" })} onEdit={(account) => setDialog({ kind: "account", account })} onChanged={refresh} onOpenRegister={openAccountDestination} onReconcile={(account) => setDialog({ kind: "reconciliation", account })} />
+                <AccountsPage accounts={accounts} onAdd={() => setDialog({ kind: "account" })} onAddInvestment={() => setDialog({ kind: "investmentAccount" })} onEdit={(account) => setDialog({ kind: "account", account })} onChanged={refresh} onOpenRegister={openAccountDestination} onReconcile={(account) => setDialog({ kind: "reconciliation", account })} />
               )}
             </>
           ) : (
@@ -302,6 +304,18 @@ export default function App() {
           )}
         </section>
       </main>
+      {dialog?.kind === "investmentAccount" && (
+        <InvestmentAccountDialog
+          onClose={() => setDialog(null)}
+          onSaved={async (accountId) => {
+            setDialog(null);
+            await refresh();
+            setRegisterAccountId(undefined);
+            setNavigationIntent({ page: "Portfolio", focus: { accountId } });
+            setActive("Portfolio");
+          }}
+        />
+      )}
       {dialog?.kind === "account" && (
         <AccountDialog
           account={dialog.account}
@@ -383,6 +397,7 @@ function StorageNotice() {
 function AccountsPage({
   accounts,
   onAdd,
+  onAddInvestment,
   onEdit,
   onChanged,
   onOpenRegister,
@@ -390,6 +405,7 @@ function AccountsPage({
 }: {
   accounts: Account[];
   onAdd: () => void;
+  onAddInvestment: () => void;
   onEdit: (account: Account) => void;
   onChanged: () => Promise<void>;
   onOpenRegister: (accountId: string) => void;
@@ -431,7 +447,7 @@ function AccountsPage({
             <h2>Accounts</h2>
             <p>Select an account to open its Money-style register or investment portfolio</p>
           </div>
-          <button onClick={onAdd}>+ Add account</button>
+          <div className="account-row-actions"><button onClick={onAdd}>+ Add account</button><button onClick={onAddInvestment}>+ Investment</button></div>
         </div>
         {activeAccounts.length === 0 ? <Empty text="Add your first local account." /> : activeAccounts.map((account, index) => (
           <div
@@ -670,6 +686,7 @@ function AccountDialog({ account, onClose, onSaved }: { account?: Account; onClo
               <option value="cash">Cash</option>
               <option value="loan">Loan</option>
               <option value="asset">Asset</option>
+              {account?.type === "investment" && <option value="investment">Investment</option>}
             </select>
           </label>
           {account ? (
