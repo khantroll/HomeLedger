@@ -3,6 +3,7 @@ import { ArrowLeft, BriefcaseBusiness, ChevronDown, ChevronRight } from "lucide-
 import { formatMoney, type Account, type HoldingSnapshot, type InvestmentEventRevision, type PortfolioSnapshot, type Security, type SecurityPrice } from "./domain";
 import { investmentRepository, isNativeApp } from "./repository";
 import { todayIso } from "./scheduledPresentation";
+import { MarketRefreshPanel } from "./MarketRefreshPanel";
 import "./portfolio.css";
 
 export interface PortfolioNavigationFocus { accountId?: string; securityId?: string; }
@@ -62,6 +63,7 @@ export function PortfolioPage({accounts,focus,onShowAll,onOpenSecurity}:{account
   {error&&<div className="error-banner" role="alert">{error}</div>}{mixedCurrency&&<div className="notice"><strong>Separate currencies</strong><span>HomeLedger does not combine investment values across currencies without FX accounting.</span></div>}
   <div className="summary-grid portfolio-summary"><Summary label={scopedName?"Account value":"Portfolio value"} value={!mixedCurrency&&totalMinor!==undefined?formatMoney(totalMinor,currency):"Unknown"} detail={totalMinor===undefined?"One or more holdings needs a price":"Cash plus investments"}/><Summary label="Investments" value={!mixedCurrency&&investmentsMinor!==undefined?formatMoney(investmentsMinor,currency):"Unknown"} detail={investmentsMinor===undefined?"Missing prices stay unknown":"Securities with local prices"}/><Summary label="Cash" value={!mixedCurrency?formatMoney(cashMinor,currency):"See accounts"} detail="Intrinsic investment cash"/><Summary label="Known cost basis" value={!mixedCurrency?formatMoney(knownBasisMinor,currency):"See holdings"} detail={rows.some(r=>r.holding.incompleteUnknownBasis)?"Partial — some basis is unknown":"Basis HomeLedger can establish"}/><Summary label="Calculable gain/loss" value={!mixedCurrency&&gainRows.length?formatMoney(gainMinor,currency):"Unknown"} detail={gainComplete?"Calculated from known basis and prices":gainRows.length?"Partial — some gain/loss is unknown":"Needs basis and price data"} tone={gainRows.length?(gainMinor<0?"negative":"positive"):undefined}/></div>
   {focus?.accountId&&<nav className="portfolio-tabs" aria-label="Investment account views">{(["portfolio","activity","cash"] as AccountTab[]).map(v=><button key={v} className={tab===v?"active":""} onClick={()=>setTab(v)}>{v[0].toUpperCase()+v.slice(1)}</button>)}</nav>}
+  {!focus?.accountId&&<MarketRefreshPanel securities={securities.filter(s=>rows.some(r=>r.holding.securityId===s.id))} asOfDate={asOfDate} onSaved={()=>setPriceRevision(v=>v+1)}/>}
   {(!focus?.accountId||tab==="portfolio")&&<HoldingsTable rows={rows} securityById={securityById} accountById={accountById} investmentsMinor={investmentsMinor} currency={currency} onOpenSecurity={onOpenSecurity}/>}
   {focus?.accountId&&tab==="activity"&&<ActivityList events={events} securityById={securityById} currency={currency} accountId={focus.accountId}/>}
   {focus?.accountId&&tab==="cash"&&<CashView cashMinor={accountSnapshot?.cashMinor??0} events={events} securityById={securityById} currency={currency} accountId={focus.accountId}/>}
