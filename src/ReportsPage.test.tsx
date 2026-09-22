@@ -101,8 +101,10 @@ describe("ReportsPage",()=>{
     render(<ReportsPage accounts={accounts} transactions={transactions} today="2026-09-19"/>);
     await user.click(screen.getByRole("tab",{name:"Investments"}));
     expect(await screen.findByText("Investment cash")).toBeTruthy();
-    expect(screen.getByText("$25.00")).toBeTruthy();
-    expect(screen.getByText("$125.00")).toBeTruthy();
+    expect(screen.getAllByText("$25.00").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("$125.00").length).toBeGreaterThan(0);
+    expect(screen.getByText("Dividends")).toBeTruthy();
+    expect(screen.getByText("$5.00")).toBeTruthy();
     expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledWith(["inv"],"2026-09-19");
     expect(investmentRepository.listInvestmentEvents).toHaveBeenCalledWith("inv","2026-01-01","2026-09-19");
     expect(screen.queryByText("Old brokerage")).toBeNull();
