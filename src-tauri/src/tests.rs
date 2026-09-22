@@ -1049,3 +1049,75 @@ fn ordinary_transaction_creation_rejects_investment_accounts() {
     let count:i64=connection.query_row("SELECT COUNT(*) FROM transactions WHERE account_id='inv-ui'",[],|r|r.get(0)).unwrap();
     assert_eq!(count,0);
 }
+
+
+#[test]
+fn cross_domain_ordinary_leg_rejects_generic_edit_delete_and_reconciliation() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('checking','Checking','checking','USD',10000,'Household'),('inv','Brokerage','investment','USD',0,'Household')", []).unwrap();
+    connection.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,opening_cash_minor,opening_date) VALUES('inv','brokerage','taxable',0,'2026-01-01')", []).unwrap();
+
+    let created = crate::cross_domain_transfer::create_cross_domain_cash_transfer_inner(
+        &mut connection,
+        crate::cross_domain_transfer::CrossDomainCashTransferRequest {
+            from_account_id: "checking".into(),
+            to_account_id: "inv".into(),
+            posted_date: "2026-09-22".into(),
+            payee: "Brokerage funding".into(),
+            amount_minor: 1000,
+            status: "pending".into(),
+            memo: None,
+        },
+    ).unwrap();
+
+    let edit = update_transaction_inner(&mut connection, created.ordinary_transaction_id.clone(), CreateTransactionRequest {
+        account_id: "checking".into(),
+        posted_date: "2026-09-22".into(),
+        payee: "Tampered".into(),
+        category: "Other".into(),
+        amount_minor: -250,
+        status: "cleared".into(),
+        memo: None,
+        splits: None,
+    }).unwrap_err();
+    assert!(edit.contains("transfer editor"));
+
+    let delete = delete_transaction_inner(&connection, created.ordinary_transaction_id.clone()).unwrap_err();
+    assert!(delete.contains("transfer editor"));
+
+    let reconcile = complete_reconciliation_inner(&mut connection, CompleteReconciliationRequest {
+        account_id: "checking".into(),
+        statement_end_date: "2026-09-30".into(),
+        opening_balance_minor: 10000,
+        closing_balance_minor: 9000,
+        transaction_ids: vec![created.ordinary_transaction_id.clone()],
+    }).unwrap_err();
+    assert!(reconcile.contains("cross-domain transfer workflow"));
+
+    let row: (i64, String) = connection.query_row(
+        "SELECT amount_minor,status FROM transactions WHERE id=?1",
+        [&created.ordinary_transaction_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(row, (-1000, "pending".into()));
+    let reconciliations: i64 = connection.query_row("SELECT COUNT(*) FROM reconciliations", [], |r| r.get(0)).unwrap();
+    assert_eq!(reconciliations, 0);
+
+    let mut changed = crate::cross_domain_transfer::CrossDomainCashTransferRequest {
+        from_account_id: "checking".into(),
+        to_account_id: "inv".into(),
+        posted_date: "2026-09-23".into(),
+        payee: "Brokerage funding adjusted".into(),
+        amount_minor: 1500,
+        status: "pending".into(),
+        memo: Some("bridge edit".into()),
+    };
+    crate::cross_domain_transfer::update_cross_domain_cash_transfer_inner(&mut connection, created.link_id.clone(), changed.clone()).unwrap();
+    let amount: i64 = connection.query_row("SELECT amount_minor FROM transactions WHERE id=?1", [&created.ordinary_transaction_id], |r| r.get(0)).unwrap();
+    assert_eq!(amount, -1500);
+    changed.amount_minor = 1600;
+    crate::cross_domain_transfer::delete_cross_domain_cash_transfer_inner(&mut connection, created.link_id).unwrap();
+    let remaining: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE id=?1", [&created.ordinary_transaction_id], |r| r.get(0)).unwrap();
+    assert_eq!(remaining, 0);
+}
