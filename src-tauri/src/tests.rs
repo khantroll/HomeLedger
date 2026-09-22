@@ -1034,3 +1034,16 @@ fn debt_strategy_task_selects_dedicated_system_prompt_across_providers() {
     assert!(gemini["systemInstruction"]["parts"][0]["text"].as_str().unwrap().contains("Debt Strategy"));
     assert!(super::task_system_prompt(&payload).contains("Debt Strategy"));
 }
+
+
+#[test]
+fn ordinary_transaction_creation_rejects_investment_accounts() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv-ui','Brokerage','investment','USD',0,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,opening_cash_minor,opening_date) VALUES('inv-ui','brokerage','unknown',0,'2026-01-01')",[]).unwrap();
+    let error=match create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv-ui".into(),posted_date:"2026-09-22".into(),payee:"Should fail".into(),category:"Investments".into(),amount_minor:-1000,status:"cleared".into(),memo:None,splits:None}){Ok(_)=>panic!("ordinary transaction unexpectedly accepted investment account"),Err(error)=>error};
+    assert_eq!(error,"Investment activity must use the investment event workflow");
+    let count:i64=connection.query_row("SELECT COUNT(*) FROM transactions WHERE account_id='inv-ui'",[],|r|r.get(0)).unwrap();
+    assert_eq!(count,0);
+}

@@ -6,6 +6,7 @@ const accounts:Account[]=[
   {id:"checking",name:"Checking",type:"checking",currency:"USD",balanceMinor:0,ownerLabel:"Household"},
   {id:"credit",name:"Card",type:"credit",currency:"USD",balanceMinor:0,ownerLabel:"Household"},
   {id:"cad",name:"CAD",type:"cash",currency:"CAD",balanceMinor:0,ownerLabel:"Household"},
+  {id:"investment",name:"Brokerage",type:"investment",currency:"USD",balanceMinor:250000,ownerLabel:"Household"},
 ];
 const transactions:Transaction[]=[
   {id:"income",accountId:"checking",postedDate:"2026-08-31",payee:"Payroll",category:"Income",amountMinor:200000,status:"cleared",source:"manual"},
@@ -21,5 +22,6 @@ describe("transaction reports",()=>{
   it("uses split categories without double-counting their parent",()=>{const report=calculateTransactionReport({fromDate:"2026-09-01",toDate:"2026-09-30",currency:"USD",accounts,transactions});expect(report.categories.map(item=>[item.label,item.amountMinor])).toEqual([["Housing",80000],["Food",4000],["Household",2000]]);expect(report.payees.map(item=>[item.label,item.amountMinor])).toEqual([["Landlord",80000],["Market",6000]]);});
   it("keeps exact transaction contributions for drill-down",()=>{const report=calculateTransactionReport({fromDate:"2026-09-01",toDate:"2026-09-30",currency:"USD",accounts,transactions});expect(report.categories.find(item=>item.label==="Food")?.contributions).toEqual([{transactionId:"split",amountMinor:4000}]);});
   it("filters one account and returns zero-filled months",()=>{const report=calculateTransactionReport({fromDate:"2026-08-01",toDate:"2026-10-31",currency:"USD",accountId:"checking",accounts,transactions});expect(report.months).toEqual([{month:"2026-08",incomeMinor:200000,spendingMinor:0,netMinor:200000},{month:"2026-09",incomeMinor:0,spendingMinor:80000,netMinor:-80000},{month:"2026-10",incomeMinor:0,spendingMinor:0,netMinor:0}]);});
+  it("does not treat investment account value as ordinary household income or spending",()=>{const report=calculateTransactionReport({fromDate:"2026-08-01",toDate:"2026-09-30",currency:"USD",accounts,transactions});expect(report).toMatchObject({incomeMinor:200000,spendingMinor:86000,netMinor:114000,transactionCount:3});expect(report.categories.some(item=>item.label==="Investments")).toBe(false);});
   it("builds calendar presets and validates report spans",()=>{expect(reportRange("quarter","2026-09-19")).toEqual({fromDate:"2026-07-01",toDate:"2026-09-19"});expect(reportRange("year","2026-09-19")).toEqual({fromDate:"2026-01-01",toDate:"2026-09-19"});expect(reportMonths("2026-11-01","2027-02-01")).toEqual(["2026-11","2026-12","2027-01","2027-02"]);expect(()=>calculateTransactionReport({fromDate:"2026-09-31",toDate:"2026-10-01",currency:"USD",accounts,transactions})).toThrow("invalid");});
 });
