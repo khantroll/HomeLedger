@@ -116,6 +116,40 @@ describe("finance repository contract", () => {
     await expect(repository.createTransfer({fromAccountId:usd.id,toAccountId:eur.id,postedDate:"2026-09-18",payee:"FX",amountMinor:100,status:"cleared"})).rejects.toThrow("different currencies");
   });
 
+  it("creates atomic ordinary↔investment cash transfers without income classification", async () => {
+    const repository = new DemoFinanceRepository();
+    const checking = await repository.createAccount({ name: "Checking", type: "checking", currency: "USD", openingBalanceMinor: 500000, ownerLabel: "Household" });
+    const brokerage = await repository.createAccount({ name: "Brokerage", type: "investment", currency: "USD", openingBalanceMinor: 100000, ownerLabel: "Household" });
+    const created = await repository.createOrdinaryInvestmentCashTransfer({
+      fromAccountId: checking.id,
+      toAccountId: brokerage.id,
+      postedDate: "2026-09-22",
+      payee: "Account transfer",
+      amountMinor: 100000,
+      status: "pending",
+    });
+    expect(created.direction).toBe("ordinary_to_investment");
+    const ordinary = (await repository.listTransactions(checking.id)).find(item => item.id === created.ordinaryTransactionId);
+    expect(ordinary).toMatchObject({ source: "transfer", amountMinor: -100000, transferLinkId: created.linkId, transferAccountId: brokerage.id, category: "Transfer: Brokerage" });
+    expect((await repository.listAccounts()).find(item => item.id === checking.id)?.balanceMinor).toBe(400000);
+    expect((await repository.listAccounts()).find(item => item.id === brokerage.id)?.balanceMinor).toBe(200000);
+    await repository.updateOrdinaryInvestmentCashTransfer(created.linkId, {
+      fromAccountId: checking.id,
+      toAccountId: brokerage.id,
+      postedDate: "2026-09-22",
+      payee: "Account transfer",
+      amountMinor: 40000,
+      status: "pending",
+    });
+    expect((await repository.listAccounts()).find(item => item.id === checking.id)?.balanceMinor).toBe(460000);
+    expect((await repository.listAccounts()).find(item => item.id === brokerage.id)?.balanceMinor).toBe(140000);
+    await repository.deleteOrdinaryInvestmentCashTransfer(created.linkId);
+    expect((await repository.listTransactions(checking.id)).some(item => item.transferLinkId === created.linkId)).toBe(false);
+    expect((await repository.listAccounts()).find(item => item.id === checking.id)?.balanceMinor).toBe(500000);
+    expect((await repository.listAccounts()).find(item => item.id === brokerage.id)?.balanceMinor).toBe(100000);
+    await expect(repository.createTransfer({ fromAccountId: checking.id, toAccountId: brokerage.id, postedDate: "2026-09-22", payee: "Bad", amountMinor: 100, status: "cleared" })).rejects.toThrow("dedicated transfer command");
+  });
+
   it("completes a balanced statement reconciliation and protects its transactions", async () => {
     const repository = new DemoFinanceRepository();
     const account = await repository.createAccount({ name: "Checking", type: "checking", currency: "USD", openingBalanceMinor: 10000, ownerLabel: "Household" });

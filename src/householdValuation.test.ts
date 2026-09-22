@@ -6,4 +6,16 @@ describe("household valuation",()=>{
  it("preserves known cash while marking an unpriced holding incomplete",()=>{const snapshot:PortfolioSnapshot={asOfDate:"2026-09-22",accounts:[{accountId:"inv",cashMinor:2500,holdings:[{accountId:"inv",securityId:"sec",quantityE8:100000000,knownBasisMinor:9000,unknownBasisQuantityE8:0,incompleteUnknownBasis:false,lots:[],realized:{knownBasisQuantityE8:0,knownDisposedBasisMinor:0,calculableProceedsMinor:0,calculableGainMinor:0,unknownBasisQuantityE8:0,unknownBasisProceedsMinor:0,incompleteUnknownBasis:false}}]}]};const v=calculateHouseholdValuation([a("inv","investment","USD",0)],snapshot,"USD");expect(v).toMatchObject({investmentKnownMinor:2500,netWorthKnownMinor:2500,incompleteInvestment:true,unvaluedHoldingCount:1});});
  it("never combines currencies",()=>{const accounts=[a("usd","checking","USD",10000),a("eur","checking","EUR",20000),a("inv","investment","EUR",0)];const snapshot:PortfolioSnapshot={asOfDate:"2026-09-22",accounts:[{accountId:"inv",cashMinor:3000,holdings:[],holdingsValueMinor:0,totalValueMinor:3000}]};expect(householdCurrencies(accounts)).toEqual(["EUR","USD"]);expect(calculateHouseholdValuation(accounts,snapshot,"USD").netWorthKnownMinor).toBe(10000);expect(calculateHouseholdValuation(accounts,snapshot,"EUR").netWorthKnownMinor).toBe(23000);});
  it("available cash remains liquid ordinary cash rather than portfolio value or other assets",()=>{const accounts=[a("checking","checking","USD",1000),a("house","asset","USD",50000),a("inv","investment","USD",0)];const snapshot:PortfolioSnapshot={asOfDate:"2026-09-22",accounts:[{accountId:"inv",cashMinor:500,holdings:[],holdingsValueMinor:0,totalValueMinor:500}]};expect(calculateHouseholdValuation(accounts,snapshot,"USD").availableCashMinor).toBe(1000);});
+ it("ordinary↔investment cash transfer only moves value between accounts",()=>{
+  const beforeAccounts=[a("checking","checking","USD",500000),a("inv","investment","USD",0)];
+  const beforeSnapshot:PortfolioSnapshot={asOfDate:"2026-09-22",accounts:[{accountId:"inv",cashMinor:100000,holdings:[],holdingsValueMinor:0,totalValueMinor:100000}]};
+  const before=calculateHouseholdValuation(beforeAccounts,beforeSnapshot,"USD");
+  const afterAccounts=[a("checking","checking","USD",400000),a("inv","investment","USD",0)];
+  const afterSnapshot:PortfolioSnapshot={asOfDate:"2026-09-22",accounts:[{accountId:"inv",cashMinor:200000,holdings:[],holdingsValueMinor:0,totalValueMinor:200000}]};
+  const after=calculateHouseholdValuation(afterAccounts,afterSnapshot,"USD");
+  expect(before.netWorthKnownMinor).toBe(600000);
+  expect(after.netWorthKnownMinor).toBe(600000);
+  expect(after.availableCashMinor).toBe(400000);
+  expect(after.investmentKnownMinor).toBe(200000);
+ });
 });
