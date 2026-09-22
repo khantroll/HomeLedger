@@ -155,7 +155,7 @@ export default function App() {
           <LockKeyhole size={16} />
           <div>
             <strong>Local mode</strong>
-            <small>No network activity</small>
+            <small>Core records stay local</small>
           </div>
         </div>
       </aside>
@@ -373,7 +373,7 @@ function StorageNotice() {
       <strong>{isNativeApp ? "Local SQLite" : "Browser preview"}</strong>
       <span>
         {isNativeApp
-          ? "Records are stored on this device. No network service is used."
+          ? "Authoritative records stay on this device. Network access occurs only for explicit configured features such as AI or user-requested market prices."
           : "Synthetic, in-memory data only. Run through Tauri for durable SQLite storage."}
       </span>
     </div>
