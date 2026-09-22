@@ -4,17 +4,17 @@ import {formatMoney,type Account,type Transaction} from "./domain";
 import {formatDate,todayIso} from "./scheduledPresentation";
 import {calculateTransactionReport,reportRange,type ReportGroup,type ReportPreset} from "./reportMath";
 import {buildReportCsv,exportFileName} from "./csvExport";
-import {csvExportRepository} from "./repository";
+import {csvExportRepository} from "./repository";\nimport {InvestmentReportPanel} from "./InvestmentReportPanel";
 import "./reports.css";
 import "./reportExport.css";
 
 export function ReportsPage({accounts,transactions,today=todayIso(),onOpenAccount}:{accounts:Account[];transactions:Transaction[];today?:string;onOpenAccount?:(accountId:string)=>void}){
-  const currencies=useMemo(()=>[...new Set(accounts.map(item=>item.currency))].sort(),[accounts]);
+  const [view,setView]=useState<"household"|"investments">("household");\n  const currencies=useMemo(()=>[...new Set(accounts.filter(item=>item.type!=="investment").map(item=>item.currency))].sort(),[accounts]);
   const [currency,setCurrency]=useState(currencies[0]??"USD"),[accountId,setAccountId]=useState("all"),[preset,setPreset]=useState<ReportPreset>("quarter");
   const initial=reportRange("quarter",today),[fromDate,setFromDate]=useState(initial.fromDate),[toDate,setToDate]=useState(initial.toDate);
   const [grouping,setGrouping]=useState<"category"|"payee">("category"),[selectedKey,setSelectedKey]=useState("");
   const [exporting,setExporting]=useState(false),[exportError,setExportError]=useState(""),[exportNotice,setExportNotice]=useState("");
-  const availableAccounts=accounts.filter(item=>item.currency===currency);
+  const availableAccounts=accounts.filter(item=>item.type!=="investment"&&item.currency===currency);
   useEffect(()=>{if(currencies.length&&!currencies.includes(currency))setCurrency(currencies[0]);},[currencies,currency]);
   useEffect(()=>{if(accountId!=="all"&&!availableAccounts.some(item=>item.id===accountId))setAccountId("all");},[accountId,availableAccounts]);
   const result=useMemo(()=>{try{return{report:calculateTransactionReport({fromDate,toDate,currency,accountId:accountId==="all"?undefined:accountId,accounts,transactions}),error:""};}catch(reason){return{report:null,error:reason instanceof Error?reason.message:String(reason)};}},[accountId,accounts,currency,fromDate,toDate,transactions]);
