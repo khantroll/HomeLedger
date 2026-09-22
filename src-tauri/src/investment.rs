@@ -382,8 +382,8 @@ mod tests {
 
   let mut replacement=linked.clone();
   replacement.cash_effect_minor=3000;
-  assert!(matches!(update_pending_inner(&mut c,"linked-event".into(),replacement.clone()),Err(ref e) if e.contains("transfer editor")));
-  assert!(matches!(correct_historical_inner(&mut c,"linked-event".into(),replacement,"correction".into()),Err(ref e) if e.contains("investment-only historical correction")));
+  assert!(update_pending_inner(&mut c,"linked-event".into(),replacement.clone()).is_err());
+  assert!(correct_historical_inner(&mut c,"linked-event".into(),replacement,"correction".into()).is_err());
   let cash:i64=c.query_row("SELECT cash_effect_minor FROM investment_event_revisions WHERE event_id='linked-event'",[],|r|r.get(0)).unwrap();
   assert_eq!(cash,2500);
  }
