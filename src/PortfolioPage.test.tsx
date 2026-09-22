@@ -5,7 +5,7 @@ import type { Account, PortfolioSnapshot } from "./domain";
 
 vi.mock("./repository", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./repository")>();
-  return { ...actual, isNativeApp:true, investmentRepository:{ ...actual.investmentRepository, calculatePortfolioSnapshot:vi.fn(), listSecurities:vi.fn(), listInvestmentEvents:vi.fn(), listSecurityPrices:vi.fn(), addManualSecurityPrice:vi.fn() } };
+  return { ...actual, isNativeApp:true, investmentRepository:{ ...actual.investmentRepository, calculatePortfolioSnapshot:vi.fn(), listSecurities:vi.fn(), listInvestmentEvents:vi.fn(), listSecurityPrices:vi.fn(), addManualSecurityPrice:vi.fn(), createSecurity:vi.fn(), createInvestmentEvent:vi.fn(), updatePendingInvestmentEvent:vi.fn(), correctHistoricalInvestmentEvent:vi.fn(), setSpecificLotAllocations:vi.fn() } };
 });
 
 import { PortfolioPage } from "./PortfolioPage";
@@ -173,5 +173,30 @@ describe("Investment account workspace",()=>{
  it("normalizes native null activity fields to undefined",()=>{
   const normalized=normalizeInvestmentEvent({...buy,supersedesRevisionId:null,settlementDate:null,acquisitionDate:null,relatedAccountId:null,unitPriceE8:null,memo:null,externalId:null,provenance:null,groupId:null,correctionReason:null,securityId:null,quantityE8:null,grossCashMinor:null});
   expect(normalized.securityId).toBeUndefined();expect(normalized.quantityE8).toBeUndefined();expect(normalized.grossCashMinor).toBeUndefined();expect(normalized.acquisitionDate).toBeUndefined();expect(normalized.provenance).toBeUndefined();
+ });
+});
+
+
+describe("manual investment entry refresh",()=>{
+ it("refreshes Portfolio projections immediately after activity is saved",async()=>{
+  const empty:PortfolioSnapshot={asOfDate:"2026-09-22",accounts:[{accountId:"inv",cashMinor:0,holdingsValueMinor:0,totalValueMinor:0,holdings:[]}]};
+  const after:PortfolioSnapshot={asOfDate:"2026-09-22",accounts:[{accountId:"inv",cashMinor:0,holdingsValueMinor:undefined,totalValueMinor:undefined,holdings:[{accountId:"inv",securityId:"sec",quantityE8:100_000_000,knownBasisMinor:10000,unknownBasisQuantityE8:0,incompleteUnknownBasis:false,lots:[{acquisitionEventId:"e1",acquisitionDate:"2020-01-01",quantityE8:100_000_000,basisMinor:10000}],realized:{knownBasisQuantityE8:0,knownDisposedBasisMinor:0,calculableProceedsMinor:0,calculableGainMinor:0,unknownBasisQuantityE8:0,unknownBasisProceedsMinor:0,incompleteUnknownBasis:false}}]}]};
+  const sec={id:"sec",securityType:"stock" as const,name:"Example Corp",symbol:"EXM",currency:"USD",archived:false};
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValueOnce(empty).mockResolvedValue(after);
+  vi.mocked(investmentRepository.listSecurities).mockResolvedValue([sec]);
+  vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
+  vi.mocked(investmentRepository.createInvestmentEvent).mockImplementation(async input=>({...input,id:"r1",eventId:"e1",revisionNumber:1}));
+  const view=render(<PortfolioPage accounts={accounts} focus={{accountId:"inv"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
+  await screen.findByText("Account value");
+  fireEvent.click(screen.getByRole("button",{name:"+ Add activity"}));
+  const dialog=screen.getByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Activity"),{target:{value:"opening_position"}});
+  fireEvent.change(within(dialog).getByLabelText("Quantity"),{target:{value:"1"}});
+  fireEvent.change(within(dialog).getByLabelText("Cost basis"),{target:{value:"100.00"}});
+  fireEvent.change(within(dialog).getByLabelText("Acquisition date"),{target:{value:"2020-01-01"}});
+  fireEvent.submit(within(dialog).getByRole("button",{name:"Add activity"}).closest("form")!);
+  await vi.waitFor(()=>expect(investmentRepository.calculatePortfolioSnapshot).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText("EXM")).toBeTruthy();
+  view.unmount();
  });
 });
