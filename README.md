@@ -81,8 +81,8 @@ npm run tauri dev
 
 Every push to a development branch and every pull request runs the browser tests and production web build on Linux. CI also treats Rust Clippy warnings as errors, runs the native tests, and compiles the Windows desktop application without creating an installer bundle.
 
-## Next major domain
+## Investment import boundary
 
-Investment management is intentionally not represented by ordinary spending transactions. Investment-account OFX/QIF activity remains unsupported until HomeLedger has a dedicated securities, holdings, transaction, lot/cost-basis, price-history and performance model.
+Investment activity remains separate from ordinary spending transactions. HomeLedger has a dedicated investment model for securities, event history, intrinsic cash, lots/cost basis, price history and Portfolio valuation. Investment-account file import is not yet implemented; unsupported investment records are rejected rather than being misclassified as ordinary transactions. Manual investment activity entry is the next planned workflow milestone.
 
 See `HomeLedger_Codex_Build_Spec.md` for the phased product specification.
