@@ -6,7 +6,7 @@ HomeLedger is a privacy-first, local-first household finance desktop application
 
 ## Current status
 
-HomeLedger v0.47 provides a substantial daily-driver personal-finance core:
+HomeLedger v0.50 includes a substantial daily-driver personal-finance core plus a dedicated local-first investment foundation and Portfolio workspace:
 
 - **Accounts and registers:** checking, savings, cash, credit-card and loan accounts; Money-style per-account registers; a global transaction register; true running balances; splits; linked transfers; filtering, search and explicit pagination.
 - **Account lifecycle and reconciliation:** editing, ordering, guarded archive/restore, review indicators, statement reconciliation, retained reconciliation history and protection of reconciled entries.
@@ -18,7 +18,7 @@ HomeLedger v0.47 provides a substantial daily-driver personal-finance core:
 - **Backup and recovery:** portable password-encrypted `.hlb` backups plus rotating machine-local automatic recovery snapshots, pre-migration protection, retention controls, health status and guarded restore.
 - **First-run experience:** guided account setup distinguishes starting from today's cleared balance from reconstructing complete historical activity, avoiding accidental double counting.
 - **Overview attention center:** deterministic, prioritized attention for overdue scheduled activity, due auto-posts, review transactions, negative cash forecasts and budget pressure, with a quiet all-clear/setup state.
-- **Contextual workflows:** Overview attention can enter Transactions with Needs Review selected, focus Bills on the relevant overdue date or auto-post queue, and report drill-down can open the contributing account register. Ordinary sidebar navigation clears contextual state.
+- **Contextual workflows:** Overview attention can enter Transactions with Needs Review selected, focus Bills on the relevant overdue date or auto-post queue, report drill-down can open the contributing account destination, and investment accounts route to their Portfolio workspace. Ordinary sidebar navigation clears contextual state.\n- **Investments and Portfolio:** dedicated investment accounts, securities, event history, intrinsic cash, FIFO/specific lots, known/unknown basis, deterministic historical As-of holdings, manual price observations, local price history, and guarded historical corrections. Portfolio/account/security views remain separate from the ordinary spending ledger.\n- **Optional market prices:** an explicit, provider-neutral Refresh prices workflow can map a security and save validated price observations. Portfolio opening/navigation never requires a network request, and saved/manual observations remain usable offline.
 
 Shared category and payee memory supplies one local autocomplete catalog across transaction, split, scheduled-item, merchant-rule and budget editors. Colon-delimited categories such as `Food: Groceries` provide lightweight hierarchy without rewriting historical transaction text.
 
@@ -38,7 +38,7 @@ A privacy-preserving local AI audit records task/provider/model/trust/success me
 
 ## Privacy and security
 
-HomeLedger is **local-first, not network-isolated**. Ordinary ledger storage, imports, OCR, calculations, reports, budgets, forecasts, debt projections, recovery snapshots and other core financial processing remain local. Network access occurs only for explicitly configured AI analysis: verified loopback providers or a supported cloud provider after payload review and consent.
+HomeLedger is **local-first, not network-isolated**. Authoritative ledger and investment history, imports, OCR, calculations, reports, budgets, forecasts, debt projections, recovery snapshots and other core financial processing remain local. Network access is explicit: configured AI analysis uses verified loopback providers or a supported cloud provider after payload review/consent, and Portfolio market-price retrieval occurs only when the user explicitly searches/maps a security or chooses Refresh prices. No market-price request is required to open or navigate Portfolio.
 
 Native financial records are stored in `homeledger.db` under the operating system's application-data directory. The live SQLite database is not encrypted by HomeLedger, so operating-system full-disk/device encryption remains the expected at-rest protection for the live database.
 
@@ -81,8 +81,8 @@ npm run tauri dev
 
 Every push to a development branch and every pull request runs the browser tests and production web build on Linux. CI also treats Rust Clippy warnings as errors, runs the native tests, and compiles the Windows desktop application without creating an installer bundle.
 
-## Next major domain
+## Investment import boundary
 
-Investment management is intentionally not represented by ordinary spending transactions. Investment-account OFX/QIF activity remains unsupported until HomeLedger has a dedicated securities, holdings, transaction, lot/cost-basis, price-history and performance model.
+Investment activity remains separate from ordinary spending transactions. HomeLedger has a dedicated investment model for securities, event history, intrinsic cash, lots/cost basis, price history and Portfolio valuation. Investment-account file import is not yet implemented; unsupported investment records are rejected rather than being misclassified as ordinary transactions. Manual investment activity entry is the next planned workflow milestone.
 
 See `HomeLedger_Codex_Build_Spec.md` for the phased product specification.
