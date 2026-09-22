@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
-import { formatMoney, parseMoney, sumMoney, type Account, type AccountType, type BudgetMonth, type ScheduledOccurrence, type ScheduledTransaction, type Transaction } from "./domain";
+import { formatMoney, parseMoney, type Account, type AccountType, type BudgetMonth, type ScheduledOccurrence, type ScheduledTransaction, type Transaction } from "./domain";
 import { financeRepository as repository, investmentRepository, isNativeApp } from "./repository";
 import { calculateHouseholdValuation, householdCurrencies } from "./householdValuation";
 import type { PortfolioSnapshot } from "./domain";
