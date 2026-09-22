@@ -97,6 +97,54 @@ describe("Investment account workspace",()=>{
   fireEvent.click(screen.getByRole("button",{name:"Cash"}));
   expect(screen.getByText("Cash held in this investment account")).toBeTruthy();expect(screen.getAllByText("$50.00").length).toBeGreaterThanOrEqual(1);expect(screen.getByText("Income $5.00")).toBeTruthy();
  });
+ it("keeps fully disposed zero-quantity snapshot rows out of current Portfolio holdings",async()=>{
+  const disposed={
+    accountId:"inv",
+    securityId:"gone",
+    quantityE8:0,
+    knownBasisMinor:0,
+    unknownBasisQuantityE8:0,
+    marketValueMinor:0,
+    unrealizedGainMinor:0,
+    incompleteUnknownBasis:false,
+    lots:[],
+    realized:{
+      knownBasisQuantityE8:100_000_000,
+      knownDisposedBasisMinor:8000,
+      calculableProceedsMinor:11000,
+      calculableGainMinor:3000,
+      unknownBasisQuantityE8:0,
+      unknownBasisProceedsMinor:0,
+      incompleteUnknownBasis:false,
+    },
+  };
+  const mixed:PortfolioSnapshot={
+    asOfDate:"2026-09-21",
+    accounts:[{
+      accountId:"inv",
+      cashMinor:5000,
+      holdingsValueMinor:12500,
+      totalValueMinor:17500,
+      holdings:[snapshot.accounts[0].holdings[0],disposed],
+    }],
+  };
+  const disposedSecurity={id:"gone",securityType:"stock" as const,name:"Disposed Corp",symbol:"GON",currency:"USD",archived:false};
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(mixed);
+  vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security,disposedSecurity]);
+  vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
+  render(<PortfolioPage accounts={accounts} focus={{accountId:"inv"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
+  expect(await screen.findByRole("button",{name:/EXM/})).toBeTruthy();
+  expect(screen.queryByRole("button",{name:/GON/})).toBeNull();
+  expect(screen.queryByText("Disposed Corp")).toBeNull();
+  const holdings=screen.getByRole("table");
+  expect(within(holdings).getByText("EXM")).toBeTruthy();
+  expect(within(holdings).queryByText("GON")).toBeNull();
+  const basis=screen.getByText("Known cost basis").closest(".summary") as HTMLElement|null;
+  const gain=screen.getByText("Calculable gain/loss").closest(".summary") as HTMLElement|null;
+  expect(basis&&within(basis).getByText("$100.00")).toBeTruthy();
+  expect(gain&&within(gain).getByText("$25.00")).toBeTruthy();
+  expect(basis&&within(basis).queryByText("$180.00")).toBeNull();
+ });
  it("shows security detail with position, activity, and expandable lot provenance",async()=>{
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(snapshot);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([buy]);
   render(<PortfolioPage accounts={accounts} focus={{accountId:"inv",securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);

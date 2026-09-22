@@ -47,7 +47,7 @@ export interface TransactionReportInput{
 export function calculateTransactionReport(input:TransactionReportInput):TransactionReport{
   parseDate(input.fromDate);parseDate(input.toDate);
   if(input.fromDate>input.toDate)throw new Error("Report start date must not be after its end date");
-  const eligibleAccounts=new Set(input.accounts.filter(item=>item.currency===input.currency&&(!input.accountId||item.id===input.accountId)).map(item=>item.id));
+  const eligibleAccounts=new Set(input.accounts.filter(item=>item.type!=="investment"&&item.currency===input.currency&&(!input.accountId||item.id===input.accountId)).map(item=>item.id));
   if(input.accountId&&!eligibleAccounts.has(input.accountId))throw new Error("The selected report account is not available in this currency");
   const transactions=input.transactions.filter(item=>eligibleAccounts.has(item.accountId)&&item.postedDate>=input.fromDate&&item.postedDate<=input.toDate&&!item.transferLinkId&&item.source!=="transfer"&&item.source!=="adjustment");
   const categoryMap=new Map<string,{label:string;amountMinor:number;items:Map<string,number>}>(),payeeMap=new Map<string,{label:string;amountMinor:number;items:Map<string,number>}>();
