@@ -1,5 +1,6 @@
 import type {Account,FinanceRepository,Transaction,TransactionQuery} from "./domain";
-import type {TransactionReport} from "./reportMath";\nimport type {InvestmentReport} from "./investmentReport";
+import type {TransactionReport} from "./reportMath";
+import type {InvestmentReport} from "./investmentReport";
 
 const EXPORT_PAGE_SIZE=500;
 const MAX_EXPORT_ROWS=100_000;
@@ -28,7 +29,9 @@ export function buildRegisterCsv(transactions:readonly Transaction[],accounts:re
     const splits=transaction.splits?.map(item=>`${item.category}: ${minorToDecimal(item.amountMinor)}${item.memo?` (${item.memo})`:""}`).join(" | ")??"";
     return [transaction.postedDate,account?.name??"Missing account",account?.currency??"",transaction.payee,transaction.originalPayee??"",transaction.category,raw(minorToDecimal(transaction.amountMinor)),transaction.status,transaction.memo??"",transaction.source??"",transaction.externalId??"",transaction.importBatchId??"",transfer?.name??"",transaction.id,splits];
   });
-  return withBom([headers,...rows].map(csvRow).join("\r\n")+"\r\n");
+  return withBom([headers,...rows].map(csvRow).join("\r
+")+"\r
+");
 }
 
 export function buildReportCsv(input:{report:TransactionReport;currency:string;accountLabel:string;fromDate:string;toDate:string}):string{
@@ -45,7 +48,9 @@ export function buildReportCsv(input:{report:TransactionReport;currency:string;a
     ["Spending by payee"],["Payee","Amount","Transactions"],
     ...report.payees.map(item=>[item.label,raw(minorToDecimal(item.amountMinor)),raw(String(item.transactionCount))]),
   ];
-  return withBom(rows.map(csvRow).join("\r\n")+"\r\n");
+  return withBom(rows.map(csvRow).join("\r
+")+"\r
+");
 }
 
 export function buildInvestmentReportCsv(report:InvestmentReport):string{
@@ -53,7 +58,9 @@ export function buildInvestmentReportCsv(report:InvestmentReport):string{
  ...report.rows.map(item=>[item.symbol??item.securityName,item.accountName,raw(String(item.quantityE8/100000000)),item.priceE8===undefined?"":raw(String(item.priceE8/100000000)),item.priceObservedAt??"",item.marketValueMinor===undefined?"":raw(minorToDecimal(item.marketValueMinor)),raw(minorToDecimal(item.knownBasisMinor)),item.basisPartial?"Partial / Unknown":"Known",item.unrealizedGainMinor===undefined?"":raw(minorToDecimal(item.unrealizedGainMinor)),raw(minorToDecimal(item.realizedKnownBasisMinor)),raw(minorToDecimal(item.realizedProceedsMinor)),item.realizedPartial?"":raw(minorToDecimal(item.realizedGainMinor)),raw(minorToDecimal(item.realizedUnknownBasisProceedsMinor))]),[],
  ["Investment income"],["Dividends",raw(minorToDecimal(report.income.dividendMinor))],["Reinvested dividends (included above)",raw(minorToDecimal(report.income.reinvestedDividendMinor))],["Interest",raw(minorToDecimal(report.income.interestMinor))],["Return of capital (not income)",raw(minorToDecimal(report.income.returnOfCapitalMinor))],["Fees / commissions",raw(minorToDecimal(report.income.feesMinor))],[],
  ["Realized results through as-of"],["Known disposed basis",raw(minorToDecimal(report.realizedKnownBasisMinor))],["Calculable proceeds",raw(minorToDecimal(report.realizedProceedsMinor))],["Calculable gain/loss",report.realizedIncomplete?"":raw(minorToDecimal(report.realizedGainMinor))],["Unknown-basis proceeds",raw(minorToDecimal(report.realizedUnknownBasisProceedsMinor))]];
- return withBom(rows.map(csvRow).join("\r\n")+"\r\n");
+ return withBom(rows.map(csvRow).join("\r
+")+"\r
+");
 }
 
 export function exportFileName(prefix:string,fromDate?:string,toDate?:string):string{
