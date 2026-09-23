@@ -4,6 +4,9 @@ import {
   REGISTER_PAGE_SIZE,
   formatMoney,
   type Account,
+  type CreateTransactionInput,
+  type MerchantRuleInput,
+  type ScheduledTransactionInput,
   type Transaction,
   type TransactionStatus,
   type TransactionStatusFilter,
@@ -17,13 +20,22 @@ import {
   registerRunningBalances,
   registerShowsLedgerBalance,
 } from "./registerMath";
+import {
+  duplicateTransactionDraft,
+  merchantRuleDraftFromTransaction,
+  scheduledDraftFromTransaction,
+  transactionReuseEligibility,
+} from "./transactionReuse";
+import { todayIso } from "./scheduledPresentation";
 import "./register.css";
 import "./registerExport.css";
 
 export type RegisterDialogRequest =
-  | { kind: "transaction"; transaction?: Transaction; accountId?: string }
+  | { kind: "transaction"; transaction?: Transaction; accountId?: string; draft?: CreateTransactionInput }
   | { kind: "transfer"; transaction?: Transaction; accountId?: string }
-  | { kind: "reconciliation"; account: Account };
+  | { kind: "reconciliation"; account: Account }
+  | { kind: "schedule"; draft: ScheduledTransactionInput }
+  | { kind: "rule"; draft: MerchantRuleInput };
 
 interface AccountRegisterProps {
   accounts: Account[];
@@ -370,17 +382,20 @@ export function AccountRegister({
                         </td>
                       )}
                       <td>
-                        <button
-                          className="edit-transaction"
-                          onClick={() =>
-                            onRequestDialog({
-                              kind: transaction.transferLinkId ? "transfer" : "transaction",
-                              transaction,
-                            })
-                          }
-                        >
-                          {transaction.transferLinkId ? "Transfer" : "Edit"}
-                        </button>
+                        <div className="register-row-actions">
+                          <button
+                            className="edit-transaction"
+                            onClick={() =>
+                              onRequestDialog({
+                                kind: transaction.transferLinkId ? "transfer" : "transaction",
+                                transaction,
+                              })
+                            }
+                          >
+                            {transaction.transferLinkId ? "Transfer" : "Edit"}
+                          </button>
+                          <ReuseActions transaction={transaction} accounts={accounts} onRequestDialog={onRequestDialog} />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -398,6 +413,69 @@ export function AccountRegister({
         )}
       </section>
     </div>
+  );
+}
+
+function ReuseActions({
+  transaction,
+  accounts,
+  onRequestDialog,
+}: {
+  transaction: Transaction;
+  accounts: Account[];
+  onRequestDialog: (request: RegisterDialogRequest) => void;
+}) {
+  const eligibility = transactionReuseEligibility(transaction, accounts);
+  const today = todayIso();
+
+  return (
+    <>
+      <button
+        type="button"
+        className="reuse-action"
+        disabled={!eligibility.duplicate.allowed}
+        title={eligibility.duplicate.reason ?? "Create a new transaction from this one"}
+        onClick={() => {
+          try {
+            onRequestDialog({ kind: "transaction", draft: duplicateTransactionDraft(transaction, today) });
+          } catch (reason) {
+            window.alert(reason instanceof Error ? reason.message : String(reason));
+          }
+        }}
+      >
+        Duplicate
+      </button>
+      <button
+        type="button"
+        className="reuse-action"
+        disabled={!eligibility.recurring.allowed}
+        title={eligibility.recurring.reason ?? "Create a scheduled transaction from this one"}
+        onClick={() => {
+          try {
+            onRequestDialog({ kind: "schedule", draft: scheduledDraftFromTransaction(transaction, accounts, today) });
+          } catch (reason) {
+            window.alert(reason instanceof Error ? reason.message : String(reason));
+          }
+        }}
+      >
+        Make recurring
+      </button>
+      <button
+        type="button"
+        className="reuse-action"
+        disabled={!eligibility.rule.allowed}
+        title={eligibility.rule.reason ?? "Create an import merchant rule from this description"}
+        onClick={() => {
+          try {
+            onRequestDialog({ kind: "rule", draft: merchantRuleDraftFromTransaction(transaction) });
+          } catch (reason) {
+            window.alert(reason instanceof Error ? reason.message : String(reason));
+          }
+        }}
+      >
+        Create rule
+      </button>
+    </>
   );
 }
 

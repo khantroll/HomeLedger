@@ -171,4 +171,79 @@ describe("AccountRegister", () => {
     expect(repositoryModule.financeRepository.listTransactionsPage).toHaveBeenLastCalledWith(expect.objectContaining({offset:0,limit:500,newest:false,status:"review",search:"Warehouse"}));
     expect((await screen.findByRole("status")).textContent).toContain("Exported 3 matching transactions");
   });
+
+  it("routes eligible reuse actions into prepared editor drafts", async () => {
+    const user = userEvent.setup();
+    const onRequestDialog = vi.fn();
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={onRequestDialog} />);
+    const utilityRow = (await screen.findByText("Utility")).closest("tr")!;
+    await user.click(within(utilityRow).getByRole("button", { name: "Duplicate" }));
+    expect(onRequestDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "transaction",
+        draft: expect.objectContaining({
+          accountId: "checking",
+          payee: "Utility",
+          category: "Housing",
+          amountMinor: -2500,
+          status: "cleared",
+        }),
+      }),
+    );
+    expect(onRequestDialog.mock.calls.at(-1)![0].draft).not.toHaveProperty("id");
+
+    await user.click(within(utilityRow).getByRole("button", { name: "Make recurring" }));
+    expect(onRequestDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "schedule",
+        draft: expect.objectContaining({
+          kind: "transaction",
+          accountId: "checking",
+          payee: "Utility",
+          category: "Housing",
+          amountMinor: -2500,
+          frequency: "monthly",
+          autoPost: false,
+          status: "pending",
+        }),
+      }),
+    );
+
+    await user.click(within(utilityRow).getByRole("button", { name: "Create rule" }));
+    expect(onRequestDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "rule",
+        draft: expect.objectContaining({
+          name: "Utility rule",
+          pattern: "Utility",
+          matchType: "contains",
+          direction: "expense",
+          renameTo: "Utility",
+          category: "Housing",
+          priority: 100,
+          enabled: true,
+        }),
+      }),
+    );
+  });
+
+  it("disables reusable actions according to transactionReuseEligibility", async () => {
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    const transferRow = (await screen.findByText("Transfer to savings")).closest("tr")!;
+    const transferDuplicate = within(transferRow).getByRole("button", { name: "Duplicate" });
+    const transferRecurring = within(transferRow).getByRole("button", { name: "Make recurring" });
+    const transferRule = within(transferRow).getByRole("button", { name: "Create rule" });
+    expect(transferDuplicate).toBeDisabled();
+    expect(transferDuplicate).toHaveAttribute("title", expect.stringMatching(/stay paired/i));
+    expect(transferRecurring).not.toBeDisabled();
+    expect(transferRule).toBeDisabled();
+    expect(transferRule).toHaveAttribute("title", expect.stringMatching(/merchant import rules/i));
+
+    const splitRow = screen.getByText("Warehouse Club").closest("tr")!;
+    expect(within(splitRow).getByRole("button", { name: "Duplicate" })).not.toBeDisabled();
+    const splitRecurring = within(splitRow).getByRole("button", { name: "Make recurring" });
+    expect(splitRecurring).toBeDisabled();
+    expect(splitRecurring).toHaveAttribute("title", expect.stringMatching(/cannot preserve split/i));
+    expect(within(splitRow).getByRole("button", { name: "Create rule" })).not.toBeDisabled();
+  });
 });
