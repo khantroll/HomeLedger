@@ -230,20 +230,20 @@ describe("AccountRegister", () => {
   it("disables reusable actions according to transactionReuseEligibility", async () => {
     render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
     const transferRow = (await screen.findByText("Transfer to savings")).closest("tr")!;
-    const transferDuplicate = within(transferRow).getByRole("button", { name: "Duplicate" });
-    const transferRecurring = within(transferRow).getByRole("button", { name: "Make recurring" });
-    const transferRule = within(transferRow).getByRole("button", { name: "Create rule" });
-    expect(transferDuplicate).toBeDisabled();
-    expect(transferDuplicate).toHaveAttribute("title", expect.stringMatching(/stay paired/i));
-    expect(transferRecurring).not.toBeDisabled();
-    expect(transferRule).toBeDisabled();
-    expect(transferRule).toHaveAttribute("title", expect.stringMatching(/merchant import rules/i));
+    const transferDuplicate = within(transferRow).getByRole("button", { name: "Duplicate" }) as HTMLButtonElement;
+    const transferRecurring = within(transferRow).getByRole("button", { name: "Make recurring" }) as HTMLButtonElement;
+    const transferRule = within(transferRow).getByRole("button", { name: "Create rule" }) as HTMLButtonElement;
+    expect(transferDuplicate.disabled).toBe(true);
+    expect(transferDuplicate.title).toMatch(/stay paired/i);
+    expect(transferRecurring.disabled).toBe(false);
+    expect(transferRule.disabled).toBe(true);
+    expect(transferRule.title).toMatch(/merchant import rules/i);
 
     const splitRow = screen.getByText("Warehouse Club").closest("tr")!;
-    expect(within(splitRow).getByRole("button", { name: "Duplicate" })).not.toBeDisabled();
-    const splitRecurring = within(splitRow).getByRole("button", { name: "Make recurring" });
-    expect(splitRecurring).toBeDisabled();
-    expect(splitRecurring).toHaveAttribute("title", expect.stringMatching(/cannot preserve split/i));
-    expect(within(splitRow).getByRole("button", { name: "Create rule" })).not.toBeDisabled();
+    expect((within(splitRow).getByRole("button", { name: "Duplicate" }) as HTMLButtonElement).disabled).toBe(false);
+    const splitRecurring = within(splitRow).getByRole("button", { name: "Make recurring" }) as HTMLButtonElement;
+    expect(splitRecurring.disabled).toBe(true);
+    expect(splitRecurring.title).toMatch(/cannot preserve split/i);
+    expect((within(splitRow).getByRole("button", { name: "Create rule" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
