@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
-import { formatMoney, parseMoney, type Account, type AccountType, type BudgetMonth, type CreateTransactionInput, type MerchantRuleInput, type ScheduledOccurrence, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction } from "./domain";
+import { formatMoney, parseMoney, type Account, type AccountType, type BudgetMonth, type CreateTransactionInput, type MerchantRuleInput, type ScheduledOccurrence, type ScheduledTransaction, type ScheduledTransactionInput, type Security, type Transaction } from "./domain";
 import { financeRepository as repository, investmentRepository, isNativeApp } from "./repository";
 import { calculateHouseholdValuation, householdCurrencies } from "./householdValuation";
 import type { PortfolioSnapshot } from "./domain";
@@ -26,6 +26,8 @@ import "./overviewCommand.css";
 import "./onboarding.css";
 import { PortfolioPage } from "./PortfolioPage";
 import { InvestmentAccountDialog } from "./InvestmentEditors";
+import { FinancialFindDialog } from "./FinancialFindDialog";
+import type { FinancialFindResult } from "./financialFind";
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -47,6 +49,8 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [scheduledTemplates, setScheduledTemplates] = useState<ScheduledTransaction[]>([]);
   const [scheduledOccurrences, setScheduledOccurrences] = useState<ScheduledOccurrence[]>([]);
+  const [findSecurities, setFindSecurities] = useState<Security[]>([]);
+  const [findOpen, setFindOpen] = useState(false);
   const [overviewBudgets, setOverviewBudgets] = useState<BudgetMonth[]>([]);
   const [active, setActive] = useState("Overview");
   const [navigationIntent, setNavigationIntent] = useState<NavigationIntent>();
@@ -77,6 +81,7 @@ export default function App() {
       setScheduledTemplates(nextTemplates);
       setScheduledOccurrences(nextOccurrences);
       setOverviewBudgets(nextBudgets);
+      if(isNativeApp) investmentRepository.listSecurities(true).then(setFindSecurities).catch(()=>setFindSecurities([]));
       setRegisterToken((value) => value + 1);
       setError("");
     } catch (reason) {
@@ -100,6 +105,37 @@ export default function App() {
   useEffect(() => { if (active !== "Overview") return; const ids=activeAccounts.filter(a=>a.type==="investment").map(a=>a.id); if(!ids.length){setOverviewPortfolio({asOfDate:todayIso(),accounts:[]});return;} let cancelled=false; investmentRepository.calculatePortfolioSnapshot(ids,todayIso()).then(value=>{if(!cancelled)setOverviewPortfolio(value);}).catch(reason=>{if(!cancelled){setOverviewPortfolio(undefined);setError(reason instanceof Error?reason.message:String(reason));}}); return()=>{cancelled=true}; }, [active, activeAccounts]);
   const household = useMemo(() => calculateHouseholdValuation(activeAccounts, overviewPortfolio, valuationCurrency || valuationCurrencies[0] || "USD"), [activeAccounts, overviewPortfolio, valuationCurrency, valuationCurrencies]);
   const reviewCount = useMemo(() => transactions.filter((item) => item.status === "review").length, [transactions]);
+
+
+  useEffect(() => {
+    const openFind = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "f" || event.key.toLowerCase() === "k")) {
+        event.preventDefault();
+        setFindOpen(true);
+      }
+    };
+    window.addEventListener("keydown", openFind);
+    return () => window.removeEventListener("keydown", openFind);
+  }, []);
+
+  function openFindResult(result: FinancialFindResult) {
+    setFindOpen(false);
+    if(result.kind==="transaction"){
+      const source=transactions.find(item=>item.id===result.transactionId);
+      const account=accounts.find(item=>item.id===result.accountId);
+      if(account?.archived){ setActive("Reports"); setNavigationIntent(undefined); return; }
+      setRegisterAccountId(undefined);
+      setNavigationIntent({page:"Transactions",status:"all",accountId:result.accountId,search:source?.payee??result.title,transactionId:result.transactionId});
+      setActive("Transactions");
+      return;
+    }
+    if(result.kind==="schedule"){
+      const due=scheduledOccurrences.filter(item=>item.scheduledTransactionId===result.templateId&&item.status==="expected").sort((a,b)=>a.dueDate.localeCompare(b.dueDate))[0]?.dueDate??result.dueDate??todayIso();
+      setNavigationIntent({page:"Bills",focus:{kind:"day",dueDate:due}});setActive("Bills");setRegisterAccountId(undefined);return;
+    }
+    if(result.kind==="account"){openAccountDestination(result.accountId);return;}
+    setNavigationIntent({page:"Portfolio",focus:{accountId:result.accountId,securityId:result.securityId}});setActive("Portfolio");setRegisterAccountId(undefined);
+  }
 
   function openNav(label: string, intent?: NavigationIntent) {
     setActive(label);
@@ -172,6 +208,7 @@ export default function App() {
             <h1>{active}</h1>
             <p>{new Intl.DateTimeFormat("en-US", { dateStyle: "full" }).format(new Date())}</p>
           </div>
+          <button type="button" className="search" onClick={()=>setFindOpen(true)} aria-label="Open Financial Find"><Search size={16}/><span>Financial Find</span><kbd>Ctrl K</kbd></button>
           {topbarSearchVisible && (
             <label className="search">
               <Search size={16} />
@@ -216,7 +253,7 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <AccountRegister accounts={activeAccounts} initialStatus={navigationIntent?.page==="Transactions"?navigationIntent.status:"all"} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
+              <AccountRegister accounts={activeAccounts} initialAccountId={navigationIntent?.page==="Transactions"?navigationIntent.accountId:undefined} initialStatus={navigationIntent?.page==="Transactions"?navigationIntent.status:"all"} initialSearch={navigationIntent?.page==="Transactions"?navigationIntent.search:undefined} focusTransactionId={navigationIntent?.page==="Transactions"?navigationIntent.transactionId:undefined} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
             </>
           ) : active === "Accounts" ? (
             <>
@@ -385,6 +422,7 @@ export default function App() {
           }}
         />
       )}
+      {findOpen&&<FinancialFindDialog accounts={accounts} transactions={transactions} schedules={scheduledTemplates} securities={findSecurities} onClose={()=>setFindOpen(false)} onSelect={openFindResult}/>}
     </div>
   );
 }
