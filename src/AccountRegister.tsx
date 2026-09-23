@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowLeftRight, ChevronLeft, Download, Scale, Search } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { ArrowLeftRight, ChevronLeft, Download, MoreHorizontal, Scale, Search } from "lucide-react";
 import {
   REGISTER_PAGE_SIZE,
   formatMoney,
   type Account,
+  type CreateTransactionInput,
+  type MerchantRuleInput,
+  type ScheduledTransactionInput,
   type Transaction,
   type TransactionStatus,
   type TransactionStatusFilter,
@@ -17,13 +20,22 @@ import {
   registerRunningBalances,
   registerShowsLedgerBalance,
 } from "./registerMath";
+import {
+  duplicateTransactionDraft,
+  merchantRuleDraftFromTransaction,
+  scheduledDraftFromTransaction,
+  transactionReuseEligibility,
+} from "./transactionReuse";
+import { todayIso } from "./scheduledPresentation";
 import "./register.css";
 import "./registerExport.css";
 
 export type RegisterDialogRequest =
-  | { kind: "transaction"; transaction?: Transaction; accountId?: string }
+  | { kind: "transaction"; transaction?: Transaction; accountId?: string; draft?: CreateTransactionInput }
   | { kind: "transfer"; transaction?: Transaction; accountId?: string }
-  | { kind: "reconciliation"; account: Account };
+  | { kind: "reconciliation"; account: Account }
+  | { kind: "schedule"; draft: ScheduledTransactionInput }
+  | { kind: "rule"; draft: MerchantRuleInput };
 
 interface AccountRegisterProps {
   accounts: Account[];
@@ -370,17 +382,20 @@ export function AccountRegister({
                         </td>
                       )}
                       <td>
-                        <button
-                          className="edit-transaction"
-                          onClick={() =>
-                            onRequestDialog({
-                              kind: transaction.transferLinkId ? "transfer" : "transaction",
-                              transaction,
-                            })
-                          }
-                        >
-                          {transaction.transferLinkId ? "Transfer" : "Edit"}
-                        </button>
+                        <div className="register-row-actions">
+                          <button
+                            className="edit-transaction"
+                            onClick={() =>
+                              onRequestDialog({
+                                kind: transaction.transferLinkId ? "transfer" : "transaction",
+                                transaction,
+                              })
+                            }
+                          >
+                            {transaction.transferLinkId ? "Transfer" : "Edit"}
+                          </button>
+                          <ReuseActions transaction={transaction} accounts={accounts} onRequestDialog={onRequestDialog} />
+                        </div>
                       </td>
                     </tr>
                   );
@@ -397,6 +412,134 @@ export function AccountRegister({
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+function ReuseActions({
+  transaction,
+  accounts,
+  onRequestDialog,
+}: {
+  transaction: Transaction;
+  accounts: Account[];
+  onRequestDialog: (request: RegisterDialogRequest) => void;
+}) {
+  const eligibility = transactionReuseEligibility(transaction, accounts);
+  const today = todayIso();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const duplicateReasonId = useId();
+  const recurringReasonId = useId();
+  const ruleReasonId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  function runAction(action: () => void) {
+    try {
+      action();
+      setOpen(false);
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  return (
+    <div className="register-reuse-menu" ref={rootRef}>
+      <button
+        type="button"
+        className="reuse-more"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        aria-label="More transaction actions"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <MoreHorizontal size={14} aria-hidden="true" />
+        <span aria-hidden="true">More</span>
+      </button>
+      {open && (
+        <div className="register-reuse-popover" role="menu" id={menuId} aria-label="Transaction reuse actions">
+          <div className="reuse-menu-item-wrap">
+            <button
+              type="button"
+              role="menuitem"
+              className="reuse-action"
+              disabled={!eligibility.duplicate.allowed}
+              aria-describedby={!eligibility.duplicate.allowed && eligibility.duplicate.reason ? duplicateReasonId : undefined}
+              onClick={() =>
+                runAction(() =>
+                  onRequestDialog({ kind: "transaction", draft: duplicateTransactionDraft(transaction, today) }),
+                )
+              }
+            >
+              Duplicate
+            </button>
+            {!eligibility.duplicate.allowed && eligibility.duplicate.reason && (
+              <span id={duplicateReasonId} className="reuse-unavailable-reason" role="note">
+                {eligibility.duplicate.reason}
+              </span>
+            )}
+          </div>
+          <div className="reuse-menu-item-wrap">
+            <button
+              type="button"
+              role="menuitem"
+              className="reuse-action"
+              disabled={!eligibility.recurring.allowed}
+              aria-describedby={!eligibility.recurring.allowed && eligibility.recurring.reason ? recurringReasonId : undefined}
+              onClick={() =>
+                runAction(() =>
+                  onRequestDialog({ kind: "schedule", draft: scheduledDraftFromTransaction(transaction, accounts, today) }),
+                )
+              }
+            >
+              Make recurring
+            </button>
+            {!eligibility.recurring.allowed && eligibility.recurring.reason && (
+              <span id={recurringReasonId} className="reuse-unavailable-reason" role="note">
+                {eligibility.recurring.reason}
+              </span>
+            )}
+          </div>
+          <div className="reuse-menu-item-wrap">
+            <button
+              type="button"
+              role="menuitem"
+              className="reuse-action"
+              disabled={!eligibility.rule.allowed}
+              aria-describedby={!eligibility.rule.allowed && eligibility.rule.reason ? ruleReasonId : undefined}
+              onClick={() =>
+                runAction(() =>
+                  onRequestDialog({ kind: "rule", draft: merchantRuleDraftFromTransaction(transaction) }),
+                )
+              }
+            >
+              Create rule
+            </button>
+            {!eligibility.rule.allowed && eligibility.rule.reason && (
+              <span id={ruleReasonId} className="reuse-unavailable-reason" role="note">
+                {eligibility.rule.reason}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

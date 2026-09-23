@@ -78,7 +78,7 @@ export function BillsPage({accounts,transactions,templates,occurrences,onChanged
   </div>;
 }
 
-function ScheduleDialog({accounts,template,draft,onClose,onSaved}:{accounts:Account[];template?:ScheduledTransaction;draft?:ScheduledTransactionInput;onClose:()=>void;onSaved:()=>Promise<void>}){
+export function ScheduleDialog({accounts,template,draft,onClose,onSaved}:{accounts:Account[];template?:ScheduledTransaction;draft?:ScheduledTransactionInput;onClose:()=>void;onSaved:()=>Promise<void>}){
   const suggestions=useLedgerSuggestions();
   const seed=template??draft;
   const [frequency,setFrequency]=useState<RecurrenceFrequency>(seed?.frequency??"monthly");

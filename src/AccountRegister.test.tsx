@@ -171,4 +171,100 @@ describe("AccountRegister", () => {
     expect(repositoryModule.financeRepository.listTransactionsPage).toHaveBeenLastCalledWith(expect.objectContaining({offset:0,limit:500,newest:false,status:"review",search:"Warehouse"}));
     expect((await screen.findByRole("status")).textContent).toContain("Exported 3 matching transactions");
   });
+
+  it("routes eligible reuse actions into prepared editor drafts", async () => {
+    const user = userEvent.setup();
+    const onRequestDialog = vi.fn();
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={onRequestDialog} />);
+    const utilityRow = (await screen.findByText("Utility")).closest("tr")!;
+    expect(within(utilityRow).queryByRole("button", { name: "Duplicate" })).toBeNull();
+    expect(within(utilityRow).getByRole("button", { name: "Edit" })).toBeTruthy();
+
+    await user.click(within(utilityRow).getByRole("button", { name: "More transaction actions" }));
+    const menu = within(utilityRow).getByRole("menu", { name: "Transaction reuse actions" });
+    await user.click(within(menu).getByRole("menuitem", { name: "Duplicate" }));
+    expect(onRequestDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "transaction",
+        draft: expect.objectContaining({
+          accountId: "checking",
+          payee: "Utility",
+          category: "Housing",
+          amountMinor: -2500,
+          status: "cleared",
+        }),
+      }),
+    );
+    expect(onRequestDialog.mock.calls.at(-1)![0].draft).not.toHaveProperty("id");
+
+    await user.click(within(utilityRow).getByRole("button", { name: "More transaction actions" }));
+    await user.click(within(utilityRow).getByRole("menuitem", { name: "Make recurring" }));
+    expect(onRequestDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "schedule",
+        draft: expect.objectContaining({
+          kind: "transaction",
+          accountId: "checking",
+          payee: "Utility",
+          category: "Housing",
+          amountMinor: -2500,
+          frequency: "monthly",
+          autoPost: false,
+          status: "pending",
+        }),
+      }),
+    );
+
+    await user.click(within(utilityRow).getByRole("button", { name: "More transaction actions" }));
+    await user.click(within(utilityRow).getByRole("menuitem", { name: "Create rule" }));
+    expect(onRequestDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "rule",
+        draft: expect.objectContaining({
+          name: "Utility rule",
+          pattern: "Utility",
+          matchType: "contains",
+          direction: "expense",
+          renameTo: "Utility",
+          category: "Housing",
+          priority: 100,
+          enabled: true,
+        }),
+      }),
+    );
+  });
+
+  it("keeps reuse actions in a compact menu and surfaces unavailable reasons accessibly", async () => {
+    const user = userEvent.setup();
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    const transferRow = (await screen.findByText("Transfer to savings")).closest("tr")!;
+    expect(within(transferRow).queryByRole("button", { name: "Duplicate" })).toBeNull();
+    expect(within(transferRow).getByRole("button", { name: "Transfer" })).toBeTruthy();
+
+    await user.click(within(transferRow).getByRole("button", { name: "More transaction actions" }));
+    const transferMenu = within(transferRow).getByRole("menu", { name: "Transaction reuse actions" });
+    const transferDuplicate = within(transferMenu).getByRole("menuitem", { name: "Duplicate" }) as HTMLButtonElement;
+    const transferRecurring = within(transferMenu).getByRole("menuitem", { name: "Make recurring" }) as HTMLButtonElement;
+    const transferRule = within(transferMenu).getByRole("menuitem", { name: "Create rule" }) as HTMLButtonElement;
+    expect(transferDuplicate.disabled).toBe(true);
+    expect(transferDuplicate.getAttribute("aria-describedby")).toBeTruthy();
+    expect(within(transferMenu).getByText(/stay paired/i)).toBeTruthy();
+    expect(transferDuplicate.title || "").not.toMatch(/stay paired/i);
+    expect(transferRecurring.disabled).toBe(false);
+    expect(transferRule.disabled).toBe(true);
+    expect(within(transferMenu).getByText(/merchant import rules/i)).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(within(transferRow).queryByRole("menu")).toBeNull();
+
+    const splitRow = screen.getByText("Warehouse Club").closest("tr")!;
+    await user.click(within(splitRow).getByRole("button", { name: "More transaction actions" }));
+    const splitMenu = within(splitRow).getByRole("menu", { name: "Transaction reuse actions" });
+    expect((within(splitMenu).getByRole("menuitem", { name: "Duplicate" }) as HTMLButtonElement).disabled).toBe(false);
+    const splitRecurring = within(splitMenu).getByRole("menuitem", { name: "Make recurring" }) as HTMLButtonElement;
+    expect(splitRecurring.disabled).toBe(true);
+    expect(within(splitMenu).getByText(/cannot preserve split/i)).toBeTruthy();
+    expect(splitRecurring.getAttribute("aria-describedby")).toBeTruthy();
+    expect((within(splitMenu).getByRole("menuitem", { name: "Create rule" }) as HTMLButtonElement).disabled).toBe(false);
+  });
 });

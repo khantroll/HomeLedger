@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
-import { formatMoney, parseMoney, type Account, type AccountType, type BudgetMonth, type ScheduledOccurrence, type ScheduledTransaction, type Transaction } from "./domain";
+import { formatMoney, parseMoney, type Account, type AccountType, type BudgetMonth, type CreateTransactionInput, type MerchantRuleInput, type ScheduledOccurrence, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction } from "./domain";
 import { financeRepository as repository, investmentRepository, isNativeApp } from "./repository";
 import { calculateHouseholdValuation, householdCurrencies } from "./householdValuation";
 import type { PortfolioSnapshot } from "./domain";
@@ -11,8 +11,8 @@ import { TransferDialog } from "./TransferDialog";
 import { ReconciliationDialog } from "./ReconciliationDialog";
 import "./register.css";
 import "./accountLifecycle.css";
-import { RulesPage } from "./RulesPage";
-import { BillsPage, type BillsNavigationFocus } from "./BillsPage";
+import { RuleDialog, RulesPage } from "./RulesPage";
+import { BillsPage, ScheduleDialog, type BillsNavigationFocus } from "./BillsPage";
 import { BudgetPage } from "./BudgetPage";
 import { ForecastPage } from "./ForecastPage";
 import { ReportsPage } from "./ReportsPage";
@@ -36,9 +36,11 @@ type NavigationIntent =
 type EditorDialog =
   | { kind: "account"; account?: Account }
   | { kind: "investmentAccount" }
-  | { kind: "transaction"; transaction?: Transaction; accountId?: string }
+  | { kind: "transaction"; transaction?: Transaction; accountId?: string; draft?: CreateTransactionInput }
   | { kind: "transfer"; transaction?: Transaction; accountId?: string }
   | { kind: "reconciliation"; account: Account }
+  | { kind: "schedule"; draft: ScheduledTransactionInput }
+  | { kind: "rule"; draft: MerchantRuleInput }
   | null;
 
 const navItems = [
@@ -337,6 +339,7 @@ export default function App() {
         <TransactionDialog
           accounts={activeAccounts}
           transaction={dialog.transaction}
+          draft={dialog.draft}
           defaultAccountId={dialog.accountId}
           onClose={() => setDialog(null)}
           onSaved={async () => {
@@ -360,6 +363,27 @@ export default function App() {
       {dialog?.kind === "reconciliation" && (
         <ReconciliationDialog
           account={dialog.account}
+          onClose={() => setDialog(null)}
+          onSaved={async () => {
+            setDialog(null);
+            await refresh();
+          }}
+        />
+      )}
+      {dialog?.kind === "schedule" && (
+        <ScheduleDialog
+          accounts={activeAccounts}
+          draft={dialog.draft}
+          onClose={() => setDialog(null)}
+          onSaved={async () => {
+            setDialog(null);
+            await refresh();
+          }}
+        />
+      )}
+      {dialog?.kind === "rule" && (
+        <RuleDialog
+          draft={dialog.draft}
           onClose={() => setDialog(null)}
           onSaved={async () => {
             setDialog(null);

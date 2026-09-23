@@ -1,19 +1,20 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Plus, Trash2, X } from "lucide-react";
-import { formatMoney, parseMoney, sumMoney, type Account, type CreateTransactionSplit, type Transaction, type TransactionSplit, type TransactionStatus } from "./domain";
+import { formatMoney, parseMoney, sumMoney, type Account, type CreateTransactionInput, type CreateTransactionSplit, type Transaction, type TransactionSplit, type TransactionStatus } from "./domain";
 import { financeRepository as repository } from "./repository";
 import { SuggestionLists, useLedgerSuggestions } from "./useLedgerSuggestions";
 import "./transactionEditor.css";
 
 interface SplitDraft { key:string; category:string; direction:"expense"|"income"; amount:string; memo:string; }
 
-export function TransactionDialog({accounts,transaction,defaultAccountId,onClose,onSaved}:{accounts:Account[];transaction?:Transaction;defaultAccountId?:string;onClose:()=>void;onSaved:()=>Promise<void>}) {
+export function TransactionDialog({accounts,transaction,draft,defaultAccountId,onClose,onSaved}:{accounts:Account[];transaction?:Transaction;draft?:CreateTransactionInput;defaultAccountId?:string;onClose:()=>void;onSaved:()=>Promise<void>}) {
   const suggestions=useLedgerSuggestions();
   const [error,setError]=useState("");
   const [saving,setSaving]=useState(false);
   const [confirmDelete,setConfirmDelete]=useState(false);
-  const [splitMode,setSplitMode]=useState(Boolean(transaction?.splits?.length));
-  const [splits,setSplits]=useState<SplitDraft[]>(()=>transaction?.splits?.map(toDraft)??[]);
+  const seed=transaction??draft;
+  const [splitMode,setSplitMode]=useState(Boolean(seed?.splits?.length));
+  const [splits,setSplits]=useState<SplitDraft[]>(()=>seed?.splits?.map(toDraft)??[]);
   const splitTotal=useMemo(()=>{
     try{return sumMoney(splits.map(split=>signedAmount(split)));}catch{return null;}
   },[splits]);
@@ -65,16 +66,16 @@ export function TransactionDialog({accounts,transaction,defaultAccountId,onClose
   }
 
   const imported=Boolean(transaction?.importBatchId);
-  const defaultDirection=transaction&&transaction.amountMinor>=0?"income":"expense";
-  const defaultAmount=transaction?(Math.abs(transaction.amountMinor)/100).toFixed(2):"";
-  return <div className="dialog-backdrop" role="presentation" onMouseDown={event=>{if(event.currentTarget===event.target)onClose();}}><section className="dialog transaction-dialog" role="dialog" aria-modal="true" aria-labelledby="transaction-title"><div className="dialog-header"><h2 id="transaction-title">{transaction?"Edit transaction":"New transaction"}</h2><button onClick={onClose} aria-label="Close"><X size={18}/></button></div><form onSubmit={submit} className="entry-form transaction-form">
-    <label>Account<select name={imported?undefined:"accountId"} defaultValue={transaction?.accountId??defaultAccountId??accounts[0]?.id} disabled={imported}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select>{imported&&<input type="hidden" name="accountId" value={transaction?.accountId}/>}</label>
-    <div className="form-row"><label>Date<input name="date" type="date" defaultValue={transaction?.postedDate??new Date().toISOString().slice(0,10)} required/></label>{!splitMode&&<label>Type<select name="direction" defaultValue={defaultDirection}><option value="expense">Expense</option><option value="income">Income</option></select></label>}</div>
-    <label>Payee<input name="payee" list={suggestions.payeeListId} defaultValue={transaction?.payee} required maxLength={160} autoFocus/></label>
-    {!splitMode?<div className="form-row"><label>Category<input name="category" list={suggestions.categoryListId} defaultValue={transaction?.category??"Uncategorized"} required maxLength={120}/></label><label>Amount<input name="amount" inputMode="decimal" defaultValue={defaultAmount} placeholder="0.00" required/></label></div>:<section className="split-editor"><div className="split-heading"><div><strong>Transaction splits</strong><small>Each line has its own income/expense direction.</small></div><button type="button" onClick={()=>setSplits(current=>[...current,blankSplit()])}><Plus size={13}/> Add line</button></div>{splits.map((split,index)=><div className="split-row" key={split.key}><label>Category<input list={suggestions.categoryListId} value={split.category} onChange={event=>updateSplit(split.key,{category:event.target.value})} maxLength={120} placeholder={`Split ${index+1}`}/></label><label>Type<select value={split.direction} onChange={event=>updateSplit(split.key,{direction:event.target.value as SplitDraft["direction"]})}><option value="expense">Expense</option><option value="income">Income</option></select></label><label>Amount<input value={split.amount} onChange={event=>updateSplit(split.key,{amount:event.target.value})} inputMode="decimal" placeholder="0.00"/></label><label>Memo<input value={split.memo} onChange={event=>updateSplit(split.key,{memo:event.target.value})} maxLength={500}/></label><button type="button" className="split-remove" onClick={()=>setSplits(current=>current.filter(item=>item.key!==split.key))} aria-label={`Remove split ${index+1}`}><Trash2 size={14}/></button></div>)}<div className="split-total"><span>Calculated transaction total</span><strong className={(splitTotal??0)<0?"negative":""}>{splitTotal===null?"Check split amounts":formatMoney(splitTotal)}</strong></div></section>}
+  const defaultDirection=seed&&seed.amountMinor>=0?"income":"expense";
+  const defaultAmount=seed?(Math.abs(seed.amountMinor)/100).toFixed(2):"";
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={event=>{if(event.currentTarget===event.target)onClose();}}><section className="dialog transaction-dialog" role="dialog" aria-modal="true" aria-labelledby="transaction-title"><div className="dialog-header"><h2 id="transaction-title">{transaction?"Edit transaction":draft?"Duplicate transaction":"New transaction"}</h2><button onClick={onClose} aria-label="Close"><X size={18}/></button></div><form onSubmit={submit} className="entry-form transaction-form">
+    <label>Account<select name={imported?undefined:"accountId"} defaultValue={seed?.accountId??defaultAccountId??accounts[0]?.id} disabled={imported}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select>{imported&&<input type="hidden" name="accountId" value={transaction?.accountId}/>}</label>
+    <div className="form-row"><label>Date<input name="date" type="date" defaultValue={seed?.postedDate??new Date().toISOString().slice(0,10)} required/></label>{!splitMode&&<label>Type<select name="direction" defaultValue={defaultDirection}><option value="expense">Expense</option><option value="income">Income</option></select></label>}</div>
+    <label>Payee<input name="payee" list={suggestions.payeeListId} defaultValue={seed?.payee} required maxLength={160} autoFocus/></label>
+    {!splitMode?<div className="form-row"><label>Category<input name="category" list={suggestions.categoryListId} defaultValue={seed?.category??"Uncategorized"} required maxLength={120}/></label><label>Amount<input name="amount" inputMode="decimal" defaultValue={defaultAmount} placeholder="0.00" required/></label></div>:<section className="split-editor"><div className="split-heading"><div><strong>Transaction splits</strong><small>Each line has its own income/expense direction.</small></div><button type="button" onClick={()=>setSplits(current=>[...current,blankSplit()])}><Plus size={13}/> Add line</button></div>{splits.map((split,index)=><div className="split-row" key={split.key}><label>Category<input list={suggestions.categoryListId} value={split.category} onChange={event=>updateSplit(split.key,{category:event.target.value})} maxLength={120} placeholder={`Split ${index+1}`}/></label><label>Type<select value={split.direction} onChange={event=>updateSplit(split.key,{direction:event.target.value as SplitDraft["direction"]})}><option value="expense">Expense</option><option value="income">Income</option></select></label><label>Amount<input value={split.amount} onChange={event=>updateSplit(split.key,{amount:event.target.value})} inputMode="decimal" placeholder="0.00"/></label><label>Memo<input value={split.memo} onChange={event=>updateSplit(split.key,{memo:event.target.value})} maxLength={500}/></label><button type="button" className="split-remove" onClick={()=>setSplits(current=>current.filter(item=>item.key!==split.key))} aria-label={`Remove split ${index+1}`}><Trash2 size={14}/></button></div>)}<div className="split-total"><span>Calculated transaction total</span><strong className={(splitTotal??0)<0?"negative":""}>{splitTotal===null?"Check split amounts":formatMoney(splitTotal)}</strong></div></section>}
     <button type="button" className="split-toggle" onClick={enableSplits}>{splitMode?"Use one category":"Split among categories"}</button>
-    <label>Status<select name="status" defaultValue={transaction?.status??"cleared"}><option value="pending">Pending</option><option value="cleared">Cleared</option>{transaction?.status==="reconciled"&&<option value="reconciled" disabled>Reconciled by statement</option>}<option value="review">Needs review</option></select></label>
-    <label>Memo<textarea name="memo" defaultValue={transaction?.memo} maxLength={500}/></label>
+    <label>Status<select name="status" defaultValue={seed?.status??"cleared"}><option value="pending">Pending</option><option value="cleared">Cleared</option>{transaction?.status==="reconciled"&&<option value="reconciled" disabled>Reconciled by statement</option>}<option value="review">Needs review</option></select></label>
+    <label>Memo<textarea name="memo" defaultValue={seed?.memo} maxLength={500}/></label>
     {imported&&<p className="imported-note">This transaction came from an import batch. You can edit it, but deletion stays with the complete-batch Undo command.</p>}
     {error&&<p className="form-error">{error}</p>}
     <div className="transaction-actions">{transaction&&!imported?<button type="button" className={confirmDelete?"danger-action":"delete-link"} disabled={saving} onClick={remove}>{confirmDelete?"Confirm permanent deletion":"Delete transaction"}</button>:<span/>}<div className="form-actions"><button type="button" onClick={onClose} disabled={saving}>Cancel</button><button className="primary" disabled={saving||Boolean(splitMode&&splitTotal===null)}>{saving?"Saving…":"Save"}</button></div></div>
@@ -84,5 +85,5 @@ export function TransactionDialog({accounts,transaction,defaultAccountId,onClose
 }
 
 function blankSplit():SplitDraft{return{key:crypto.randomUUID(),category:"",direction:"expense",amount:"",memo:""};}
-function toDraft(split:TransactionSplit):SplitDraft{return{key:split.id,category:split.category,direction:split.amountMinor>=0?"income":"expense",amount:(Math.abs(split.amountMinor)/100).toFixed(2),memo:split.memo??""};}
+function toDraft(split:TransactionSplit|CreateTransactionSplit):SplitDraft{return{key:"id" in split?split.id:crypto.randomUUID(),category:split.category,direction:split.amountMinor>=0?"income":"expense",amount:(Math.abs(split.amountMinor)/100).toFixed(2),memo:split.memo??""};}
 function signedAmount(split:SplitDraft):number{const amount=parseMoney(split.amount);return split.direction==="expense"?-Math.abs(amount):Math.abs(amount);}
