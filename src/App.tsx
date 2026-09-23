@@ -260,7 +260,7 @@ export default function App() {
               )}
                             <div className="overview-valuation-scope"><label>Household currency <select aria-label="Household valuation currency" value={household.currency} onChange={event=>setValuationCurrency(event.target.value)}>{valuationCurrencies.length?valuationCurrencies.map(currency=><option key={currency}>{currency}</option>):<option>USD</option>}</select></label>{household.incompleteInvestment&&<span className="notice">Net worth is incomplete because some investment holdings have no eligible price.</span>}</div>
               <div className="summary-grid">
-                <Summary label="Available cash" value={formatMoney(household.availableCashMinor,household.currency)} detail="Checking, savings, and cash" tone="positive" />
+                <Summary label="Available cash" value={formatMoney(household.availableCashMinor,household.currency)} detail="Positive checking, savings, and cash balances" tone="positive" />
                 <Summary label="Liabilities" value={formatMoney(Math.abs(household.liabilitiesMinor),household.currency)} detail="Credit and loan balances" tone="negative" />
                 <Summary label="Net worth" value={formatMoney(household.netWorthKnownMinor,household.currency)} detail={household.incompleteInvestment?`Known subtotal · ${household.unvaluedHoldingCount} unvalued investment${household.unvaluedHoldingCount===1?"":"s"}`:"Ordinary + investment value"} />
                 <Summary label="Needs review" value={String(reviewCount)} detail="Transactions requiring attention" tone="warning" />
@@ -679,7 +679,7 @@ export function OverviewCommandCenter({accounts,transactions,templates,occurrenc
   const activeTemplates=new Map(templates.filter(item=>item.enabled&&!item.archived).map(item=>[item.id,item]));
   const overdue=occurrences.filter(item=>item.status==="expected"&&item.dueDate<today&&activeTemplates.has(item.scheduledTransactionId));
   const dueAutoPost=occurrences.filter(item=>item.status==="expected"&&item.dueDate<=today&&activeTemplates.get(item.scheduledTransactionId)?.autoPost);
-  const dueSoon=occurrences.filter(item=>item.status==="expected"&&item.dueDate>=today&&item.dueDate<=addDaysIso(today,7)&&activeTemplates.has(item.scheduledTransactionId));
+  const dueSoon=occurrences.filter(item=>item.status==="expected"&&item.dueDate>=today&&item.dueDate<=addDaysIso(today,7)&&activeTemplates.has(item.scheduledTransactionId)&&!dueAutoPost.some(auto=>auto.id===item.id));
   const reviewCount=transactions.filter(item=>item.status==="review").length;
   const currency=accounts.find(item=>["checking","savings","cash"].includes(item.type))?.currency??accounts[0]?.currency??"USD";
   const hasCashAccounts=accounts.some(item=>["checking","savings","cash"].includes(item.type));

@@ -61,6 +61,15 @@ describe("Overview attention center",()=>{
     expect(onNavigate).toHaveBeenCalledWith({page:"Bills",focus:{kind:"day",dueDate:"2026-09-22"}});
   });
 
+  it("does not duplicate same-day auto-post items as quiet due-soon attention",()=>{
+    const templates:ScheduledTransaction[]=[{id:"utility",kind:"transaction",accountId:"checking",payee:"Utility",category:"Utilities",amountMinor:-1000,status:"pending",frequency:"monthly",anchorDate:"2026-09-20",enabled:true,autoPost:true}];
+    const occurrences:ScheduledOccurrence[]=[{id:"auto",scheduledTransactionId:"utility",dueDate:"2026-09-20",status:"expected"}];
+    const budgets:BudgetMonth[]=[{month:"2026-09",plannedMinor:10000,spentMinor:0,carryInMinor:0,availableMinor:10000,lines:[{id:"x",category:"Misc",rolloverEnabled:false,plannedMinor:10000,spentMinor:0,carryInMinor:0,availableMinor:10000}]}];
+    render(<OverviewCommandCenter accounts={[account]} transactions={[]} templates={templates} occurrences={occurrences} budgets={budgets} onNavigate={vi.fn()} today="2026-09-20"/>);
+    expect(screen.getByText("1 automatic posting is due")).toBeTruthy();
+    expect(screen.queryByText(/due soon/i)).toBeNull();
+  });
+
   it("does not treat archived or paused schedules as actionable attention",()=>{
     const templates:ScheduledTransaction[]=[
       {id:"old",kind:"transaction",accountId:"checking",payee:"Archived Bill",category:"Housing",amountMinor:-1000,status:"pending",frequency:"monthly",anchorDate:"2026-09-01",enabled:true,autoPost:false,archived:true},

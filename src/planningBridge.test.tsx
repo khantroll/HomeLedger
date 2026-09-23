@@ -59,14 +59,15 @@ describe("planning bridge navigation", () => {
         accounts={accounts}
         templates={templates}
         today="2026-09-18"
-        navigationFocus={{ horizonDays: 30, highlightDate: "2026-09-18" }}
+        navigationFocus={{ horizonDays: 30, highlightDate: "2026-09-25" }}
         onNavigate={onNavigate}
       />,
     );
     expect(await screen.findByRole("button", { name: "30d" })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: "30d" }).className).toContain("active"));
+    expect(await screen.findByText("Attention focus")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Open bills calendar" }));
-    expect(onNavigate).toHaveBeenCalledWith({ page: "Bills", focus: { kind: "day", dueDate: "2026-09-18" } });
+    expect(onNavigate).toHaveBeenCalledWith({ page: "Bills", focus: { kind: "day", dueDate: "2026-09-25" } });
     await user.click(screen.getByRole("button", { name: "Review this month’s budget" }));
     expect(onNavigate).toHaveBeenCalledWith({ page: "Budget", focus: { month: "2026-09" } });
   });
