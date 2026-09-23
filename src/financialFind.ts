@@ -57,7 +57,8 @@ export function financialFind(rawQuery:string,data:FinancialFindData):FinancialF
   }
 
   for(const security of data.securities){
-    const score=best(textScore(security.name,query),textScore(security.symbol,query)+5);
+    const symbolScore=textScore(security.symbol,query);
+    const score=best(textScore(security.name,query),symbolScore>0?symbolScore+5:0);
     if(score>0)results.push({kind:"security",id:`security:${security.id}`,title:security.name,detail:security.symbol??security.securityType,meta:security.archived?"Inactive security":"Security",securityId:security.id,accountId:data.securityAccountIds?.get(security.id),archived:security.archived,score});
   }
 
