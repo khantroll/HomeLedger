@@ -6,18 +6,20 @@ import { formatDate,nextExpectedOccurrence,occurrenceDisplayState,occurrenceStat
 import {detectSubscriptions,type SubscriptionCandidate} from "./subscriptionDetection";
 import {SuggestionLists,useLedgerSuggestions} from "./useLedgerSuggestions";
 import {calendarDays,monthBounds,monthLabel,shiftMonth} from "./billsCalendar";
+import type { BillsNavigationFocus, NavigationIntent } from "./navigationIntent";
 import "./bills.css";
 
-export type BillsNavigationFocus={kind:"overdue";dueDate:string}|{kind:"autoPost"};
+export type { BillsNavigationFocus };
 
-export function BillsPage({accounts,transactions,templates,occurrences,onChanged,onMonthChange,today=todayIso(),navigationFocus}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];onChanged:()=>Promise<void>;onMonthChange?:(fromDate:string,toDate:string)=>Promise<void>;today?:string;navigationFocus?:BillsNavigationFocus}){
+export function BillsPage({accounts,transactions,templates,occurrences,onChanged,onMonthChange,today=todayIso(),navigationFocus,onNavigate}:{accounts:Account[];transactions:Transaction[];templates:ScheduledTransaction[];occurrences:ScheduledOccurrence[];onChanged:()=>Promise<void>;onMonthChange?:(fromDate:string,toDate:string)=>Promise<void>;today?:string;navigationFocus?:BillsNavigationFocus;onNavigate?:(intent:NavigationIntent)=>void}){
   const [editing,setEditing]=useState<ScheduledTransaction|"new"|null>(null);
   const [confirmDelete,setConfirmDelete]=useState<string>();
   const [linking,setLinking]=useState<ScheduledOccurrence>();
   const [reviewingAutoPost,setReviewingAutoPost]=useState(navigationFocus?.kind==="autoPost");
   const [suggested,setSuggested]=useState<SubscriptionCandidate>();
-  const [calendarMonth,setCalendarMonth]=useState(navigationFocus?.kind==="overdue"?navigationFocus.dueDate.slice(0,7):today.slice(0,7));
-  const [selectedDate,setSelectedDate]=useState<string|undefined>(navigationFocus?.kind==="overdue"?navigationFocus.dueDate:undefined);
+  const initialFocusDate=navigationFocus&&("dueDate" in navigationFocus)?navigationFocus.dueDate:undefined;
+  const [calendarMonth,setCalendarMonth]=useState(initialFocusDate?.slice(0,7)??today.slice(0,7));
+  const [selectedDate,setSelectedDate]=useState<string|undefined>(initialFocusDate);
   const [error,setError]=useState("");
   const active=templates.filter(item=>!item.archived);
   const occurrenceRows=[...occurrences].sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
@@ -27,7 +29,12 @@ export function BillsPage({accounts,transactions,templates,occurrences,onChanged
   const subscriptionCandidates=useMemo(()=>detectSubscriptions(transactions,templates,today),[transactions,templates,today]);
 
   useEffect(()=>{if(!onMonthChange)return;const bounds=monthBounds(calendarMonth);void onMonthChange(bounds.fromDate,bounds.toDate).catch(reason=>setError(message(reason)));},[calendarMonth,onMonthChange]);
-  useEffect(()=>{if(navigationFocus?.kind==="overdue"){setCalendarMonth(navigationFocus.dueDate.slice(0,7));setSelectedDate(navigationFocus.dueDate);}else if(navigationFocus?.kind==="autoPost")setReviewingAutoPost(true);},[navigationFocus]);
+  useEffect(()=>{
+    if(navigationFocus?.kind==="overdue"||navigationFocus?.kind==="day"){
+      setCalendarMonth(navigationFocus.dueDate.slice(0,7));
+      setSelectedDate(navigationFocus.dueDate);
+    }else if(navigationFocus?.kind==="autoPost")setReviewingAutoPost(true);
+  },[navigationFocus]);
 
   function moveCalendar(offset:number){setCalendarMonth(value=>shiftMonth(value,offset));setSelectedDate(undefined);}
   function returnToToday(){setCalendarMonth(today.slice(0,7));setSelectedDate(today);}
@@ -47,7 +54,7 @@ export function BillsPage({accounts,transactions,templates,occurrences,onChanged
   async function act(action:()=>Promise<unknown>){setError("");try{await action();await changed();}catch(reason){setError(message(reason));}}
 
   return <div className="bills-page">
-    <section className="panel bills-intro"><div className="panel-heading"><div><h2>Scheduled transactions</h2><p>Bills, deposits, and transfers are planned here; balances change only after an explicit post or reviewed batch.</p></div><div className="bills-header-actions">{autoPostRows.length>0&&<button className="auto-post-action" onClick={()=>setReviewingAutoPost(true)}><CheckCircle2 size={14}/> Review auto-post ({autoPostRows.length})</button>}<button disabled={!accounts.length} onClick={()=>setEditing("new")}><Plus size={14}/> New schedule</button></div></div><div className="bills-explainer"><CalendarClock size={20}/><div><strong>Calendar planning without surprise posting</strong><span>Automatic posting is opt-in and always requires reviewing the exact due items before one atomic commit.</span></div></div></section>
+    <section className="panel bills-intro"><div className="panel-heading"><div><h2>Scheduled transactions</h2><p>Bills, deposits, and transfers are planned here; balances change only after an explicit post or reviewed batch.</p></div><div className="bills-header-actions">{onNavigate&&<button type="button" className="planning-bridge-link" onClick={()=>onNavigate({page:"Forecast",focus:{horizonDays:30}})}>See cash forecast</button>}{autoPostRows.length>0&&<button className="auto-post-action" onClick={()=>setReviewingAutoPost(true)}><CheckCircle2 size={14}/> Review auto-post ({autoPostRows.length})</button>}<button disabled={!accounts.length} onClick={()=>setEditing("new")}><Plus size={14}/> New schedule</button></div></div><div className="bills-explainer"><CalendarClock size={20}/><div><strong>Calendar planning without surprise posting</strong><span>Automatic posting is opt-in and always requires reviewing the exact due items before one atomic commit.</span></div></div></section>
     {error&&<div className="error-banner" role="alert">{error}</div>}
     <section className="panel bills-calendar-panel"><div className="panel-heading calendar-heading"><div><h2>{monthLabel(calendarMonth)}</h2><p>All scheduled bills, deposits, and transfers</p></div><div className="calendar-controls"><button aria-label="Previous month" onClick={()=>moveCalendar(-1)}><ChevronLeft size={14}/></button><button onClick={returnToToday}>Today</button><button aria-label="Next month" onClick={()=>moveCalendar(1)}><ChevronRight size={14}/></button></div></div>
       <div className="bills-calendar" role="grid" aria-label={`${monthLabel(calendarMonth)} scheduled transactions`}>

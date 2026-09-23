@@ -12,7 +12,7 @@ import { ReconciliationDialog } from "./ReconciliationDialog";
 import "./register.css";
 import "./accountLifecycle.css";
 import { RuleDialog, RulesPage } from "./RulesPage";
-import { BillsPage, ScheduleDialog, type BillsNavigationFocus } from "./BillsPage";
+import { BillsPage, ScheduleDialog } from "./BillsPage";
 import { BudgetPage } from "./BudgetPage";
 import { ForecastPage } from "./ForecastPage";
 import { ReportsPage } from "./ReportsPage";
@@ -21,17 +21,11 @@ import { AiInsightsPage } from "./AiInsightsPage";
 import { AccountRegister, type RegisterDialogRequest } from "./AccountRegister";
 import { addDaysIso, formatDate, occurrenceDisplayState, occurrenceStateLabel, todayIso } from "./scheduledPresentation";
 import {calculateCashFlowForecast,forecastMonths} from "./forecastMath";
+import type { NavigationIntent } from "./navigationIntent";
 import "./overviewCommand.css";
 import "./onboarding.css";
-import { PortfolioPage, type PortfolioNavigationFocus } from "./PortfolioPage";
+import { PortfolioPage } from "./PortfolioPage";
 import { InvestmentAccountDialog } from "./InvestmentEditors";
-
-type NavigationIntent =
-  | { page: "Transactions"; status: "review" }
-  | { page: "Bills"; focus: BillsNavigationFocus }
-  | { page: "Forecast" }
-  | { page: "Budget" }
-  | { page: "Portfolio"; focus?: PortfolioNavigationFocus };
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -201,11 +195,11 @@ export default function App() {
           ) : active === "Rules" ? (
             <RulesPage />
           ) : active === "Budget" ? (
-            <BudgetPage transactions={transactions} accounts={activeAccounts} />
+            <BudgetPage transactions={transactions} accounts={activeAccounts} navigationFocus={navigationIntent?.page==="Budget"?navigationIntent.focus:undefined} onNavigate={openIntent} />
           ) : active === "Bills" ? (
-            <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} onMonthChange={loadOccurrenceMonth} navigationFocus={navigationIntent?.page==="Bills"?navigationIntent.focus:undefined} />
+            <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} onMonthChange={loadOccurrenceMonth} navigationFocus={navigationIntent?.page==="Bills"?navigationIntent.focus:undefined} onNavigate={openIntent} />
           ) : active === "Forecast" ? (
-            <ForecastPage accounts={activeAccounts} templates={scheduledTemplates} />
+            <ForecastPage accounts={activeAccounts} templates={scheduledTemplates} navigationFocus={navigationIntent?.page==="Forecast"?navigationIntent.focus:undefined} onNavigate={openIntent} />
           ) : active === "Debt" ? (
             <DebtPage accounts={activeAccounts} />
           ) : active === "Reports" ? (
@@ -266,13 +260,13 @@ export default function App() {
               )}
                             <div className="overview-valuation-scope"><label>Household currency <select aria-label="Household valuation currency" value={household.currency} onChange={event=>setValuationCurrency(event.target.value)}>{valuationCurrencies.length?valuationCurrencies.map(currency=><option key={currency}>{currency}</option>):<option>USD</option>}</select></label>{household.incompleteInvestment&&<span className="notice">Net worth is incomplete because some investment holdings have no eligible price.</span>}</div>
               <div className="summary-grid">
-                <Summary label="Available cash" value={formatMoney(household.availableCashMinor,household.currency)} detail="Checking, savings, and cash" tone="positive" />
+                <Summary label="Available cash" value={formatMoney(household.availableCashMinor,household.currency)} detail="Positive checking, savings, and cash balances" tone="positive" />
                 <Summary label="Liabilities" value={formatMoney(Math.abs(household.liabilitiesMinor),household.currency)} detail="Credit and loan balances" tone="negative" />
                 <Summary label="Net worth" value={formatMoney(household.netWorthKnownMinor,household.currency)} detail={household.incompleteInvestment?`Known subtotal · ${household.unvaluedHoldingCount} unvalued investment${household.unvaluedHoldingCount===1?"":"s"}`:"Ordinary + investment value"} />
                 <Summary label="Needs review" value={String(reviewCount)} detail="Transactions requiring attention" tone="warning" />
               </div>
               <OverviewCommandCenter accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} onNavigate={openIntent}/>
-              <UpcomingScheduled accounts={activeAccounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} onOpenBills={()=>openNav("Bills")} />
+              <UpcomingScheduled accounts={activeAccounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} onNavigate={openIntent} />
               <section className="panel overview-accounts">
                 <div className="panel-heading">
                   <div>
@@ -595,12 +589,12 @@ export function UpcomingScheduled({
   accounts,
   templates,
   occurrences,
-  onOpenBills,
+  onNavigate,
 }: {
   accounts: Account[];
   templates: ScheduledTransaction[];
   occurrences: ScheduledOccurrence[];
-  onOpenBills?:()=>void;
+  onNavigate?: (intent: NavigationIntent) => void;
 }) {
   const today = todayIso();
   const rows = occurrences
@@ -610,14 +604,22 @@ export function UpcomingScheduled({
         templates.some((template) => template.id === item.scheduledTransactionId && template.enabled && !template.archived),
     )
     .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const openDay = (dueDate: string) => onNavigate?.({ page: "Bills", focus: { kind: "day", dueDate } });
+  const openCalendar = () => openDay(rows[0]?.dueDate ?? today);
   return (
     <section className="panel upcoming-widget">
       <div className="panel-heading">
         <div>
-          <h2>Upcoming</h2>
-          <p>All expected bills, deposits, and transfers in the planning window</p>
+          <h2>Coming up</h2>
+          <p>Expected bills, deposits, and transfers — open any row to see it on the Bills calendar</p>
         </div>
-        {onOpenBills?<button onClick={onOpenBills}><CalendarDays size={14}/> Open calendar</button>:<CalendarDays size={18} />}
+        {onNavigate ? (
+          <button type="button" onClick={openCalendar}>
+            <CalendarDays size={14} /> Open calendar
+          </button>
+        ) : (
+          <CalendarDays size={18} />
+        )}
       </div>
       {rows.length === 0 ? (
         <div className="empty-state">No scheduled events in the next 90 days.</div>
@@ -628,19 +630,42 @@ export function UpcomingScheduled({
             const account = accounts.find((item) => item.id === template.accountId);
             const destination = accounts.find((item) => item.id === template.transferAccountId);
             const state = occurrenceDisplayState(occurrence, today);
-            return (
-              <div className="upcoming-row" key={occurrence.id}>
+            const body = (
+              <>
                 <span>{formatDate(occurrence.dueDate)}</span>
                 <div>
                   <strong>{template.payee}</strong>
                   <small>
-                    {template.kind==="transfer"?<><ArrowLeftRight size={10}/> {account?.name} → {destination?.name}</>:<>{account?.name} · {template.category}</>}
+                    {template.kind === "transfer" ? (
+                      <>
+                        <ArrowLeftRight size={10} /> {account?.name} → {destination?.name}
+                      </>
+                    ) : (
+                      <>
+                        {account?.name} · {template.category}
+                      </>
+                    )}
                   </small>
                 </div>
-                <span className={template.kind==="transfer"?"amount":template.amountMinor < 0 ? "amount negative" : "amount positive"}>
+                <span className={template.kind === "transfer" ? "amount" : template.amountMinor < 0 ? "amount negative" : "amount positive"}>
                   {formatMoney(template.amountMinor, account?.currency)}
                 </span>
                 <span className={`occurrence-state ${state}`}>{occurrenceStateLabel(occurrence, today)}</span>
+              </>
+            );
+            return onNavigate ? (
+              <button
+                type="button"
+                className="upcoming-row upcoming-row-button"
+                key={occurrence.id}
+                onClick={() => openDay(occurrence.dueDate)}
+                aria-label={`Open ${template.payee} on ${formatDate(occurrence.dueDate)} on the bills calendar`}
+              >
+                {body}
+              </button>
+            ) : (
+              <div className="upcoming-row" key={occurrence.id}>
+                {body}
               </div>
             );
           })}
@@ -654,22 +679,54 @@ export function OverviewCommandCenter({accounts,transactions,templates,occurrenc
   const activeTemplates=new Map(templates.filter(item=>item.enabled&&!item.archived).map(item=>[item.id,item]));
   const overdue=occurrences.filter(item=>item.status==="expected"&&item.dueDate<today&&activeTemplates.has(item.scheduledTransactionId));
   const dueAutoPost=occurrences.filter(item=>item.status==="expected"&&item.dueDate<=today&&activeTemplates.get(item.scheduledTransactionId)?.autoPost);
+  const dueSoon=occurrences.filter(item=>item.status==="expected"&&item.dueDate>=today&&item.dueDate<=addDaysIso(today,7)&&activeTemplates.has(item.scheduledTransactionId)&&!dueAutoPost.some(auto=>auto.id===item.id));
   const reviewCount=transactions.filter(item=>item.status==="review").length;
   const currency=accounts.find(item=>["checking","savings","cash"].includes(item.type))?.currency??accounts[0]?.currency??"USD";
+  const hasCashAccounts=accounts.some(item=>["checking","savings","cash"].includes(item.type));
   const currentBudget=budgets.find(item=>item.month===today.slice(0,7));
   const forecast=calculateCashFlowForecast({today,horizonDays:30,currency,scenario:"expected",accounts,templates,occurrences,budgets});
   const attention:Array<{key:string;priority:number;tone:"negative"|"warning"|"quiet";icon:ReactNode;title:string;detail:string;action:string;intent:NavigationIntent}>=[];
-  if(overdue.length)attention.push({key:"overdue",priority:10,tone:"negative",icon:<AlertTriangle size={16}/>,title:`${overdue.length} overdue scheduled ${overdue.length===1?"item":"items"}`,detail:`Oldest was due ${formatDate(overdue.map(item=>item.dueDate).sort()[0])}.`,action:"Review bills",intent:{page:"Bills",focus:{kind:"overdue",dueDate:overdue.map(item=>item.dueDate).sort()[0]}}});
-  if(dueAutoPost.length)attention.push({key:"autopost",priority:20,tone:"warning",icon:<CalendarDays size={16}/>,title:`${dueAutoPost.length} automatic ${dueAutoPost.length===1?"posting is":"postings are"} due`,detail:"These expected occurrences are due to be posted automatically.",action:"Review scheduled items",intent:{page:"Bills",focus:{kind:"autoPost"}}});
+  if(overdue.length){
+    const oldestDue=overdue.map(item=>item.dueDate).sort()[0];
+    const oldest=overdue.find(item=>item.dueDate===oldestDue)!;
+    const oldestTemplate=activeTemplates.get(oldest.scheduledTransactionId);
+    attention.push({
+      key:"overdue",
+      priority:10,
+      tone:"negative",
+      icon:<AlertTriangle size={16}/>,
+      title:oldestTemplate?`${oldestTemplate.payee} is overdue`:`${overdue.length} overdue scheduled ${overdue.length===1?"item":"items"}`,
+      detail:overdue.length>1?`${overdue.length} overdue items · oldest was due ${formatDate(oldestDue)}.`:`Due ${formatDate(oldestDue)}.`,
+      action:"Review bills",
+      intent:{page:"Bills",focus:{kind:"overdue",dueDate:oldestDue}},
+    });
+  }
+  if(dueAutoPost.length)attention.push({key:"autopost",priority:20,tone:"warning",icon:<CalendarDays size={16}/>,title:`${dueAutoPost.length} automatic ${dueAutoPost.length===1?"posting is":"postings are"} due`,detail:"These expected occurrences are ready for the reviewed auto-post queue.",action:"Review scheduled items",intent:{page:"Bills",focus:{kind:"autoPost"}}});
   if(reviewCount)attention.push({key:"review",priority:30,tone:"warning",icon:<ReceiptText size={16}/>,title:`${reviewCount} ${reviewCount===1?"transaction needs":"transactions need"} review`,detail:"Confirm imported or uncategorized activity before treating the ledger as settled.",action:"Review transactions",intent:{page:"Transactions",status:"review"}});
-  if(forecast.lowestBalanceMinor<0)attention.push({key:"forecast",priority:40,tone:"negative",icon:<TrendingDown size={16}/>,title:"Cash is projected to go negative",detail:`30-day low: ${formatMoney(forecast.lowestBalanceMinor,currency)} on ${formatDate(forecast.lowestBalanceDate)}.`,action:"Open forecast",intent:{page:"Forecast"}});
-  if(currentBudget?.availableMinor!==undefined&&currentBudget.availableMinor<0)attention.push({key:"budget",priority:50,tone:"negative",icon:<Tags size={16}/>,title:"This month’s budget is over plan",detail:`${formatMoney(Math.abs(currentBudget.availableMinor),currency)} over the available plan; ${formatMoney(currentBudget.spentMinor,currency)} spent.`,action:"Review budget",intent:{page:"Budget"}});
-  if(!currentBudget||currentBudget.lines.length===0)attention.push({key:"budget-setup",priority:90,tone:"quiet",icon:<Tags size={16}/>,title:"No current budget plan",detail:"Optional: add a monthly budget if you want spending-plan alerts here.",action:"Set up budget",intent:{page:"Budget"}});
+  if(forecast.lowestBalanceMinor<0)attention.push({key:"forecast",priority:40,tone:"negative",icon:<TrendingDown size={16}/>,title:"Cash is projected to go negative",detail:`30-day low: ${formatMoney(forecast.lowestBalanceMinor,currency)} on ${formatDate(forecast.lowestBalanceDate)}.`,action:"Open forecast",intent:{page:"Forecast",focus:{horizonDays:30,highlightDate:forecast.lowestBalanceDate}}});
+  if(currentBudget?.availableMinor!==undefined&&currentBudget.availableMinor<0)attention.push({key:"budget",priority:50,tone:"negative",icon:<Tags size={16}/>,title:"This month’s budget is over plan",detail:`${formatMoney(Math.abs(currentBudget.availableMinor),currency)} over the available plan; ${formatMoney(currentBudget.spentMinor,currency)} spent.`,action:"Review budget",intent:{page:"Budget",focus:{month:today.slice(0,7)}}});
+  if(!overdue.length&&dueSoon.length){
+    const nextDue=dueSoon.map(item=>item.dueDate).sort()[0];
+    const next=dueSoon.find(item=>item.dueDate===nextDue)!;
+    const nextTemplate=activeTemplates.get(next.scheduledTransactionId);
+    attention.push({
+      key:"due-soon",
+      priority:60,
+      tone:"quiet",
+      icon:<CalendarDays size={16}/>,
+      title:nextTemplate?`${nextTemplate.payee} is due soon`:`${dueSoon.length} scheduled ${dueSoon.length===1?"item is":"items are"} due soon`,
+      detail:dueSoon.length>1?`${dueSoon.length} items in the next 7 days · next on ${formatDate(nextDue)}.`:`Due ${formatDate(nextDue)}.`,
+      action:"Open bills",
+      intent:{page:"Bills",focus:{kind:"day",dueDate:nextDue}},
+    });
+  }
+  if(!currentBudget||currentBudget.lines.length===0)attention.push({key:"budget-setup",priority:90,tone:"quiet",icon:<Tags size={16}/>,title:"No current budget plan",detail:"Optional: add a monthly budget if you want spending-plan alerts here.",action:"Set up budget",intent:{page:"Budget",focus:{month:today.slice(0,7)}}});
   attention.sort((a,b)=>a.priority-b.priority);
   const urgent=attention.filter(item=>item.tone!=="quiet"),setup=attention.filter(item=>item.tone==="quiet");
-  return <section className="panel command-center"><div className="panel-heading"><div><h2>What needs my attention today?</h2><p>{urgent.length?`${urgent.length} ${urgent.length===1?"area needs":"areas need"} a look.`:"Your ledger has no urgent attention items."}</p></div></div>
+  return <section className="panel command-center"><div className="panel-heading"><div><h2>Today</h2><p>{urgent.length?`${urgent.length} ${urgent.length===1?"area needs":"areas need"} a look.`:"Your ledger has no urgent attention items."}</p></div></div>
     {urgent.length===0&&<div className="attention-clear"><span className="command-icon positive">✓</span><span><strong>You're caught up</strong><small>No overdue scheduled items, review transactions, negative 30-day forecast, or budget overage detected.</small></span></div>}
     {attention.length>0&&<div className="attention-list">{[...urgent,...setup].map(item=><button key={item.key} className={`attention-item ${item.tone}`} onClick={()=>onNavigate(item.intent)}><span className={`command-icon ${item.tone}`}>{item.icon}</span><span className="attention-copy"><strong>{item.title}</strong><small>{item.detail}</small></span><span className="attention-action">{item.action} →</span></button>)}</div>}
+    {hasCashAccounts&&forecast.lowestBalanceMinor>=0&&<div className="today-cash-peek"><span><strong>Near-term cash</strong><small>Lowest projected cash in 30 days: {formatMoney(forecast.lowestBalanceMinor,currency)} on {formatDate(forecast.lowestBalanceDate)}.</small></span><button type="button" onClick={()=>onNavigate({page:"Forecast",focus:{horizonDays:30,highlightDate:forecast.lowestBalanceDate}})}>See forecast →</button></div>}
   </section>;
 }
 
