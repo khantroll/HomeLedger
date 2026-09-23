@@ -10,7 +10,7 @@ export function FinancialFindDialog({accounts,transactions,schedules,securities,
   const inputRef=useRef<HTMLInputElement>(null);
   const results=useMemo(()=>financialFind(query,{accounts,transactions,schedules,securities,securityAccountIds}),[query,accounts,transactions,schedules,securities,securityAccountIds]);
   const groups=useMemo(()=>groupFinancialFindResults(results),[results]);
-  const visibleResults=useMemo(()=>groups.flatMap(group=>group.results),[groups]);
+  const visibleResults=useMemo<FinancialFindResult[]>(()=>groups.reduce<FinancialFindResult[]>((all,group)=>{all.push(...group.results);return all;},[]),[groups]);
   useEffect(()=>{inputRef.current?.focus();},[]);
   useEffect(()=>setSelected(0),[query]);
   function keyDown(event:React.KeyboardEvent){
