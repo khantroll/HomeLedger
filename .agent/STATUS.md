@@ -4,14 +4,14 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-23T16:05:00Z
+- **Updated:** 2026-09-23T16:12:00Z
 - **Updated by:** Cursor cloud agent (PR #57/#58 reconcile review)
 - **Canonical main (verified):** `9902227bd783b71ef3ae4927c6c7a28071bd020d` — includes merged #56 transaction reuse
-- **Open product/coordination PRs (verified):**
-  - **PR #57** — Add repository-native agent handoff memory (`chore/agent-project-memory`); coordination-only; mergeable; CI green; STATUS reconciled in this update
-  - **PR #58** — Home / Today + Planning Bridge (`cursor/home-today-planning-bridge-1f15` @ `e51c199`); draft; mergeable; CI green; integrity review in progress with small Forecast-focus / due-soon fixes expected on that branch
-- **State:** #56 is merged into main. #57 and #58 are open and intentionally unmerged. Do not renumber, recreate, or duplicate either PR.
-- **Next action:** Finish integrity fixes on #58 if any clear blockers remain; leave #57/#58 open for human/architect merge review. Do not start PR #59 / next Everyday Money feature until both are decided.
+- **Open PRs (verified):**
+  - **PR #57** — Agent handoff memory (`chore/agent-project-memory`); coordination-only; mergeable; protocol reconciled
+  - **PR #58** — Home / Today + Planning Bridge (`cursor/home-today-planning-bridge-1f15` @ `f67936f`); draft; integrity fixes pushed (forecast highlight + due-soon dedupe); local validation green; CI re-checking
+- **State:** Both PRs open and intentionally unmerged. Do not renumber/recreate either. Do not start #59 / next Everyday Money feature until merge review decides.
+- **Next action:** Human/architect merge review of #57 and #58. Prefer GitHub over this file if anything disagrees.
 
 ## Handoff protocol
 
@@ -21,15 +21,7 @@ Every agent or human making meaningful project changes should:
 2. Read this file and reconcile it against GitHub; prefer GitHub when they disagree.
 3. Continue existing valid branches/PRs; do not restart work because STATUS is stale.
 4. Do the work, appending ACTIVITY checkpoints at meaningful transitions when practical.
-5. Before handing off, update **Current checkpoint** with:
-   - agent/tool;
-   - timestamp/date;
-   - branch and HEAD;
-   - task attempted/completed;
-   - important files/components changed;
-   - tests/build/CI actually run and their results;
-   - unresolved issues;
-   - exact recommended next action.
+5. Before handing off, update **Current checkpoint** with agent/tool, timestamp, branch/HEAD, task, important changes, verification, unresolved issues, and exact next action.
 6. Append one JSON object as a single line to `.agent/ACTIVITY.jsonl`.
 7. Commit these handoff changes with the work when practical.
 
