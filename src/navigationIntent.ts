@@ -22,7 +22,7 @@ export type BudgetNavigationFocus = {
  * Only fields justified by those workflows; not a general router.
  */
 export type NavigationIntent =
-  | { page: "Transactions"; status: "review" }
+  | { page: "Transactions"; status: "review" | "all"; accountId?: string; search?: string; transactionId?: string }
   | { page: "Bills"; focus: BillsNavigationFocus }
   | { page: "Forecast"; focus?: ForecastNavigationFocus }
   | { page: "Budget"; focus?: BudgetNavigationFocus }
