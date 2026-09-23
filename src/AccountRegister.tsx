@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { ArrowLeftRight, ChevronLeft, Download, Scale, Search } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { ArrowLeftRight, ChevronLeft, Download, MoreHorizontal, Scale, Search } from "lucide-react";
 import {
   REGISTER_PAGE_SIZE,
   formatMoney,
@@ -427,55 +427,120 @@ function ReuseActions({
 }) {
   const eligibility = transactionReuseEligibility(transaction, accounts);
   const today = todayIso();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const duplicateReasonId = useId();
+  const recurringReasonId = useId();
+  const ruleReasonId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  function runAction(action: () => void) {
+    try {
+      action();
+      setOpen(false);
+    } catch (reason) {
+      window.alert(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
 
   return (
-    <>
+    <div className="register-reuse-menu" ref={rootRef}>
       <button
         type="button"
-        className="reuse-action"
-        disabled={!eligibility.duplicate.allowed}
-        title={eligibility.duplicate.reason ?? "Create a new transaction from this one"}
-        onClick={() => {
-          try {
-            onRequestDialog({ kind: "transaction", draft: duplicateTransactionDraft(transaction, today) });
-          } catch (reason) {
-            window.alert(reason instanceof Error ? reason.message : String(reason));
-          }
-        }}
+        className="reuse-more"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        aria-label="More transaction actions"
+        onClick={() => setOpen((current) => !current)}
       >
-        Duplicate
+        <MoreHorizontal size={14} aria-hidden="true" />
+        <span aria-hidden="true">More</span>
       </button>
-      <button
-        type="button"
-        className="reuse-action"
-        disabled={!eligibility.recurring.allowed}
-        title={eligibility.recurring.reason ?? "Create a scheduled transaction from this one"}
-        onClick={() => {
-          try {
-            onRequestDialog({ kind: "schedule", draft: scheduledDraftFromTransaction(transaction, accounts, today) });
-          } catch (reason) {
-            window.alert(reason instanceof Error ? reason.message : String(reason));
-          }
-        }}
-      >
-        Make recurring
-      </button>
-      <button
-        type="button"
-        className="reuse-action"
-        disabled={!eligibility.rule.allowed}
-        title={eligibility.rule.reason ?? "Create an import merchant rule from this description"}
-        onClick={() => {
-          try {
-            onRequestDialog({ kind: "rule", draft: merchantRuleDraftFromTransaction(transaction) });
-          } catch (reason) {
-            window.alert(reason instanceof Error ? reason.message : String(reason));
-          }
-        }}
-      >
-        Create rule
-      </button>
-    </>
+      {open && (
+        <div className="register-reuse-popover" role="menu" id={menuId} aria-label="Transaction reuse actions">
+          <div className="reuse-menu-item-wrap">
+            <button
+              type="button"
+              role="menuitem"
+              className="reuse-action"
+              disabled={!eligibility.duplicate.allowed}
+              aria-describedby={!eligibility.duplicate.allowed && eligibility.duplicate.reason ? duplicateReasonId : undefined}
+              onClick={() =>
+                runAction(() =>
+                  onRequestDialog({ kind: "transaction", draft: duplicateTransactionDraft(transaction, today) }),
+                )
+              }
+            >
+              Duplicate
+            </button>
+            {!eligibility.duplicate.allowed && eligibility.duplicate.reason && (
+              <span id={duplicateReasonId} className="reuse-unavailable-reason" role="note">
+                {eligibility.duplicate.reason}
+              </span>
+            )}
+          </div>
+          <div className="reuse-menu-item-wrap">
+            <button
+              type="button"
+              role="menuitem"
+              className="reuse-action"
+              disabled={!eligibility.recurring.allowed}
+              aria-describedby={!eligibility.recurring.allowed && eligibility.recurring.reason ? recurringReasonId : undefined}
+              onClick={() =>
+                runAction(() =>
+                  onRequestDialog({ kind: "schedule", draft: scheduledDraftFromTransaction(transaction, accounts, today) }),
+                )
+              }
+            >
+              Make recurring
+            </button>
+            {!eligibility.recurring.allowed && eligibility.recurring.reason && (
+              <span id={recurringReasonId} className="reuse-unavailable-reason" role="note">
+                {eligibility.recurring.reason}
+              </span>
+            )}
+          </div>
+          <div className="reuse-menu-item-wrap">
+            <button
+              type="button"
+              role="menuitem"
+              className="reuse-action"
+              disabled={!eligibility.rule.allowed}
+              aria-describedby={!eligibility.rule.allowed && eligibility.rule.reason ? ruleReasonId : undefined}
+              onClick={() =>
+                runAction(() =>
+                  onRequestDialog({ kind: "rule", draft: merchantRuleDraftFromTransaction(transaction) }),
+                )
+              }
+            >
+              Create rule
+            </button>
+            {!eligibility.rule.allowed && eligibility.rule.reason && (
+              <span id={ruleReasonId} className="reuse-unavailable-reason" role="note">
+                {eligibility.rule.reason}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
