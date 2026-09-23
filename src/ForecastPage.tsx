@@ -4,7 +4,10 @@ import {formatMoney,type Account,type BudgetMonth,type ScheduledOccurrence,type 
 import {financeRepository as repository} from "./repository";
 import {addDaysIso,formatDate,todayIso} from "./scheduledPresentation";
 import {calculateCashFlowForecast,forecastMonths,type CashFlowForecast,type ForecastScenario} from "./forecastMath";
+import type { ForecastNavigationFocus, NavigationIntent } from "./navigationIntent";
 import "./forecast.css";
+
+export type { ForecastNavigationFocus };
 
 const horizons=[30,60,90,180,365] as const;
 const scenarioCopy:Record<ForecastScenario,{label:string;detail:string}>={
@@ -13,27 +16,49 @@ const scenarioCopy:Record<ForecastScenario,{label:string;detail:string}>={
   optimistic:{label:"Optimistic",detail:"5% more income, 5% less scheduled spending, and 10% less planned spending."},
 };
 
-export function ForecastPage({accounts,templates,today=todayIso()}:{accounts:Account[];templates:ScheduledTransaction[];today?:string}){
+export function ForecastPage({
+  accounts,
+  templates,
+  today=todayIso(),
+  navigationFocus,
+  onNavigate,
+}:{
+  accounts:Account[];
+  templates:ScheduledTransaction[];
+  today?:string;
+  navigationFocus?:ForecastNavigationFocus;
+  onNavigate?:(intent:NavigationIntent)=>void;
+}){
   const currencies=useMemo(()=>[...new Set(accounts.filter(item=>["checking","savings","cash"].includes(item.type)).map(item=>item.currency))].sort(),[accounts]);
-  const [horizon,setHorizon]=useState<(typeof horizons)[number]>(90),[scenario,setScenario]=useState<ForecastScenario>("expected"),[currency,setCurrency]=useState(currencies[0]??"USD");
+  const [horizon,setHorizon]=useState<(typeof horizons)[number]>(navigationFocus?.horizonDays??90);
+  const [scenario,setScenario]=useState<ForecastScenario>("expected");
+  const [currency,setCurrency]=useState(currencies[0]??"USD");
   const [scope,setScope]=useState("all");
-  const [occurrences,setOccurrences]=useState<ScheduledOccurrence[]>([]),[budgets,setBudgets]=useState<BudgetMonth[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState("");
+  const [occurrences,setOccurrences]=useState<ScheduledOccurrence[]>([]);
+  const [budgets,setBudgets]=useState<BudgetMonth[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState("");
   const availableCashAccounts=useMemo(()=>accounts.filter(item=>["checking","savings","cash"].includes(item.type)&&item.currency===currency),[accounts,currency]);
   useEffect(()=>{if(currencies.length&&!currencies.includes(currency))setCurrency(currencies[0]);},[currencies,currency]);
   useEffect(()=>{if(scope!=="all"&&!availableCashAccounts.some(item=>item.id===scope))setScope("all");},[availableCashAccounts,scope]);
+  useEffect(()=>{
+    if(navigationFocus?.horizonDays)setHorizon(navigationFocus.horizonDays);
+  },[navigationFocus]);
   useEffect(()=>{let current=true;setLoading(true);setError("");const toDate=addDaysIso(today,horizon-1);void repository.generateScheduledOccurrences({fromDate:today,toDate}).then(()=>Promise.all([repository.listScheduledOccurrences({fromDate:today,toDate}),Promise.all(forecastMonths(today,horizon).map(month=>repository.getBudgetMonth(month)))])).then(([nextOccurrences,nextBudgets])=>{if(current){setOccurrences(nextOccurrences);setBudgets(nextBudgets);setLoading(false);}}).catch(reason=>{if(current){setError(reason instanceof Error?reason.message:String(reason));setLoading(false);}});return()=>{current=false;};},[horizon,today]);
   const selectedAccounts=scope==="all"?accounts:accounts.filter(item=>item.id===scope);
   const forecasts=useMemo(()=>Object.fromEntries((["expected","conservative","optimistic"] as const).map(name=>[name,calculateCashFlowForecast({today,horizonDays:horizon,currency,scenario:name,accounts:selectedAccounts,templates,occurrences,budgets:scope==="all"?budgets:[]})])) as Record<ForecastScenario,CashFlowForecast>,[budgets,currency,horizon,occurrences,scope,selectedAccounts,templates,today]);
   const forecast=forecasts[scenario],cashAccounts=scope==="all"?availableCashAccounts:availableCashAccounts.filter(item=>item.id===scope);
+  const highlightDate=navigationFocus?.highlightDate;
   return <div className="forecast-page">
     <section className="panel forecast-header"><div><h2>Cash-flow forecast</h2><p>See how scheduled bills, deposits, and remaining budget plans could change available cash.</p></div><div className="forecast-controls"><label>Currency<select value={currency} onChange={event=>setCurrency(event.target.value)}>{currencies.length?currencies.map(item=><option key={item}>{item}</option>):<option>USD</option>}</select></label><label>Accounts<select value={scope} onChange={event=>setScope(event.target.value)}><option value="all">Household cash</option>{availableCashAccounts.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label><div className="horizon-buttons" aria-label="Forecast horizon">{horizons.map(value=><button className={horizon===value?"active":""} key={value} onClick={()=>setHorizon(value)}>{value}d</button>)}</div></div></section>
+    {onNavigate&&<section className="panel planning-bridge" aria-label="Related planning"><p>Forecast is an estimate from the same schedules and budget plans. Open those views when you want to change what drives this projection.</p><div className="planning-bridge-actions"><button type="button" onClick={()=>onNavigate({page:"Bills",focus:{kind:"day",dueDate:today}})}>Open bills calendar</button><button type="button" onClick={()=>onNavigate({page:"Budget",focus:{month:today.slice(0,7)}})}>Review this month’s budget</button></div></section>}
     {error&&<div className="error-banner" role="alert">{error}</div>}
     {!cashAccounts.length?<section className="panel empty-state">Add a checking, savings, or cash account to create a forecast.</section>:<>
       <div className="scenario-picker">{(["expected","conservative","optimistic"] as const).map(name=><button className={scenario===name?"active":""} key={name} onClick={()=>setScenario(name)}><span>{scenarioCopy[name].label}</span><strong>{formatMoney(forecasts[name].endingBalanceMinor,currency)}</strong><small>projected ending cash</small></button>)}</div>
       <div className="summary-grid forecast-summary"><Summary label="Starting cash" value={formatMoney(forecast.startBalanceMinor,currency)} detail={`${cashAccounts.length} liquid account${cashAccounts.length===1?"":"s"}`}/><Summary label="Projected ending" value={formatMoney(forecast.endingBalanceMinor,currency)} detail={`${horizon}-day ${scenarioCopy[scenario].label.toLowerCase()} view`} tone={forecast.endingBalanceMinor<0?"negative":"positive"}/><Summary label="Lowest point" value={formatMoney(forecast.lowestBalanceMinor,currency)} detail={formatDate(forecast.lowestBalanceDate)} tone={forecast.lowestBalanceMinor<0?"negative":"warning"}/><Summary label="Planned outflow" value={formatMoney(forecast.totalOutflowsMinor,currency)} detail={`${formatMoney(forecast.budgetReserveMinor,currency)} from budget plans`} tone="negative"/></div>
       <section className="panel forecast-chart"><div className="panel-heading"><div><h2>Projected cash path</h2><p>{scenarioCopy[scenario].detail}</p></div>{loading?<span className="forecast-loading">Refreshing…</span>:forecast.lowestBalanceMinor<0?<span className="forecast-warning"><TrendingDown size={14}/> Cash falls below zero</span>:<span className="forecast-safe"><ShieldCheck size={14}/> Stays above zero</span>}</div><BalanceChart forecast={forecast}/></section>
-      <div className="forecast-grid"><section className="panel"><div className="panel-heading"><div><h2>Cash accounts</h2><p>Current balances included in this {currency} forecast</p></div><TrendingUp size={18}/></div>{cashAccounts.map(item=><div className="forecast-account" key={item.id}><span>{item.name}<small>{item.ownerLabel}</small></span><strong className={item.balanceMinor<0?"negative":""}>{formatMoney(item.balanceMinor,item.currency)}</strong></div>)}</section><section className="panel"><div className="panel-heading"><div><h2>Projection checkpoints</h2><p>Days with scheduled activity or month boundaries</p></div><CalendarRange size={18}/></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Balance</th></tr></thead><tbody>{checkpoints(forecast).map(day=><tr key={day.date}><td>{formatDate(day.date)}</td><td className="positive">{day.inflowMinor?formatMoney(day.inflowMinor,currency):"—"}</td><td className="negative">{day.outflowMinor?formatMoney(day.outflowMinor,currency):"—"}</td><td className={day.balanceMinor<0?"negative":""}><strong>{formatMoney(day.balanceMinor,currency)}</strong></td></tr>)}</tbody></table></div></section></div>
-      <p className="forecast-note">Forecasts are estimates, not ledger entries. Household cash includes budget-plan spending; single-account views use that account’s scheduled activity only because budgets are not assigned to accounts. Budget rollover remains reserved cash. Transfers within the selected cash scope are neutral; transfers crossing its boundary appear as exact inflows or outflows.</p>
+      <div className="forecast-grid"><section className="panel"><div className="panel-heading"><div><h2>Cash accounts</h2><p>Current balances included in this {currency} forecast</p></div><TrendingUp size={18}/></div>{cashAccounts.map(item=><div className="forecast-account" key={item.id}><span>{item.name}<small>{item.ownerLabel}</small></span><strong className={item.balanceMinor<0?"negative":""}>{formatMoney(item.balanceMinor,item.currency)}</strong></div>)}</section><section className="panel"><div className="panel-heading"><div><h2>Projection checkpoints</h2><p>Days with scheduled activity or month boundaries</p></div><CalendarRange size={18}/></div><div className="table-wrap"><table><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Balance</th></tr></thead><tbody>{checkpoints(forecast).map(day=><tr key={day.date} className={highlightDate===day.date?"forecast-highlight":undefined}><td>{formatDate(day.date)}{highlightDate===day.date?<small className="forecast-highlight-label"> Attention focus</small>:null}</td><td className="positive">{day.inflowMinor?formatMoney(day.inflowMinor,currency):"—"}</td><td className="negative">{day.outflowMinor?formatMoney(day.outflowMinor,currency):"—"}</td><td className={day.balanceMinor<0?"negative":""}><strong>{formatMoney(day.balanceMinor,currency)}</strong></td></tr>)}</tbody></table></div></section></div>
+      <p className="forecast-note">Forecasts are estimates, not ledger entries. Household cash includes budget-plan spending; single-account views use that account’s scheduled activity only because budgets are not assigned to accounts. Budget rollover remains reserved cash. Transfers within the selected cash scope are neutral; transfers crossing its boundary appear as exact inflows or outflows. Investment accounts are excluded from this cash projection.</p>
     </>}
   </div>;
 }

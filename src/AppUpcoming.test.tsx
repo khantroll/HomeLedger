@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { afterEach,describe,expect,it } from "vitest";
+import { afterEach,describe,expect,it,vi } from "vitest";
 import { cleanup,render,screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { UpcomingScheduled } from "./App";
 import type { Account,ScheduledOccurrence,ScheduledTransaction } from "./domain";
 
@@ -24,5 +25,18 @@ describe("Overview upcoming widget",()=>{
     expect(screen.getByText("Savings transfer")).toBeTruthy();
     expect(screen.getByText(/Checking → Savings/)).toBeTruthy();
     expect(screen.queryByText("Posted")).toBeNull();
+  });
+
+  it("routes upcoming rows into the Bills calendar without changing financial state",async()=>{
+    const user=userEvent.setup();
+    const onNavigate=vi.fn();
+    const accounts:Account[]=[{id:"a",name:"Checking",type:"checking",currency:"USD",balanceMinor:0,ownerLabel:"Household"}];
+    const templates:ScheduledTransaction[]=[{id:"expense",kind:"transaction",accountId:"a",payee:"Rent",category:"Housing",amountMinor:-100000,status:"pending",frequency:"monthly",anchorDate:"2099-01-05",enabled:true}];
+    const occurrences:ScheduledOccurrence[]=[{id:"1",scheduledTransactionId:"expense",dueDate:"2099-01-05",status:"expected"}];
+    render(<UpcomingScheduled accounts={accounts} templates={templates} occurrences={occurrences} onNavigate={onNavigate}/>);
+    await user.click(screen.getByRole("button",{name:/Open Rent on/i}));
+    expect(onNavigate).toHaveBeenCalledWith({page:"Bills",focus:{kind:"day",dueDate:"2099-01-05"}});
+    await user.click(screen.getByRole("button",{name:/Open calendar/i}));
+    expect(onNavigate).toHaveBeenCalledWith({page:"Bills",focus:{kind:"day",dueDate:"2099-01-05"}});
   });
 });

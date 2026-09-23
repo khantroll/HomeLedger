@@ -4,12 +4,26 @@ import {financeRepository as repository} from "./repository";
 import {formatMoney,parseMoney,type Account,type BudgetMonth,type Transaction} from "./domain";
 import {SavingsGoals} from "./SavingsGoals";
 import {useLedgerSuggestions} from "./useLedgerSuggestions";
+import type { BudgetNavigationFocus, NavigationIntent } from "./navigationIntent";
 import "./budget.css";
 
-export function BudgetPage({transactions,accounts=[]}:{transactions:Transaction[];accounts?:Account[]}){
-  const [month,setMonth]=useState(currentMonth()),[budget,setBudget]=useState<BudgetMonth>(),[drafts,setDrafts]=useState<Map<string,string>>(new Map());
+export type { BudgetNavigationFocus };
+
+export function BudgetPage({
+  transactions,
+  accounts=[],
+  navigationFocus,
+  onNavigate,
+}:{
+  transactions:Transaction[];
+  accounts?:Account[];
+  navigationFocus?:BudgetNavigationFocus;
+  onNavigate?:(intent:NavigationIntent)=>void;
+}){
+  const [month,setMonth]=useState(navigationFocus?.month??currentMonth()),[budget,setBudget]=useState<BudgetMonth>(),[drafts,setDrafts]=useState<Map<string,string>>(new Map());
   const [adding,setAdding]=useState(false),[pendingDelete,setPendingDelete]=useState(""),[busy,setBusy]=useState(false),[error,setError]=useState("");
   const suggestions=useLedgerSuggestions();
+  useEffect(()=>{if(navigationFocus?.month)setMonth(navigationFocus.month);},[navigationFocus]);
   useEffect(()=>{void load();},[month]);
   async function load(){try{const next=await repository.getBudgetMonth(month);setBudget(next);setDrafts(new Map(next.lines.map(item=>[item.id,(item.plannedMinor/100).toFixed(2)])));setError("");}catch(reason){show(reason);}}
   function show(reason:unknown){setError(reason instanceof Error?reason.message:String(reason));}
@@ -20,6 +34,7 @@ export function BudgetPage({transactions,accounts=[]}:{transactions:Transaction[
   const capacity=(budget?.plannedMinor??0)+(budget?.carryInMinor??0);
   return <div className="budget-page">
     <section className="panel budget-header"><div><h2>Monthly budget</h2><p>Plan spending by category. Rollover categories accumulate like sinking funds.</p></div><div className="month-switcher"><button aria-label="Previous month" onClick={()=>setMonth(shiftMonth(month,-1))}><ChevronLeft size={16}/></button><strong>{monthLabel(month)}</strong><button aria-label="Next month" onClick={()=>setMonth(shiftMonth(month,1))}><ChevronRight size={16}/></button></div></section>
+    {onNavigate&&<section className="panel planning-bridge" aria-label="Related planning"><p>Budget plans affect the cash forecast. Scheduled bills still live on the Bills calendar.</p><div className="planning-bridge-actions"><button type="button" onClick={()=>onNavigate({page:"Forecast",focus:{horizonDays:30}})}>See cash forecast</button><button type="button" onClick={()=>onNavigate({page:"Bills",focus:{kind:"day",dueDate:`${month}-01`}})}>Open bills for this month</button></div></section>}
     {error&&<div className="error-banner" role="alert">{error}</div>}
     <div className="summary-grid budget-summary"><Summary label="Planned" value={formatMoney(budget?.plannedMinor??0)}/><Summary label="Spent" value={formatMoney(budget?.spentMinor??0)} tone="negative"/><Summary label="Carried in" value={formatMoney(budget?.carryInMinor??0)} tone="positive"/><Summary label="Available" value={formatMoney(budget?.availableMinor??0)} tone={(budget?.availableMinor??0)<0?"negative":"positive"}/></div>
     <section className="panel budget-ledger"><div className="panel-heading"><div><h2>Categories</h2><p>{capacity?`${Math.round(((budget?.spentMinor??0)/capacity)*100)}% of available funds used`:"Add a category to begin planning"}</p></div><button onClick={()=>setAdding(true)}><Plus size={14}/> Add category</button></div>
