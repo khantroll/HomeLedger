@@ -203,3 +203,19 @@ A feature is not done until:
 ## First task
 
 Implement Milestone 1. Begin by creating the architecture and tests, then build the runnable application shell and demo repository. Do not jump ahead to cloud AI, OCR, investments, or direct bank connectivity. Make the resulting repository a trustworthy foundation for subsequent slices.
+
+
+## Implemented milestone status — v0.51
+
+The original phased plan above remains the architectural guide, but the repository has progressed beyond the initial milestones. As of v0.51, the first investment milestone is implemented and validated:
+
+- Portfolio Foundation with dedicated investment accounts, securities, immutable event/revision history, lots/basis, intrinsic cash, and deterministic as-of projection.
+- Portfolio Manager with household Portfolio, investment-account and security drill-down.
+- Manual investment account/security setup and manual investment activity entry, including guarded historical corrections.
+- Manual/historical security prices plus explicit provider-neutral price refresh; opening and navigating Portfolio remains offline-capable.
+- Investment-aware household/net-worth valuation and dedicated investment reporting, while ordinary spending/income reports remain domain-separated.
+- Atomic ordinary ↔ investment cash transfers with durable linkage and guarded generic mutation paths.
+
+Still intentionally not implemented by this milestone: brokerage/bank connectivity, investment import, trading, Watchlist, FX conversion, tax calculations, device/cloud sync, or portfolio-performance algorithms.
+
+The next roadmap work should begin only after this milestone-closure PR is reviewed; it should not be inferred from the obsolete “First task” wording above.
