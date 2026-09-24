@@ -25,7 +25,27 @@ export function nextMonth(month:string):string{
   return`${next[0]}-${String(next[1]).padStart(2,"0")}`;
 }
 
-function spendingForRange(category:string,fromMonth:string,toMonth:string,transactions:readonly Transaction[]):number{
+export function previousMonth(month:string):string{
+  validateMonth(month);
+  const [year,value]=month.split("-").map(Number),prev=value===1?[year-1,12]:[year,value-1];
+  return`${prev[0]}-${String(prev[1]).padStart(2,"0")}`;
+}
+
+/** Shift a YYYY-MM budget month by a signed month offset. */
+export function shiftBudgetMonth(month:string,offset:number):string{
+  validateMonth(month);
+  let result=month;
+  if(offset>0)for(let i=0;i<offset;i++)result=nextMonth(result);
+  if(offset<0)for(let i=0;i<-offset;i++)result=previousMonth(result);
+  return result;
+}
+
+/**
+ * Ordinary household expense for a category over [fromMonth, toMonth).
+ * Matches native/demo Budget spent semantics: excludes transfers, counts only
+ * outflow amounts, and attributes splits by split category.
+ */
+export function spendingForRange(category:string,fromMonth:string,toMonth:string,transactions:readonly Transaction[]):number{
   const normalized=category.trim().toLocaleLowerCase(),from=`${fromMonth}-01`,to=`${toMonth}-01`;
   const values:number[]=[];
   for(const transaction of transactions){
@@ -35,4 +55,39 @@ function spendingForRange(category:string,fromMonth:string,toMonth:string,transa
     }else if(transaction.amountMinor<0&&transaction.category.trim().toLocaleLowerCase()===normalized)values.push(-transaction.amountMinor);
   }
   return sumMoney(values);
+}
+
+/** All ordinary expense amounts in a month, keyed by normalized category label. */
+export function monthlyExpenseByCategory(month:string,transactions:readonly Transaction[],eligibleAccountIds?:ReadonlySet<string>):Map<string,{category:string;spentMinor:number}>{
+  validateMonth(month);
+  const from=`${month}-01`,to=`${nextMonth(month)}-01`;
+  const totals=new Map<string,{category:string;spentMinor:number}>();
+  for(const transaction of transactions){
+    if(transaction.postedDate<from||transaction.postedDate>=to||transaction.source==="transfer")continue;
+    if(eligibleAccountIds&&!eligibleAccountIds.has(transaction.accountId))continue;
+    if(transaction.splits?.length){
+      for(const split of transaction.splits){
+        if(split.amountMinor>=0)continue;
+        const label=split.category.trim();if(!label)continue;
+        const key=label.toLocaleLowerCase();
+        const current=totals.get(key)??{category:label,spentMinor:0};
+        current.spentMinor=sumMoney([current.spentMinor,-split.amountMinor]);
+        totals.set(key,current);
+      }
+    }else if(transaction.amountMinor<0){
+      const label=transaction.category.trim();if(!label)continue;
+      const key=label.toLocaleLowerCase();
+      const current=totals.get(key)??{category:label,spentMinor:0};
+      current.spentMinor=sumMoney([current.spentMinor,-transaction.amountMinor]);
+      totals.set(key,current);
+    }
+  }
+  return totals;
+}
+
+/** Round a non-negative average of integer minor units (half-up). */
+export function averageMinor(values:readonly number[]):number{
+  if(!values.length)return 0;
+  const sum=sumMoney([...values]);
+  return Math.floor((sum+Math.floor(values.length/2))/values.length);
 }

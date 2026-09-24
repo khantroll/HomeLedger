@@ -250,7 +250,7 @@ export default function App() {
           ) : active === "Rules" ? (
             <RulesPage />
           ) : active === "Budget" ? (
-            <BudgetPage transactions={transactions} accounts={activeAccounts} navigationFocus={navigationIntent?.page==="Budget"?navigationIntent.focus:undefined} onNavigate={openIntent} />
+            <BudgetPage transactions={transactions} accounts={accounts} schedules={scheduledTemplates} occurrences={scheduledOccurrences} onMonthChange={loadOccurrenceMonth} navigationFocus={navigationIntent?.page==="Budget"?navigationIntent.focus:undefined} onNavigate={openIntent} />
           ) : active === "Bills" ? (
             <BillsPage accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} onChanged={refresh} onMonthChange={loadOccurrenceMonth} navigationFocus={navigationIntent?.page==="Bills"?navigationIntent.focus:undefined} onNavigate={openIntent} />
           ) : active === "Forecast" ? (

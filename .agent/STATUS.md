@@ -4,12 +4,13 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T01:55:00Z
-- **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `9e8c590dd0b082df3c4774b878d0c93c20dca3be` — #56/#57/#58 merged
-- **Open PRs (verified):** PR #59 — Financial Find (`feat/financial-find`), draft, intentionally unmerged
-- **Integrity review:** Fixed Find landings — posted-date focus (pagination-safe), archived txn → global register (not bare Reports), archived account → Accounts list, security-only Portfolio holdings (no invented account), Ctrl+F skips textarea/contentEditable
-- **Next action:** Confirm exact-head CI after integrity push; leave #59 open for merge review. Do not start next Everyday Money slice.
+- **Updated:** 2026-09-24T05:19:00Z
+- **Updated by:** ChatGPT
+- **Canonical main (verified):** `0fdcaa77168b5bf77873386823ccf0e9d9751f31` — #59 Financial Find merged
+- **Open PRs (verified):** PR #60 — Budget From History (`cursor/budget-from-history-1f15`), draft, intentionally unmerged
+- **Correctness correction:** Average proposals now use one shared `monthsUsed` denominator; category absence in a valid history month contributes zero while unavailable household-history months remain excluded.
+- **Validation:** Regression test added for $300 Car Repair in one of three valid months => $100 suggestion. Exact-head GitHub CI is required after handoff commits.
+- **Next action:** Verify exact-head CI, inspect final diff, leave #60 open/unmerged. Do not start #61 / v0.53.
 
 ## Handoff protocol
 
