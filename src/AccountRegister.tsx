@@ -97,6 +97,12 @@ export function AccountRegister({
   }, [initialSearch, locked]);
 
   useEffect(() => {
+    if (!focusTransactionId || loading) return;
+    const row = document.querySelector<HTMLElement>(`tr.register-focus`);
+    row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [focusTransactionId, loading, transactions]);
+
+  useEffect(() => {
     if (accountId && !accounts.some((item) => item.id === accountId)) {
       setAccountId(locked ? accounts[0]?.id ?? "" : "");
     }

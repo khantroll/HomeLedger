@@ -47,12 +47,12 @@ export function financialFind(rawQuery:string,data:FinancialFindData):FinancialF
 
   for(const schedule of data.schedules){
     const account=accountById.get(schedule.accountId),destination=accountById.get(schedule.transferAccountId??"");
-    const score=best(textScore(schedule.payee,query),textScore(schedule.category,query)-4,textScore(account?.name,query)-6,textScore(destination?.name,query)-7);
+    const score=best(textScore(schedule.payee,query),textScore(schedule.category,query)-4,textScore(schedule.memo,query)-5,textScore(account?.name,query)-6,textScore(destination?.name,query)-7);
     if(score>0)results.push({kind:"schedule",id:`schedule:${schedule.id}`,title:schedule.payee,detail:schedule.kind==="transfer"?`${account?.name??"Unknown"} → ${destination?.name??"Unknown"}`:`${schedule.category} · ${account?.name??"Unknown account"}`,meta:schedule.archived?"Archived schedule":schedule.enabled?"Scheduled":"Paused schedule",templateId:schedule.id,dueDate:schedule.anchorDate,archived:Boolean(schedule.archived),score});
   }
 
   for(const account of data.accounts){
-    const score=textScore(account.name,query);
+    const score=best(textScore(account.name,query),textScore(account.institution,query)-3,textScore(account.ownerLabel,query)-5);
     if(score>0)results.push({kind:"account",id:`account:${account.id}`,title:account.name,detail:account.institution??account.ownerLabel,meta:account.archived?"Archived account":account.type==="investment"?"Investment account":"Account",accountId:account.id,archived:Boolean(account.archived),score});
   }
 

@@ -34,6 +34,12 @@ describe("Financial Find matching",()=>{
    expect(financialFind("micro",data).some(r=>r.kind==="security")).toBe(true);
    expect(financialFind("msft",data)[0]).toMatchObject({kind:"security",securityId:"sec1"});
  });
+ it("matches account institution and schedule memo text",()=>{
+   const withInstitution:Account[]=[{...accounts[0],institution:"Sample Credit Union"}];
+   const withMemo:ScheduledTransaction[]=[{...schedules[0],memo:"Power bill auto-pay"}];
+   expect(financialFind("credit union",{accounts:withInstitution,transactions,schedules,securities}).some(r=>r.kind==="account"&&r.accountId==="checking")).toBe(true);
+   expect(financialFind("auto-pay",{accounts,transactions,schedules:withMemo,securities}).some(r=>r.kind==="schedule")).toBe(true);
+ });
  it("retains historical archived-account transactions and marks inactive entities",()=>{
    const historical=financialFind("LOWES #42",{accounts,transactions,schedules,securities})[0];
    expect(historical).toMatchObject({kind:"transaction",transactionId:"t2",archived:true});
