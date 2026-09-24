@@ -4,14 +4,13 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T00:58:00Z
+- **Updated:** 2026-09-24T01:06:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `9e8c590dd0b082df3c4774b878d0c93c20dca3be` — #56/#57/#58 merged
 - **Open PRs (verified):** PR #59 — Financial Find (`feat/financial-find`), draft, intentionally unmerged
-- **Current head:** `feat/financial-find` (push after this handoff)
-- **Scope:** local deterministic Find across transactions, accounts, schedules, securities; Ctrl/Cmd+K/F; focused register/Bills/Portfolio navigation; no AI/cloud/index
-- **Local validation:** 317→web tests + production build; Clippy `-D warnings`; 87 Rust tests — all green
-- **Next action:** Confirm exact-head GitHub CI green on final push; leave #59 open for architecture/integrity review. Do not start next Everyday Money slice.
+- **Validated head:** `e678957eff9c5e619c7bd93703297484a6ca396f` — GitHub CI green (web + native/Windows)
+- **Scope delivered:** local deterministic Find (transactions, accounts, schedules, securities); Ctrl/Cmd+K/F; focused register/Bills/Portfolio navigation; merchant-normalized matching; no AI/cloud/index
+- **Next action:** Architecture/integrity review of PR #59. Do not merge automatically. Do not start the next Everyday Money slice.
 
 ## Handoff protocol
 
