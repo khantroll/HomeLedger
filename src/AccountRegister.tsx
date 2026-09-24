@@ -258,8 +258,13 @@ export function AccountRegister({
 
   async function applyBulkCategory() {
     const category = bulkCategory.trim();
+    // All-or-none: refuse mixed selections so protected rows are never silently skipped.
+    if (categorySelection.blocked.length > 0) {
+      setError("Selected batch includes protected or ineligible transactions (transfers, splits, reconciled, or reserved). Nothing was changed.");
+      return;
+    }
     if (!categorySelection.eligibleIds.length) {
-      setError(categorySelection.blocked.length ? "Selected rows include transfers, splits, or protected transactions that cannot receive a bulk category change." : "Select eligible transactions first.");
+      setError("Select eligible transactions first.");
       return;
     }
     if (!category) { setError("Category is required"); return; }
@@ -277,8 +282,12 @@ export function AccountRegister({
   }
 
   async function applyBulkStatus() {
+    if (statusSelection.blocked.length > 0) {
+      setError("Selected batch includes protected or ineligible transactions (transfers, reconciled, or scheduled). Nothing was changed.");
+      return;
+    }
     if (!statusSelection.eligibleIds.length) {
-      setError(statusSelection.blocked.length ? "Selected rows include transfers or protected transactions that cannot change status in bulk." : "Select eligible transactions first.");
+      setError("Select eligible transactions first.");
       return;
     }
     setBulkBusy(true); setError("");
@@ -294,8 +303,13 @@ export function AccountRegister({
   }
 
   async function applyBulkDelete() {
+    if (deleteSelection.blocked.length > 0) {
+      setError("Selected batch includes protected or ineligible transactions (transfers, reconciled, imported, or scheduled). Nothing was changed.");
+      setConfirmDelete(false);
+      return;
+    }
     if (!deleteSelection.eligibleIds.length) {
-      setError(deleteSelection.blocked.length ? "Selected rows include protected transactions that cannot be bulk-deleted." : "Select eligible transactions first.");
+      setError("Select eligible transactions first.");
       return;
     }
     if (!confirmDelete) { setConfirmDelete(true); return; }
@@ -450,8 +464,8 @@ export function AccountRegister({
             <strong>{selectedIds.size} selected</strong>
             <span>
               {categorySelection.blocked.length || statusSelection.blocked.length || deleteSelection.blocked.length
-                ? "Some selected rows are protected (transfers, splits, reconciled, imported, or scheduled)."
-                : "Apply one explicit action to the eligible selected rows."}
+                ? "Selection includes protected rows. Bulk actions require every selected transaction to be eligible; mixed batches change nothing."
+                : "Apply one explicit action to the selected rows."}
             </span>
           </div>
           <div className="register-bulk-controls">
