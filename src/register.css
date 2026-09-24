@@ -3,3 +3,16 @@
 .register-row-actions{display:flex;flex-wrap:nowrap;gap:4px;justify-content:flex-end;align-items:center}.register-row-actions .edit-transaction{border:1px solid #bdcbd0;background:#fff;border-radius:5px;padding:4px 8px;color:#2b4650;cursor:pointer;font-size:11px}.register-reuse-menu{position:relative}.register-row-actions .reuse-more{border:1px solid #d5e0e4;background:#f7fafb;border-radius:5px;padding:3px 7px;color:#3a5560;cursor:pointer;font-size:10px;display:inline-flex;align-items:center;gap:3px}.register-row-actions .reuse-more[aria-expanded="true"]{background:#e8f2f4;border-color:#adc0c7}.register-reuse-popover{position:absolute;right:0;top:calc(100% + 4px);z-index:5;min-width:15rem;max-width:18rem;display:grid;gap:2px;padding:6px;border:1px solid #c5d3d8;border-radius:8px;background:#fff;box-shadow:0 10px 24px rgba(23,35,45,.14)}.reuse-menu-item-wrap{display:grid;gap:2px}.register-reuse-popover .reuse-action{border:0;background:transparent;border-radius:5px;padding:7px 8px;color:#2b4650;cursor:pointer;font-size:12px;text-align:left;width:100%}.register-reuse-popover .reuse-action:hover:not(:disabled),.register-reuse-popover .reuse-action:focus-visible:not(:disabled){background:#eef6f7}.register-reuse-popover .reuse-action:disabled{opacity:.7;cursor:not-allowed;color:#6a7d86}.reuse-unavailable-reason{display:block;padding:0 8px 6px;color:#6a7d86;font-size:10px;line-height:1.35}
 
 .register-focus{background:#eef7f5;outline:2px solid #75aaa5;outline-offset:-2px}
+.register-selected{background:#f3f8f7}
+.register-select-col{width:2rem;text-align:center}
+.register-bulk-bar{display:grid;gap:10px;padding:12px 14px}
+.register-bulk-summary{display:grid;gap:2px}
+.register-bulk-summary strong{font-size:13px}
+.register-bulk-summary span{color:var(--muted);font-size:11px;line-height:1.4}
+.register-bulk-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+.register-bulk-controls label{display:grid;gap:4px;font-size:11px;font-weight:650;color:#3f535d}
+.register-bulk-controls input,.register-bulk-controls select{border:1px solid #bdcbd0;border-radius:5px;padding:7px 9px;background:#fff;min-width:10rem}
+.register-bulk-controls button{border:1px solid #bdcbd0;background:#fff;border-radius:6px;padding:7px 10px;display:inline-flex;gap:6px;align-items:center;color:#2b4650;cursor:pointer;font-size:11px}
+.register-bulk-controls button:disabled{opacity:.45;cursor:not-allowed}
+.register-bulk-controls .danger-action{background:#b84444;border-color:#b84444;color:#fff}
+.register-bulk-controls .delete-link{color:#b84444;border-color:#e2b6b6}

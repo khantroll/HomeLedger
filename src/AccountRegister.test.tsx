@@ -31,6 +31,8 @@ function tx(changes: Partial<Transaction>): Transaction {
 
 describe("AccountRegister", () => {
   beforeEach(() => {
+    vi.spyOn(repositoryModule.financeRepository, "listCategories").mockResolvedValue(["Food: Groceries", "Housing"]);
+    vi.spyOn(repositoryModule.financeRepository, "listPayees").mockResolvedValue(["Utility"]);
     vi.spyOn(repositoryModule.financeRepository, "listTransactionsPage").mockResolvedValue({
       transactions: [
         tx({ id: "older", postedDate: "2026-09-01", payee: "Utility", category: "Housing", amountMinor: -2500, status: "cleared" }),
@@ -294,5 +296,35 @@ describe("AccountRegister", () => {
     expect(within(splitMenu).getByText(/cannot preserve split/i)).toBeTruthy();
     expect(splitRecurring.getAttribute("aria-describedby")).toBeTruthy();
     expect((within(splitMenu).getByRole("menuitem", { name: "Create rule" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("selects visible rows and applies eligible bulk category without silently including transfers or splits", async () => {
+    const user = userEvent.setup();
+    const bulkCategory = vi.spyOn(repositoryModule.financeRepository, "bulkSetTransactionCategory").mockResolvedValue({
+      updatedCount: 1,
+      deletedCount: 0,
+    });
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    await screen.findByText("Utility");
+    await user.click(screen.getByRole("checkbox", { name: "Select all visible transactions" }));
+    expect(await screen.findByText(/3 selected/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Change category \(1\)/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Set status \(2\)/i })).toBeTruthy();
+    const categoryInput = screen.getByLabelText("Bulk category");
+    await user.clear(categoryInput);
+    await user.type(categoryInput, "Food: Market");
+    await user.click(screen.getByRole("button", { name: /Change category \(1\)/i }));
+    expect(bulkCategory).toHaveBeenCalledWith({ transactionIds: ["older"], category: "Food: Market" });
+  });
+
+  it("clears selection when the register scope changes", async () => {
+    const user = userEvent.setup();
+    render(<AccountRegister accounts={accounts} onRequestDialog={vi.fn()} />);
+    await screen.findByText("Utility");
+    await user.click(screen.getByRole("checkbox", { name: /Select Utility/i }));
+    expect(await screen.findByText(/1 selected/i)).toBeTruthy();
+    await user.selectOptions(screen.getByLabelText("Filter register by status"), "pending");
+    await screen.findByText("Utility");
+    expect(screen.queryByText(/selected/i)).toBeNull();
   });
 });
