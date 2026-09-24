@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ArrowLeftRight, ChevronLeft, Download, Flag, MoreHorizontal, Scale, Search, StickyNote, Tags, Trash2 } from "lucide-react";
+import { ArrowLeftRight, ChevronLeft, Download, Flag, MoreHorizontal, Paperclip, Scale, Search, StickyNote, Tags, Trash2 } from "lucide-react";
 import {
   REGISTER_PAGE_SIZE,
   formatMoney,
@@ -614,6 +614,16 @@ export function AccountRegister({
                             <span className="register-note-badge" title={transaction.memo} aria-label="Has note">
                               <StickyNote size={11} aria-hidden="true" />
                               <span>Note</span>
+                            </span>
+                          ) : null}
+                          {(transaction.attachmentCount ?? 0) > 0 ? (
+                            <span
+                              className="register-attachment-badge"
+                              title={`${transaction.attachmentCount} attachment${transaction.attachmentCount === 1 ? "" : "s"}`}
+                              aria-label={transaction.attachmentCount === 1 ? "1 attachment" : `${transaction.attachmentCount} attachments`}
+                            >
+                              <Paperclip size={11} aria-hidden="true" />
+                              <span>{transaction.attachmentCount}</span>
                             </span>
                           ) : null}
                         </span>

@@ -18,4 +18,19 @@
 .imported-note { color: #5b5129; background: #fff9e9; border: 1px solid #eadcaa; }
 .edit-transaction { padding: 4px 8px; font-size: 10px; }
 .transaction-category small { display: block; color: var(--muted); font-size: 9px; margin-top: 2px; }
-@media(max-width:760px){.split-row{grid-template-columns:1fr 1fr}.split-row label:first-child,.split-row label:nth-child(4){grid-column:span 2}.split-remove{justify-self:end}.transaction-actions{align-items:stretch;flex-direction:column-reverse}.transaction-actions .form-actions{width:100%}}
+.attachment-editor { display: grid; gap: 8px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 7px; background: #f8fafb; }
+.attachment-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.attachment-heading div { display: grid; gap: 2px; }
+.attachment-heading strong { font-size: 12px; }
+.attachment-heading small { color: var(--muted); font-size: 10px; font-weight: 400; }
+.attachment-heading button { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 5px 8px; white-space: nowrap; }
+.attachment-empty { margin: 0; color: var(--muted); font-size: 11px; }
+.attachment-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.attachment-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid #dfe7ea; border-radius: 5px; background: #fff; }
+.attachment-meta { min-width: 0; display: grid; gap: 1px; }
+.attachment-meta strong { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-meta small { color: var(--muted); font-size: 10px; }
+.attachment-actions { display: flex; gap: 5px; flex-shrink: 0; }
+.attachment-actions button { font-size: 10px; padding: 4px 7px; }
+.attachment-remove { color: #a44134; }
+@media(max-width:760px){.split-row{grid-template-columns:1fr 1fr}.split-row label:first-child,.split-row label:nth-child(4){grid-column:span 2}.split-remove{justify-self:end}.transaction-actions{align-items:stretch;flex-direction:column-reverse}.transaction-actions .form-actions{width:100%}.attachment-heading,.attachment-list li{flex-direction:column;align-items:stretch}.attachment-actions{justify-content:flex-end}}

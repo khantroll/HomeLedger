@@ -10,11 +10,12 @@ use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 
 mod investment;
 mod cross_domain_transfer;
+mod attachments;
 
 #[cfg(test)]
 mod tests;
 
-struct DbState(Mutex<Connection>);
+pub(crate) struct DbState(pub(crate) Mutex<Connection>);
 
 const MAX_WORKBOOK_BYTES: usize = 10 * 1024 * 1024;
 const MAX_WORKBOOK_SHEETS: usize = 50;
@@ -942,6 +943,8 @@ struct LedgerTransaction {
     splits: Vec<LedgerTransactionSplit>,
     transfer_link_id: Option<String>,
     transfer_account_id: Option<String>,
+    #[serde(default)]
+    attachment_count: i64,
 }
 
 #[derive(Serialize)]
@@ -1138,6 +1141,7 @@ struct ImportTransactionsRequest {
 struct ImportResult {
     batch_id: String,
     imported_count: usize,
+    transaction_ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -1402,7 +1406,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 20;
+const CURRENT_SCHEMA_VERSION: i64 = 21;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_RECOVERY_RETENTION: usize = 7;
@@ -1645,6 +1649,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let flagged_col: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_table_info('transactions') WHERE name='flagged'", [], |row| row.get(0)).map_err(|e| e.to_string())?;
         if flagged_col != 1 { return Err("Transaction flags migration did not add the flagged column".into()); }
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(20, 'transaction notes and flags')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 21 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/021_transaction_attachments.sql")).map_err(|e| e.to_string())?;
+        let tables: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('attachments','transaction_attachments','import_batch_attachments')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if tables != 3 { return Err("Transaction attachments migration did not create required tables".into()); }
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(21, 'transaction attachments and receipt retention')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2340,7 +2352,8 @@ fn list_transactions_page_inner(connection: &Connection, request: TransactionQue
         request.offset.min(total_count)
     };
     let mut statement = connection.prepare(&format!(
-        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, flagged, external_id, source, import_batch_id
+        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, flagged, external_id, source, import_batch_id,
+                (SELECT COUNT(*) FROM transaction_attachments link WHERE link.transaction_id = transactions.id)
          FROM transactions
          WHERE {filter_sql}
          ORDER BY posted_date ASC, created_at ASC, id ASC
@@ -2349,7 +2362,7 @@ fn list_transactions_page_inner(connection: &Connection, request: TransactionQue
     let rows = statement.query_map(params![account_id, from_date, to_date, status, search, reconciliation_candidates, flagged_only, limit, offset], |row| Ok(LedgerTransaction {
         id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, original_payee: row.get(4)?, category: row.get(5)?,
         amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, flagged: row.get::<_, i64>(9)? != 0, external_id: row.get(10)?, source: row.get(11)?, import_batch_id: row.get(12)?,
-        splits: vec![], transfer_link_id: None, transfer_account_id: None
+        splits: vec![], transfer_link_id: None, transfer_account_id: None, attachment_count: row.get(13)?
     })).map_err(|e| e.to_string())?;
     let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     let mut split_statement = connection.prepare("SELECT id, category, amount_minor, memo FROM transaction_splits WHERE transaction_id = ?1 ORDER BY sort_order, rowid").map_err(|e| e.to_string())?;
@@ -2439,7 +2452,7 @@ fn clean_transaction_request(request: CreateTransactionRequest) -> Result<Ledger
         id: Uuid::new_v4().to_string(), account_id, posted_date: request.posted_date, payee, original_payee: None,
         category: if splits.is_empty() { clean_required(request.category, "Category", 120)? } else { "Split transaction".into() },
         amount_minor: request.amount_minor, status: request.status, memo, flagged: request.flagged, external_id: None,
-        source: "manual".into(), import_batch_id: None, splits, transfer_link_id: None, transfer_account_id: None
+        source: "manual".into(), import_batch_id: None, splits, transfer_link_id: None, transfer_account_id: None, attachment_count: 0
     })
 }
 
@@ -2543,7 +2556,13 @@ fn create_transfer(request:TransferRequest,state:State<DbState>)->Result<Transfe
 #[tauri::command]
 fn update_transfer(transfer_id:String,request:TransferRequest,state:State<DbState>)->Result<TransferResult,String>{let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;update_transfer_inner(&mut connection,transfer_id,request)}
 #[tauri::command]
-fn delete_transfer(transfer_id:String,state:State<DbState>)->Result<(),String>{let mut connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;delete_transfer_inner(&mut connection,transfer_id)}
+fn delete_transfer(transfer_id:String,state:State<DbState>,attachments:State<attachments::AttachmentState>)->Result<(),String>{
+    let mut connection=state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    delete_transfer_inner(&mut connection,transfer_id)?;
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    let _ = attachments::garbage_collect_unreferenced_attachments(&mut connection, &store)?;
+    Ok(())
+}
 
 fn normalize_merchant(value:&str)->String{
     let mut output=String::new();
@@ -2887,7 +2906,7 @@ fn insert_scheduled_post(connection:&Connection,occurrence:&ScheduledOccurrence,
         connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![from_transaction_id,template.account_id,occurrence.due_date,template.payee,format!("Transfer: {to_name}"),-template.amount_minor,template.status,template.memo]).map_err(|e|e.to_string())?;
         connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![to_transaction_id,destination_id,occurrence.due_date,template.payee,format!("Transfer: {from_name}"),template.amount_minor,template.status,template.memo]).map_err(|e|e.to_string())?;
         connection.execute("INSERT INTO transfer_links(id,from_transaction_id,to_transaction_id) VALUES(?1,?2,?3)",params![link_id,from_transaction_id,to_transaction_id]).map_err(|e|e.to_string())?;
-        return Ok(LedgerTransaction{id:from_transaction_id,account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),original_payee:None,category:format!("Transfer: {to_name}"),amount_minor:-template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),flagged:false,external_id:None,source:"transfer".into(),import_batch_id:None,splits:vec![],transfer_link_id:Some(link_id),transfer_account_id:Some(destination_id.clone())});
+        return Ok(LedgerTransaction{id:from_transaction_id,account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),original_payee:None,category:format!("Transfer: {to_name}"),amount_minor:-template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),flagged:false,external_id:None,source:"transfer".into(),import_batch_id:None,splits:vec![],transfer_link_id:Some(link_id),transfer_account_id:Some(destination_id.clone()),attachment_count:0});
     }
     let item=clean_transaction_request(CreateTransactionRequest{account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),category:template.category.clone(),amount_minor:template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),flagged:false,splits:None})?;
     connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'manual')",params![item.id,item.account_id,item.posted_date,item.payee,item.category,item.amount_minor,item.status,item.memo]).map_err(|e|e.to_string())?;
@@ -3287,13 +3306,14 @@ struct TransactionAnnotationRequest {
 
 fn load_ledger_transaction(connection: &Connection, transaction_id: &str) -> Result<LedgerTransaction, String> {
     let mut statement = connection.prepare(
-        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, flagged, external_id, source, import_batch_id
+        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, flagged, external_id, source, import_batch_id,
+                (SELECT COUNT(*) FROM transaction_attachments link WHERE link.transaction_id = transactions.id)
          FROM transactions WHERE id = ?1"
     ).map_err(|e| e.to_string())?;
     let mut item = statement.query_row(params![transaction_id], |row| Ok(LedgerTransaction {
         id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, original_payee: row.get(4)?, category: row.get(5)?,
         amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, flagged: row.get::<_, i64>(9)? != 0, external_id: row.get(10)?, source: row.get(11)?, import_batch_id: row.get(12)?,
-        splits: vec![], transfer_link_id: None, transfer_account_id: None
+        splits: vec![], transfer_link_id: None, transfer_account_id: None, attachment_count: row.get(13)?
     })).map_err(|_| "Transaction does not exist".to_string())?;
     let mut split_statement = connection.prepare("SELECT id, category, amount_minor, memo FROM transaction_splits WHERE transaction_id = ?1 ORDER BY sort_order, rowid").map_err(|e| e.to_string())?;
     let split_rows = split_statement.query_map(params![item.id], |row| Ok(LedgerTransactionSplit { id: row.get(0)?, category: row.get(1)?, amount_minor: row.get(2)?, memo: row.get(3)? })).map_err(|e| e.to_string())?;
@@ -3353,9 +3373,16 @@ fn delete_transaction_inner(connection: &Connection, transaction_id: String) -> 
 }
 
 #[tauri::command]
-fn delete_transaction(transaction_id: String, state: State<DbState>) -> Result<(), String> {
-    let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    delete_transaction_inner(&connection, transaction_id)
+fn delete_transaction(
+    transaction_id: String,
+    state: State<DbState>,
+    attachments: State<attachments::AttachmentState>,
+) -> Result<(), String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    delete_transaction_inner(&connection, transaction_id)?;
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    let _ = attachments::garbage_collect_unreferenced_attachments(&mut connection, &store)?;
+    Ok(())
 }
 
 fn validate_bulk_transaction_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
@@ -3459,9 +3486,16 @@ fn bulk_set_transaction_category(request: BulkSetTransactionCategoryRequest, sta
 }
 
 #[tauri::command]
-fn bulk_delete_transactions(request: BulkTransactionIdsRequest, state: State<DbState>) -> Result<BulkMutationResult, String> {
+fn bulk_delete_transactions(
+    request: BulkTransactionIdsRequest,
+    state: State<DbState>,
+    attachments: State<attachments::AttachmentState>,
+) -> Result<BulkMutationResult, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    bulk_delete_transactions_inner(&mut connection, request)
+    let result = bulk_delete_transactions_inner(&mut connection, request)?;
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    let _ = attachments::garbage_collect_unreferenced_attachments(&mut connection, &store)?;
+    Ok(result)
 }
 
 fn import_transactions_inner(connection: &mut Connection, request: ImportTransactionsRequest) -> Result<ImportResult, String> {
@@ -3504,6 +3538,7 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
     let imported_count = request.rows.len();
     let original_total_minor: i64 = request.rows.iter().map(|row| row.amount_minor).try_fold(0_i64, |total, amount| total.checked_add(amount).ok_or("Import total is too large"))?;
     tx.execute("INSERT INTO import_batches(id, account_id, source_name, original_transaction_count, original_total_minor) VALUES(?1, ?2, ?3, ?4, ?5)", params![batch_id, account_id, source_name, imported_count as i64, original_total_minor]).map_err(|e| e.to_string())?;
+    let mut transaction_ids = Vec::with_capacity(imported_count);
     for row in request.rows {
         let original_payee=clean_required(row.original_payee.clone().unwrap_or_else(||row.payee.clone()),"Description/payee",160)?;
         let matched_rule=matching_merchant_rule(&merchant_rules,&original_payee,row.amount_minor);
@@ -3537,9 +3572,10 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
             let changed=tx.execute("UPDATE scheduled_occurrences SET status='linked',transaction_id=?2,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='expected' AND transaction_id IS NULL",params![occurrence_id,transaction_id]).map_err(|e|e.to_string())?;
             if changed!=1{return Err("The selected scheduled occurrence changed before import; nothing was imported".into());}
         }
+        transaction_ids.push(transaction_id);
     }
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(ImportResult { batch_id, imported_count })
+    Ok(ImportResult { batch_id, imported_count, transaction_ids })
 }
 
 #[tauri::command]
@@ -3573,9 +3609,17 @@ fn undo_import_batch_inner(connection: &mut Connection, batch_id: &str) -> Resul
 }
 
 #[tauri::command]
-fn undo_import_batch(batch_id: String, state: State<DbState>) -> Result<UndoImportResult, String> {
+fn undo_import_batch(
+    batch_id: String,
+    state: State<DbState>,
+    attachments: State<attachments::AttachmentState>,
+) -> Result<UndoImportResult, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    undo_import_batch_inner(&mut connection, &batch_id)
+    let result = undo_import_batch_inner(&mut connection, &batch_id)?;
+    // Transaction links cascade on delete; drop batch↔attachment links and GC unreferenced files.
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    attachments::cleanup_import_batch_attachments_inner(&mut connection, &store, &batch_id)?;
+    Ok(result)
 }
 
 fn complete_reconciliation_inner(connection: &mut Connection, request: CompleteReconciliationRequest) -> Result<Reconciliation, String> {
@@ -3753,6 +3797,14 @@ fn validate_backup_database(connection: &Connection) -> Result<(), String> {
         let link_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
         if link_tables!=1{return Err("The backup is missing ordinary↔investment cash transfer linkage".into());}
     }
+    if version >= 20 {
+        let flagged_col:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('transactions') WHERE name='flagged'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if flagged_col!=1{return Err("The backup is missing transaction flags".into());}
+    }
+    if version >= 21 {
+        let attachment_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('attachments','transaction_attachments','import_batch_attachments')",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if attachment_tables!=3{return Err("The backup is missing attachment tables".into());}
+    }
     let executable_schema_objects: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if executable_schema_objects != 0 { return Err("The backup contains unsupported database triggers or views".into()); }
     let mut statement = connection.prepare("PRAGMA foreign_key_check").map_err(|e| e.to_string())?;
@@ -3818,7 +3870,12 @@ fn create_automatic_recovery_snapshot(state: State<DbState>, app: AppHandle) -> 
 }
 
 #[tauri::command]
-fn restore_recovery_snapshot(file_name: String, state: State<DbState>, app: AppHandle) -> Result<RestoreResult, String> {
+fn restore_recovery_snapshot(
+    file_name: String,
+    state: State<DbState>,
+    attachments: State<attachments::AttachmentState>,
+    app: AppHandle,
+) -> Result<RestoreResult, String> {
     if file_name.contains('/') || file_name.contains('\\') || !file_name.starts_with("HomeLedger-recovery-") || !file_name.ends_with(".db") {
         return Err("Invalid recovery snapshot name".into());
     }
@@ -3826,13 +3883,23 @@ fn restore_recovery_snapshot(file_name: String, state: State<DbState>, app: AppH
     let path = recovery_dir(&data_dir).join(file_name);
     let bytes = std::fs::read(path).map_err(|e| format!("Could not read the recovery snapshot: {e}"))?;
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    restore_database_inner(&mut connection, &bytes)
+    let result = restore_database_inner(&mut connection, &bytes)?;
+    // Recovery snapshots are database-only; validate against the live managed attachment store.
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    attachments::validate_live_attachment_consistency(&connection, &store)?;
+    Ok(result)
 }
 
 #[tauri::command]
-fn export_backup_snapshot(state: State<DbState>) -> Result<String, String> {
+fn export_backup_snapshot(state: State<DbState>, attachments: State<attachments::AttachmentState>) -> Result<String, String> {
     let connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    snapshot_database(&connection).map(|bytes| BASE64.encode(bytes))
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    attachments::validate_live_attachment_consistency(&connection, &store)?;
+    let db_bytes = snapshot_database(&connection)?;
+    let attachment_payloads = attachments::collect_backup_attachments(&connection, &store)?;
+    let package = attachments::build_ledger_package(&db_bytes, attachment_payloads)?;
+    if package.len() > MAX_BACKUP_BYTES { return Err("The ledger is too large for a single backup file".into()); }
+    Ok(BASE64.encode(package))
 }
 
 #[tauri::command]
@@ -3871,10 +3938,78 @@ fn choose_backup_file(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn restore_backup_snapshot(snapshot_base64: String, state: State<DbState>) -> Result<RestoreResult, String> {
+fn restore_backup_snapshot(
+    snapshot_base64: String,
+    state: State<DbState>,
+    attachments: State<attachments::AttachmentState>,
+) -> Result<RestoreResult, String> {
     let bytes = BASE64.decode(snapshot_base64).map_err(|_| "The decrypted backup payload is invalid".to_string())?;
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    restore_database_inner(&mut connection, &bytes)
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    if let Some(package) = attachments::parse_ledger_package(&bytes)? {
+        let db_bytes = BASE64
+            .decode(package.database_base64.trim())
+            .map_err(|_| "The backup package database payload is invalid".to_string())?;
+        let staging_root = store
+            .root()
+            .parent()
+            .ok_or_else(|| "Attachment store root is invalid".to_string())?
+            .join(format!("attachments-restore-{}", Uuid::new_v4()));
+        let staging = attachments::AttachmentStore::from_root(staging_root.clone())?;
+        let staged = (|| -> Result<(), String> {
+            attachments::restore_attachment_payloads(&staging, &package.attachments)?;
+            // Validate package DB against staged files before touching live state.
+            if db_bytes.len() < 100 || !db_bytes.starts_with(b"SQLite format 3\0") {
+                return Err("The backup package database is not a valid SQLite backup".into());
+            }
+            let preview_path = temporary_database_path("package-preview");
+            let preview_result = (|| {
+                std::fs::write(&preview_path, &db_bytes).map_err(|e| e.to_string())?;
+                let preview = open_backup_database(&preview_path)?;
+                attachments::validate_live_attachment_consistency(&preview, &staging)?;
+                Ok(())
+            })();
+            let _ = std::fs::remove_file(preview_path);
+            preview_result
+        })();
+        if let Err(reason) = staged {
+            let _ = std::fs::remove_dir_all(&staging_root);
+            return Err(reason);
+        }
+        let result = match restore_database_inner(&mut connection, &db_bytes) {
+            Ok(value) => value,
+            Err(reason) => {
+                let _ = std::fs::remove_dir_all(&staging_root);
+                return Err(reason);
+            }
+        };
+        let live_root = store.root().to_path_buf();
+        let replaced = live_root.with_file_name(format!("attachments-replaced-{}", Uuid::new_v4()));
+        if live_root.exists() {
+            if let Err(error) = std::fs::rename(&live_root, &replaced) {
+                let _ = std::fs::remove_dir_all(&staging_root);
+                return Err(format!("Restore failed after database replacement; attachment swap could not start: {error}"));
+            }
+        }
+        if let Err(error) = std::fs::rename(&staging_root, &live_root) {
+            if replaced.exists() {
+                let _ = std::fs::rename(&replaced, &live_root);
+            }
+            let _ = std::fs::remove_dir_all(&staging_root);
+            return Err(format!("Restore failed after database replacement; attachment swap failed: {error}"));
+        }
+        let _ = std::fs::remove_dir_all(replaced);
+        attachments::validate_live_attachment_consistency(&connection, &store)?;
+        return Ok(result);
+    }
+    // Legacy database-only portable backup (no attachments package).
+    let result = restore_database_inner(&mut connection, &bytes)?;
+    // Clear managed attachment store so legacy restores do not leave stale files.
+    if store.root().exists() {
+        std::fs::remove_dir_all(store.root()).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(store.root()).map_err(|e| e.to_string())?;
+    Ok(result)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3899,10 +4034,13 @@ pub fn run() {
                 .map(|created| chrono::Utc::now().signed_duration_since(created.with_timezone(&chrono::Utc)).num_hours() >= 24)
                 .unwrap_or(true);
             if should_snapshot { create_recovery_snapshot(&connection, &data_dir, "automatic").map_err(std::io::Error::other)?; }
+            let attachment_store = attachments::AttachmentStore::new(&data_dir).map_err(std::io::Error::other)?;
+            attachments::validate_live_attachment_consistency(&connection, &attachment_store).map_err(std::io::Error::other)?;
             app.manage(DbState(Mutex::new(connection)));
+            app.manage(attachments::AttachmentState(Mutex::new(attachment_store)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, rename_category, merge_categories, remove_unused_category, rename_payee, merge_payees, remove_unused_payee, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, update_transaction_annotation, delete_transaction, bulk_update_transaction_status, bulk_set_transaction_category, bulk_delete_transactions, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, rename_category, merge_categories, remove_unused_category, rename_payee, merge_payees, remove_unused_payee, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, update_transaction_annotation, delete_transaction, bulk_update_transaction_status, bulk_set_transaction_category, bulk_delete_transactions, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot, attachments::list_transaction_attachments, attachments::attach_bytes_to_transaction, attachments::detach_transaction_attachment, attachments::open_attachment, attachments::retain_import_source_attachment, attachments::pick_and_read_attachment_file])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }
