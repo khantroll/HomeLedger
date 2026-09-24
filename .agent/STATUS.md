@@ -4,13 +4,13 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T02:50:00Z
-- **Updated by:** Cursor cloud agent
+- **Updated:** 2026-09-24T05:19:00Z
+- **Updated by:** ChatGPT
 - **Canonical main (verified):** `0fdcaa77168b5bf77873386823ccf0e9d9751f31` — #59 Financial Find merged
 - **Open PRs (verified):** PR #60 — Budget From History (`cursor/budget-from-history-1f15`), draft, intentionally unmerged
-- **Validated head:** `3dc78864720b1c2ffb7f43b9a300b1de14102407` — GitHub CI green (web + native/Windows)
-- **Scope delivered:** Plan from history (3/6-mo avg, same month last year, previous plan, scheduled obligations); selective apply; budgetMath spending semantics
-- **Next action:** Architecture/integrity review of PR #60. Do not merge automatically. Do not start PR #61 / v0.53.
+- **Correctness correction:** Average proposals now use one shared `monthsUsed` denominator; category absence in a valid history month contributes zero while unavailable household-history months remain excluded.
+- **Validation:** Regression test added for $300 Car Repair in one of three valid months => $100 suggestion. Exact-head GitHub CI is required after handoff commits.
+- **Next action:** Verify exact-head CI, inspect final diff, leave #60 open/unmerged. Do not start #61 / v0.53.
 
 ## Handoff protocol
 
