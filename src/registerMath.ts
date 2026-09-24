@@ -9,10 +9,10 @@ import {
 } from "./domain";
 
 /** True ledger Balance column only when the visible rows are contiguous account history. */
-export function registerShowsLedgerBalance(query: Pick<TransactionQuery, "status" | "search">): boolean {
+export function registerShowsLedgerBalance(query: Pick<TransactionQuery, "status" | "search" | "flaggedOnly">): boolean {
   const status = (query.status ?? "all") as TransactionStatusFilter;
   const search = query.search?.trim();
-  return status === "all" && !search;
+  return status === "all" && !search && !query.flaggedOnly;
 }
 
 export function compareRegisterOrder(a: Pick<Transaction, "postedDate" | "id">, b: Pick<Transaction, "postedDate" | "id">): number {
@@ -91,9 +91,10 @@ export function nextOlderRegisterOffset(currentOffset: number, pageSize = REGIST
   return { offset, limit: currentOffset - offset };
 }
 
-export function filteredBalanceUnavailableReason(query: Pick<TransactionQuery, "status" | "search">): string | undefined {
+export function filteredBalanceUnavailableReason(query: Pick<TransactionQuery, "status" | "search" | "flaggedOnly">): string | undefined {
   if (registerShowsLedgerBalance(query)) return undefined;
   if (query.search?.trim()) return "Running balance hides while search is active so skipped rows cannot distort the ledger.";
+  if (query.flaggedOnly) return "Running balance hides while the flagged filter is active so skipped rows cannot distort the ledger.";
   return "Running balance hides while a status filter is active so skipped rows cannot distort the ledger.";
 }
 

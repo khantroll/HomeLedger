@@ -151,6 +151,15 @@ describe("AccountRegister", () => {
     expect(screen.queryByRole("columnheader", { name: "Balance" })).toBeNull();
   });
 
+  it("hides the Balance column while the flagged-only filter skips ledger rows", async () => {
+    const user = userEvent.setup();
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    expect(await screen.findByRole("columnheader", { name: "Balance" })).toBeTruthy();
+    await user.click(screen.getByLabelText("Show only flagged transactions"));
+    expect(await screen.findByText(/Running balance hides while the flagged filter is active/)).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Balance" })).toBeNull();
+  });
+
   it("hides Transfer and Reconcile in the global all-accounts view", async () => {
     render(<AccountRegister accounts={accounts} onRequestDialog={vi.fn()} />);
     expect(await screen.findByRole("heading", { name: "All accounts" })).toBeTruthy();
@@ -368,6 +377,28 @@ describe("AccountRegister", () => {
     expect((await screen.findByRole("alert")).textContent).toMatch(/Nothing was changed/i);
     expect(screen.queryByRole("button", { name: /Confirm delete/i })).toBeNull();
     expect(screen.getByText(/2 selected/i)).toBeTruthy();
+  });
+
+
+  it("shows note and flag markers and toggles flag via annotation without mutating amounts", async () => {
+    const user = userEvent.setup();
+    vi.mocked(repositoryModule.financeRepository.listTransactionsPage).mockResolvedValue({
+      transactions: [
+        tx({ id: "noted", postedDate: "2026-09-01", payee: "Utility", category: "Housing", amountMinor: -2500, status: "cleared", memo: "call about deposit", flagged: false }),
+      ],
+      totalCount: 1,
+      offset: 0,
+      limit: REGISTER_PAGE_SIZE,
+      priorBalanceMinor: 52500,
+    });
+    const annotate = vi.spyOn(repositoryModule.financeRepository, "updateTransactionAnnotation").mockResolvedValue(
+      tx({ id: "noted", postedDate: "2026-09-01", payee: "Utility", category: "Housing", amountMinor: -2500, status: "cleared", memo: "call about deposit", flagged: true }),
+    );
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    expect(await screen.findByLabelText("Has note")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Flag Utility for follow-up/i }));
+    expect(annotate).toHaveBeenCalledWith("noted", { flagged: true });
+    expect(await screen.findByLabelText("Flagged for follow-up")).toBeTruthy();
   });
 
   it("clears selection when the register scope changes", async () => {

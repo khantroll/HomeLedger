@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { Plus, Trash2, X } from "lucide-react";
-import { formatMoney, parseMoney, sumMoney, type Account, type CreateTransactionInput, type CreateTransactionSplit, type Transaction, type TransactionSplit, type TransactionStatus } from "./domain";
+import { formatMoney, parseMoney, sumMoney, TRANSACTION_NOTE_MAX_LENGTH, type Account, type CreateTransactionInput, type CreateTransactionSplit, type Transaction, type TransactionSplit, type TransactionStatus } from "./domain";
 import { financeRepository as repository } from "./repository";
 import { SuggestionLists, useLedgerSuggestions } from "./useLedgerSuggestions";
 import "./transactionEditor.css";
@@ -50,7 +50,10 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
       const input={
         accountId:String(data.get("accountId")),postedDate:String(data.get("date")),payee:String(data.get("payee")||"").trim(),
         category:splitMode?"Split transaction":String(data.get("category")||"Uncategorized").trim(),amountMinor,
-        status:String(data.get("status")) as TransactionStatus,memo:String(data.get("memo")||"").trim()||undefined,splits:preparedSplits
+        status:String(data.get("status")) as TransactionStatus,
+        memo:String(data.get("memo")||"").trim()||undefined,
+        flagged:data.get("flagged")==="on",
+        splits:preparedSplits
       };
       if(transaction)await repository.updateTransaction(transaction.id,input);else await repository.createTransaction(input);
       await onSaved();
@@ -75,7 +78,8 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
     {!splitMode?<div className="form-row"><label>Category<input name="category" list={suggestions.categoryListId} defaultValue={seed?.category??"Uncategorized"} required maxLength={120}/></label><label>Amount<input name="amount" inputMode="decimal" defaultValue={defaultAmount} placeholder="0.00" required/></label></div>:<section className="split-editor"><div className="split-heading"><div><strong>Transaction splits</strong><small>Each line has its own income/expense direction.</small></div><button type="button" onClick={()=>setSplits(current=>[...current,blankSplit()])}><Plus size={13}/> Add line</button></div>{splits.map((split,index)=><div className="split-row" key={split.key}><label>Category<input list={suggestions.categoryListId} value={split.category} onChange={event=>updateSplit(split.key,{category:event.target.value})} maxLength={120} placeholder={`Split ${index+1}`}/></label><label>Type<select value={split.direction} onChange={event=>updateSplit(split.key,{direction:event.target.value as SplitDraft["direction"]})}><option value="expense">Expense</option><option value="income">Income</option></select></label><label>Amount<input value={split.amount} onChange={event=>updateSplit(split.key,{amount:event.target.value})} inputMode="decimal" placeholder="0.00"/></label><label>Memo<input value={split.memo} onChange={event=>updateSplit(split.key,{memo:event.target.value})} maxLength={500}/></label><button type="button" className="split-remove" onClick={()=>setSplits(current=>current.filter(item=>item.key!==split.key))} aria-label={`Remove split ${index+1}`}><Trash2 size={14}/></button></div>)}<div className="split-total"><span>Calculated transaction total</span><strong className={(splitTotal??0)<0?"negative":""}>{splitTotal===null?"Check split amounts":formatMoney(splitTotal)}</strong></div></section>}
     <button type="button" className="split-toggle" onClick={enableSplits}>{splitMode?"Use one category":"Split among categories"}</button>
     <label>Status<select name="status" defaultValue={seed?.status??"cleared"}><option value="pending">Pending</option><option value="cleared">Cleared</option>{transaction?.status==="reconciled"&&<option value="reconciled" disabled>Reconciled by statement</option>}<option value="review">Needs review</option></select></label>
-    <label>Memo<textarea name="memo" defaultValue={seed?.memo} maxLength={500}/></label>
+    <label>Note<textarea name="memo" defaultValue={seed?.memo} maxLength={TRANSACTION_NOTE_MAX_LENGTH} placeholder="Optional context for this transaction" aria-label="Transaction note"/></label>
+    <label className="flag-toggle"><input type="checkbox" name="flagged" defaultChecked={Boolean(seed?.flagged)}/> Flag for follow-up</label>
     {imported&&<p className="imported-note">This transaction came from an import batch. You can edit it, but deletion stays with the complete-batch Undo command.</p>}
     {error&&<p className="form-error">{error}</p>}
     <div className="transaction-actions">{transaction&&!imported?<button type="button" className={confirmDelete?"danger-action":"delete-link"} disabled={saving} onClick={remove}>{confirmDelete?"Confirm permanent deletion":"Delete transaction"}</button>:<span/>}<div className="form-actions"><button type="button" onClick={onClose} disabled={saving}>Cancel</button><button className="primary" disabled={saving||Boolean(splitMode&&splitTotal===null)}>{saving?"Saving…":"Save"}</button></div></div>

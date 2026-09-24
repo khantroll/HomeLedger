@@ -4,12 +4,12 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T19:38:00Z
+- **Updated:** 2026-09-24T20:23:00Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `7e8fb082681018b92b1419c544a5bf8f8fdd44ba` — #61 Category & Payee Management merged
-- **Open PRs (verified):** PR #62 — Register Bulk Actions (`cursor/register-bulk-actions-1f15`), draft, intentionally unmerged
-- **Scope delivered:** Atomic bulk category/status/delete; visible-only selection; all-or-none refusal for mixed eligible+protected selections (no silent subset apply)
-- **Next action:** Exact-head GitHub CI on the mixed-selection correctness fix, then architecture/integrity review of PR #62. Do not merge automatically. Do not start PR #63.
+- **Canonical main (verified):** `56273ab81766a194f17389409456322860ac651f` — #62 Register Bulk Actions merged
+- **Open PRs (verified):** PR #63 — Transaction Notes & Flags (`cursor/transaction-notes-flags-1f15`), draft, intentionally unmerged
+- **Scope delivered:** Notes & flags; flagged-only filter hides non-contiguous running Balance
+- **Next action:** Exact-head GitHub CI on flagged-balance fix, then architecture/integrity review of PR #63. Do not merge automatically. Do not start PR #64.
 
 ## Handoff protocol
 

@@ -1,4 +1,4 @@
-use super::{apply_migrations, bulk_delete_transactions_inner, bulk_set_transaction_category_inner, bulk_update_transaction_status_inner, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, merge_categories_inner, merge_payees_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, remove_unused_category_inner, remove_unused_payee_inner, rename_category_inner, rename_payee_inner, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, BulkSetTransactionCategoryRequest, BulkTransactionIdsRequest, BulkUpdateTransactionStatusRequest, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest, UpdateAccountRequest};
+use super::{apply_migrations, bulk_delete_transactions_inner, bulk_set_transaction_category_inner, bulk_update_transaction_status_inner, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, merge_categories_inner, merge_payees_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, remove_unused_category_inner, remove_unused_payee_inner, rename_category_inner, rename_payee_inner, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_annotation_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, BulkSetTransactionCategoryRequest, BulkTransactionIdsRequest, BulkUpdateTransactionStatusRequest, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransactionAnnotationRequest, TransferRequest, UpdateAccountRequest};
 use calamine::Data;
 use rusqlite::Connection;
 use crate::investment::{snapshot_inner, SCALE_E8};
@@ -33,7 +33,7 @@ fn migration_creates_local_ledger_tables() {
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
     let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
     let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (19, 2, 1, 1, 2, 2,1,2,1,2,5,1));
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (20, 2, 1, 1, 2, 2,1,2,1,2,5,1));
     let oict: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'", [], |row| row.get(0)).unwrap();
     assert_eq!(oict, 1);
 }
@@ -61,7 +61,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 19);
+    assert_eq!(version, 20);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -113,7 +113,7 @@ fn migration_upgrades_populated_v17_without_breaking_account_foreign_keys() {
     let fk_count:i64=connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get(0)).unwrap();
     let related:(i64,i64,i64,i64,i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions WHERE account_id='a'),(SELECT COUNT(*) FROM import_batches WHERE account_id='a'),(SELECT COUNT(*) FROM reconciliations WHERE account_id='a'),(SELECT COUNT(*) FROM import_profiles WHERE account_id='a'),(SELECT COUNT(*) FROM debt_terms WHERE account_id='b'),(SELECT COUNT(*) FROM savings_goals WHERE account_id='a')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household')",[]).unwrap();
-    assert_eq!(version,19);
+    assert_eq!(version,20);
     assert_eq!(fk_count,0);
     assert_eq!(related,(1,1,1,1,1,1));
 }
@@ -226,6 +226,98 @@ fn category_rename_collision_and_reserved_labels_are_rejected() {
     assert!(merge_categories_inner(&mut connection, "Food".into(), "Food".into()).is_err());
 }
 
+
+#[test]
+fn transaction_notes_and_flags_are_metadata_only_and_survive_edits() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 10000, 'Household')", []).unwrap();
+    let created = create_transaction_inner(&mut connection, CreateTransactionRequest {
+        account_id: "a".into(), posted_date: "2026-09-20".into(), payee: "Hardware".into(), category: "Home".into(),
+        amount_minor: -4200, status: "cleared".into(), memo: Some("Ask about warranty".into()), flagged: true, splits: None,
+    }).unwrap();
+    assert_eq!(created.memo.as_deref(), Some("Ask about warranty"));
+    assert!(created.flagged);
+    let balance_before: i64 = connection.query_row("SELECT opening_balance_minor + COALESCE((SELECT SUM(amount_minor) FROM transactions WHERE account_id='a'),0) FROM accounts WHERE id='a'", [], |r| r.get(0)).unwrap();
+
+    let annotated = update_transaction_annotation_inner(&mut connection, created.id.clone(), TransactionAnnotationRequest {
+        update_memo: true, memo: Some("  Called store  ".into()), flagged: Some(false),
+    }).unwrap();
+    assert_eq!(annotated.memo.as_deref(), Some("Called store"));
+    assert!(!annotated.flagged);
+
+    let updated = update_transaction_inner(&mut connection, created.id.clone(), CreateTransactionRequest {
+        account_id: "a".into(), posted_date: "2026-09-20".into(), payee: "Hardware Store".into(), category: "Home: Repairs".into(),
+        amount_minor: -4200, status: "pending".into(), memo: Some("Called store".into()), flagged: true, splits: None,
+    }).unwrap();
+    assert_eq!(updated.payee, "Hardware Store");
+    assert_eq!(updated.memo.as_deref(), Some("Called store"));
+    assert!(updated.flagged);
+
+    let cleared = update_transaction_annotation_inner(&mut connection, created.id.clone(), TransactionAnnotationRequest {
+        update_memo: true, memo: Some("   ".into()), flagged: None,
+    }).unwrap();
+    assert!(cleared.memo.is_none());
+    assert!(cleared.flagged);
+
+    let flagged_only = list_transactions_page_inner(&connection, TransactionQuery {
+        account_id: Some("a".into()), offset: 0, limit: 50, from_date: None, to_date: None, status: None, search: None, flagged_only: true, newest: true,
+    }, false).unwrap();
+    assert_eq!(flagged_only.total_count, 1);
+
+    let searched = list_transactions_page_inner(&connection, TransactionQuery {
+        account_id: Some("a".into()), offset: 0, limit: 50, from_date: None, to_date: None, status: None, search: Some("Called store".into()), flagged_only: false, newest: true,
+    }, false).unwrap();
+    // note was cleared — search should miss
+    assert_eq!(searched.total_count, 0);
+
+    update_transaction_annotation_inner(&mut connection, created.id.clone(), TransactionAnnotationRequest {
+        update_memo: true, memo: Some("warranty card in glovebox".into()), flagged: Some(true),
+    }).unwrap();
+    let note_search = list_transactions_page_inner(&connection, TransactionQuery {
+        account_id: Some("a".into()), offset: 0, limit: 50, from_date: None, to_date: None, status: None, search: Some("glovebox".into()), flagged_only: false, newest: true,
+    }, false).unwrap();
+    assert_eq!(note_search.total_count, 1);
+
+    let imported = import_transactions_inner(&mut connection, ImportTransactionsRequest {
+        account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
+            posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
+            amount_minor: -5500, memo: Some("imported statement memo".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
+        }],
+    }).unwrap();
+    assert_eq!(imported.imported_count, 1);
+    let imported_id: String = connection.query_row("SELECT id FROM transactions WHERE external_id='ext-1'", [], |r| r.get(0)).unwrap();
+    update_transaction_annotation_inner(&mut connection, imported_id.clone(), TransactionAnnotationRequest {
+        update_memo: true, memo: Some("User note after import".into()), flagged: Some(true),
+    }).unwrap();
+    let redo_error = match import_transactions_inner(&mut connection, ImportTransactionsRequest {
+        account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
+            posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
+            amount_minor: -5500, memo: Some("should not overwrite".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
+        }],
+    }) {
+        Ok(_) => panic!("duplicate import unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(redo_error.contains("already exists"));
+    let (memo, flagged, original, amount): (Option<String>, i64, Option<String>, i64) = connection.query_row(
+        "SELECT memo, flagged, original_payee, amount_minor FROM transactions WHERE id=?1",
+        [&imported_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    ).unwrap();
+    assert_eq!(memo.as_deref(), Some("User note after import"));
+    assert_eq!(flagged, 1);
+    assert_eq!(original.as_deref(), Some("UTILITY CO"));
+    assert_eq!(amount, -5500);
+
+    let balance_after: i64 = connection.query_row("SELECT opening_balance_minor + COALESCE((SELECT SUM(amount_minor) FROM transactions WHERE account_id='a'),0) FROM accounts WHERE id='a'", [], |r| r.get(0)).unwrap();
+    assert_eq!(balance_after, balance_before - 5500);
+
+    assert!(update_transaction_annotation_inner(&mut connection, created.id.clone(), TransactionAnnotationRequest {
+        update_memo: true, memo: Some("x".repeat(501)), flagged: None,
+    }).is_err());
+}
+
 #[test]
 fn bulk_register_actions_are_atomic_and_protect_transfers_splits_and_reconciled() {
     let mut connection = Connection::open_in_memory().unwrap();
@@ -237,7 +329,7 @@ fn bulk_register_actions_are_atomic_and_protect_transfers_splits_and_reconciled(
     connection.execute("INSERT INTO reconciliation_items(reconciliation_id, transaction_id, amount_minor, status_before) VALUES('r1', 'rec', -200, 'cleared')", []).unwrap();
     create_transfer_inner(&mut connection, TransferRequest {
         from_account_id: "a".into(), to_account_id: "b".into(), posted_date: "2026-08-05".into(), payee: "Move".into(),
-        amount_minor: 250, status: "cleared".into(), memo: None,
+        amount_minor: 250, status: "cleared".into(), memo: None, flagged: false,
     }).unwrap();
 
     let status = bulk_update_transaction_status_inner(&mut connection, BulkUpdateTransactionStatusRequest {
@@ -394,6 +486,7 @@ fn manual_transaction_crud_preserves_balanced_splits() {
     let transaction = create_transaction_inner(&mut connection, CreateTransactionRequest {
         account_id: "a".into(), posted_date: "2026-09-18".into(), payee: "Store".into(), category: "Ignored".into(),
         amount_minor: -3000, status: "cleared".into(), memo: None,
+        flagged: false,
         splits: Some(vec![
             CreateTransactionSplitRequest { category: "Food".into(), amount_minor: -2000, memo: None },
             CreateTransactionSplitRequest { category: "Household".into(), amount_minor: -1000, memo: Some("Supplies".into()) },
@@ -406,7 +499,7 @@ fn manual_transaction_crud_preserves_balanced_splits() {
 
     let updated = update_transaction_inner(&mut connection, transaction.id.clone(), CreateTransactionRequest {
         account_id: "a".into(), posted_date: "2026-09-19".into(), payee: "Market".into(), category: "Food".into(),
-        amount_minor: -2500, status: "cleared".into(), memo: Some("Updated".into()), splits: None
+        amount_minor: -2500, status: "cleared".into(), memo: Some("Updated".into()), flagged: false, splits: None
     }).unwrap();
     assert_eq!(updated.category, "Food");
     let remaining_splits: i64 = connection.query_row("SELECT COUNT(*) FROM transaction_splits WHERE transaction_id=?1", [&transaction.id], |row| row.get(0)).unwrap();
@@ -423,7 +516,7 @@ fn linked_transfer_crud_is_atomic_and_balanced() {
     connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('from', 'Checking', 'checking', 'USD', 10000, 'Household'), ('to', 'Savings', 'savings', 'USD', 2000, 'Household')", []).unwrap();
     let request = |amount_minor| TransferRequest {
         from_account_id: "from".into(), to_account_id: "to".into(), posted_date: "2026-09-18".into(),
-        payee: "Savings transfer".into(), amount_minor, status: "cleared".into(), memo: None,
+        payee: "Savings transfer".into(), amount_minor, status: "cleared".into(), memo: None, flagged: false,
     };
     let transfer = create_transfer_inner(&mut connection, request(2500)).unwrap();
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE id IN (?1, ?2)", [&transfer.from_transaction_id, &transfer.to_transaction_id], |row| row.get(0)).unwrap();
@@ -431,7 +524,7 @@ fn linked_transfer_crud_is_atomic_and_balanced() {
     assert_eq!((count, total), (2, 0));
     assert!(update_transaction_inner(&mut connection, transfer.from_transaction_id.clone(), CreateTransactionRequest {
         account_id: "from".into(), posted_date: "2026-09-18".into(), payee: "Invalid".into(), category: "Transfer".into(),
-        amount_minor: -100, status: "cleared".into(), memo: None, splits: None,
+        amount_minor: -100, status: "cleared".into(), memo: None, flagged: false, splits: None,
     }).is_err());
     update_transfer_inner(&mut connection, transfer.link_id.clone(), request(1000)).unwrap();
     let amounts: (i64, i64) = connection.query_row("SELECT origin.amount_minor, destination.amount_minor FROM transfer_links link JOIN transactions origin ON origin.id=link.from_transaction_id JOIN transactions destination ON destination.id=link.to_transaction_id WHERE link.id=?1", [&transfer.link_id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
@@ -473,7 +566,7 @@ fn scheduled_occurrences_are_idempotent_and_support_state_transitions() {
     assert_eq!((posted.posted_date.as_str(),posted.amount_minor),("2026-01-31",-2500));
     let skipped=skip_scheduled_occurrence_inner(&connection,ids[1].clone()).unwrap();
     assert_eq!(skipped.status,"skipped");
-    let existing=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"a".into(),posted_date:"2026-03-30".into(),payee:"Utility".into(),category:"Utilities".into(),amount_minor:-2500,status:"cleared".into(),memo:None,splits:None}).unwrap();
+    let existing=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"a".into(),posted_date:"2026-03-30".into(),payee:"Utility".into(),category:"Utilities".into(),amount_minor:-2500,status:"cleared".into(),memo:None,flagged:false,splits:None}).unwrap();
     let linked=link_scheduled_occurrence_inner(&mut connection,ids[2].clone(),existing.id.clone()).unwrap();
     assert_eq!((linked.status.as_str(),linked.transaction_id.as_deref()),("linked",Some(existing.id.as_str())));
     assert!(delete_transaction_inner(&connection,existing.id).is_err());
@@ -619,7 +712,7 @@ fn reconciliation_requires_an_exact_balance_and_protects_completed_items() {
     assert_eq!(reconciled_count, 2);
     assert!(update_transaction_inner(&mut connection, "purchase".into(), CreateTransactionRequest {
         account_id: "a".into(), posted_date: "2026-09-02".into(), payee: "Store".into(), category: "Food".into(),
-        amount_minor: -1250, status: "cleared".into(), memo: None, splits: None,
+        amount_minor: -1250, status: "cleared".into(), memo: None, flagged: false, splits: None,
     }).is_err());
     assert!(delete_transaction_inner(&connection, "purchase".into()).is_err());
 }
@@ -677,10 +770,10 @@ fn portfolio_snapshot_restore_preserves_revisions_allocations_prices_and_project
 fn ordinary_ledger_rejects_investment_asset_conversions() {
     let mut connection=Connection::open_in_memory().unwrap();apply_migrations(&mut connection).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household'),('cash','Checking','checking','USD',0,'Household')",[]).unwrap();
-    let result=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Buy".into(),category:"Investment".into(),amount_minor:-10000,status:"cleared".into(),memo:None,splits:None});
+    let result=create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Buy".into(),category:"Investment".into(),amount_minor:-10000,status:"cleared".into(),memo:None,flagged:false,splits:None});
     assert!(matches!(result,Err(ref e) if e.contains("investment event workflow")));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
-    let transfer=create_transfer_inner(&mut connection,TransferRequest{from_account_id:"cash".into(),to_account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Funding".into(),amount_minor:10000,status:"cleared".into(),memo:None});
+    let transfer=create_transfer_inner(&mut connection,TransferRequest{from_account_id:"cash".into(),to_account_id:"inv".into(),posted_date:"2026-01-01".into(),payee:"Funding".into(),amount_minor:10000,status:"cleared".into(),memo:None,flagged:false});
     assert_eq!(transfer.err().as_deref(),Some("Ordinary↔investment cash transfers must use the dedicated transfer command; investment-to-investment cash transfers use investment activity"));
     assert_eq!(query_transactions(&connection,None,None,false).unwrap().len(),0);
 }
@@ -753,6 +846,7 @@ fn transaction_pages_expose_history_beyond_the_old_thousand_row_cap() {
             amount_minor: -1,
             status: if index % 2 == 0 { "pending".into() } else { "cleared".into() },
             memo: None,
+            flagged: false,
             splits: None,
         }).unwrap();
     }
@@ -767,6 +861,7 @@ fn transaction_pages_expose_history_beyond_the_old_thousand_row_cap() {
         to_date: None,
         status: None,
         search: None,
+        flagged_only: false,
         newest: true,
     }, false).unwrap();
     assert_eq!(newest.total_count, 1105);
@@ -782,6 +877,7 @@ fn transaction_pages_expose_history_beyond_the_old_thousand_row_cap() {
         to_date: None,
         status: None,
         search: None,
+        flagged_only: false,
         newest: false,
     }, false).unwrap();
     assert_eq!(earliest.prior_balance_minor, Some(500000));
@@ -795,6 +891,7 @@ fn transaction_pages_expose_history_beyond_the_old_thousand_row_cap() {
         to_date: None,
         status: Some("pending".into()),
         search: None,
+        flagged_only: false,
         newest: true,
     }, false).unwrap();
     let first_pending = pending.transactions.first().unwrap();
@@ -1190,7 +1287,7 @@ fn ordinary_transaction_creation_rejects_investment_accounts() {
     apply_migrations(&mut connection).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv-ui','Brokerage','investment','USD',0,'Household')",[]).unwrap();
     connection.execute("INSERT INTO investment_account_settings(account_id,account_kind,tax_treatment,opening_cash_minor,opening_date) VALUES('inv-ui','brokerage','unknown',0,'2026-01-01')",[]).unwrap();
-    let error=match create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv-ui".into(),posted_date:"2026-09-22".into(),payee:"Should fail".into(),category:"Investments".into(),amount_minor:-1000,status:"cleared".into(),memo:None,splits:None}){Ok(_)=>panic!("ordinary transaction unexpectedly accepted investment account"),Err(error)=>error};
+    let error=match create_transaction_inner(&mut connection,CreateTransactionRequest{account_id:"inv-ui".into(),posted_date:"2026-09-22".into(),payee:"Should fail".into(),category:"Investments".into(),amount_minor:-1000,status:"cleared".into(),memo:None,flagged:false,splits:None}){Ok(_)=>panic!("ordinary transaction unexpectedly accepted investment account"),Err(error)=>error};
     assert_eq!(error,"Investment activity must use the investment event workflow");
     let count:i64=connection.query_row("SELECT COUNT(*) FROM transactions WHERE account_id='inv-ui'",[],|r|r.get(0)).unwrap();
     assert_eq!(count,0);
@@ -1225,6 +1322,7 @@ fn cross_domain_ordinary_leg_rejects_generic_edit_delete_and_reconciliation() {
         amount_minor: -250,
         status: "cleared".into(),
         memo: None,
+        flagged: false,
         splits: None,
     }).err().unwrap();
     assert!(edit.contains("transfer editor"));

@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type BulkMutationResult, type BulkSetTransactionCategoryInput, type BulkTransactionIdsInput, type BulkUpdateTransactionStatusInput, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
+import { reconciliationDifference, sumMoney, normalizeTransactionQuery, TRANSACTION_NOTE_MAX_LENGTH, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type BulkMutationResult, type BulkSetTransactionCategoryInput, type BulkTransactionIdsInput, type BulkUpdateTransactionStatusInput, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionAnnotationInput, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
 import { isRememberedCategoryLabel } from "./labelVocabulary";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
@@ -326,6 +326,7 @@ export class DemoFinanceRepository implements FinanceRepository {
       if (normalized.fromDate && item.postedDate < normalized.fromDate) return false;
       if (normalized.toDate && item.postedDate > normalized.toDate) return false;
       if (status && item.status !== status) return false;
+      if (normalized.flaggedOnly && !item.flagged) return false;
       if (search) {
         const haystack = `${item.payee} ${item.category} ${item.memo ?? ""} ${item.originalPayee ?? ""}`.toLocaleLowerCase();
         if (!haystack.includes(search)) return false;
@@ -431,7 +432,13 @@ export class DemoFinanceRepository implements FinanceRepository {
   }
   async createTransaction(input: CreateTransactionInput): Promise<Transaction> {
     validateTransactionInput(input);
-    const transaction: Transaction = { id: crypto.randomUUID(), ...input, source: "manual", splits: input.splits?.map(split=>({id:crypto.randomUUID(),...split})) };
+    const transaction: Transaction = {
+      id: crypto.randomUUID(),
+      ...input,
+      flagged: Boolean(input.flagged),
+      source: "manual",
+      splits: input.splits?.map(split=>({id:crypto.randomUUID(),...split})),
+    };
     this.transactions.unshift(transaction);
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (account) account.balanceMinor += input.amountMinor;
@@ -449,9 +456,24 @@ export class DemoFinanceRepository implements FinanceRepository {
     if(!newAccount)throw new Error("Account does not exist");
     if(oldAccount)oldAccount.balanceMinor-=current.amountMinor;
     newAccount.balanceMinor+=input.amountMinor;
-    const updated:Transaction={...current,...input,splits:input.splits?.map(split=>({id:crypto.randomUUID(),...split}))};
+    const updated:Transaction={...current,...input,flagged:Boolean(input.flagged),splits:input.splits?.map(split=>({id:crypto.randomUUID(),...split}))};
     this.transactions[index]=updated;
     return structuredClone(updated);
+  }
+  async updateTransactionAnnotation(id: string, input: TransactionAnnotationInput): Promise<Transaction> {
+    const index = this.transactions.findIndex(item => item.id === id);
+    if (index < 0) throw new Error("Transaction does not exist");
+    if (!input.updateMemo && input.flagged === undefined) throw new Error("Annotation update requires a note and/or flag change");
+    const current = this.transactions[index];
+    const next = { ...current };
+    if (input.updateMemo) {
+      const memo = (input.memo ?? "").trim();
+      if (memo.length > TRANSACTION_NOTE_MAX_LENGTH) throw new Error("Memo is too long");
+      next.memo = memo || undefined;
+    }
+    if (input.flagged !== undefined) next.flagged = Boolean(input.flagged);
+    this.transactions[index] = next;
+    return structuredClone(next);
   }
   async deleteTransaction(id: string): Promise<void> {
     const index=this.transactions.findIndex(item=>item.id===id);
@@ -470,8 +492,8 @@ export class DemoFinanceRepository implements FinanceRepository {
     const linkId=crypto.randomUUID(),fromTransactionId=crypto.randomUUID(),toTransactionId=crypto.randomUUID();
     const from=this.accounts.find(item=>item.id===input.fromAccountId)!,to=this.accounts.find(item=>item.id===input.toAccountId)!;
     this.transactions.unshift(
-      {id:fromTransactionId,accountId:from.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${to.name}`,amountMinor:-input.amountMinor,status:input.status,memo:input.memo,source:"transfer",transferLinkId:linkId,transferAccountId:to.id},
-      {id:toTransactionId,accountId:to.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${from.name}`,amountMinor:input.amountMinor,status:input.status,memo:input.memo,source:"transfer",transferLinkId:linkId,transferAccountId:from.id}
+      {id:fromTransactionId,accountId:from.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${to.name}`,amountMinor:-input.amountMinor,status:input.status,memo:input.memo,flagged:Boolean(input.flagged),source:"transfer",transferLinkId:linkId,transferAccountId:to.id},
+      {id:toTransactionId,accountId:to.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${from.name}`,amountMinor:input.amountMinor,status:input.status,memo:input.memo,flagged:Boolean(input.flagged),source:"transfer",transferLinkId:linkId,transferAccountId:from.id}
     );
     from.balanceMinor-=input.amountMinor;to.balanceMinor+=input.amountMinor;
     return{linkId,fromTransactionId,toTransactionId};
@@ -484,8 +506,8 @@ export class DemoFinanceRepository implements FinanceRepository {
     for(const item of pair){const account=this.accounts.find(account=>account.id===item.accountId);if(account)account.balanceMinor-=item.amountMinor;}
     const from=this.accounts.find(item=>item.id===input.fromAccountId)!,to=this.accounts.find(item=>item.id===input.toAccountId)!;
     const outgoing=pair.find(item=>item.amountMinor<0)??pair[0],incoming=pair.find(item=>item.amountMinor>0)??pair[1];
-    Object.assign(outgoing,{accountId:from.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${to.name}`,amountMinor:-input.amountMinor,status:input.status,memo:input.memo,transferAccountId:to.id});
-    Object.assign(incoming,{accountId:to.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${from.name}`,amountMinor:input.amountMinor,status:input.status,memo:input.memo,transferAccountId:from.id});
+    Object.assign(outgoing,{accountId:from.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${to.name}`,amountMinor:-input.amountMinor,status:input.status,memo:input.memo,flagged:Boolean(input.flagged),transferAccountId:to.id});
+    Object.assign(incoming,{accountId:to.id,postedDate:input.postedDate,payee:input.payee,category:`Transfer: ${from.name}`,amountMinor:input.amountMinor,status:input.status,memo:input.memo,flagged:Boolean(input.flagged),transferAccountId:from.id});
     from.balanceMinor-=input.amountMinor;to.balanceMinor+=input.amountMinor;
     return{linkId:id,fromTransactionId:outgoing.id,toTransactionId:incoming.id};
   }
@@ -682,6 +704,17 @@ export class DemoFinanceRepository implements FinanceRepository {
     const account = this.accounts.find((item) => item.id === input.accountId);
     if (!account) throw new Error("Account does not exist");
     const prepared=applyMerchantRules(input.rows,this.merchantRules).map(item=>item.row);
+    for (const row of prepared) {
+      const originalPayee = (row.originalPayee ?? row.payee).trim().toLocaleLowerCase();
+      const duplicate = this.transactions.some((item) => {
+        if (item.accountId !== input.accountId) return false;
+        if (row.externalId && item.externalId === row.externalId) return true;
+        return item.postedDate === row.postedDate
+          && item.amountMinor === row.amountMinor
+          && ((item.originalPayee ?? item.payee).trim().toLocaleLowerCase() === originalPayee || item.payee.trim().toLocaleLowerCase() === originalPayee);
+      });
+      if (duplicate) throw new Error(`A matching transaction already exists for ${row.postedDate}. Nothing was imported.`);
+    }
     const selectedOccurrences=new Set<string>();
     prepared.forEach(row=>{
       if(!row.scheduledOccurrenceId)return;
@@ -694,7 +727,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     const imported = prepared.map(row => ({
       id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
       category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
-      memo: row.memo, externalId: row.externalId, originalPayee: row.originalPayee,
+      memo: row.memo, flagged: false, externalId: row.externalId, originalPayee: row.originalPayee,
       splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
       source: "import" as const, importBatchId: batchId
     }));
@@ -752,6 +785,7 @@ function validateDebtPlan(input:DebtPlanInput,accounts:Account[]):DebtPlan{
 
 function validateTransactionInput(input:CreateTransactionInput){
   if(input.status==="reconciled")throw new Error("Transactions are marked reconciled through account reconciliation");
+  if((input.memo??"").length>TRANSACTION_NOTE_MAX_LENGTH)throw new Error("Memo is too long");
   if(!input.splits?.length)return;
   if(input.splits.length<2)throw new Error("A split transaction requires at least two splits");
   if(input.splits.some(split=>!split.category.trim()||split.amountMinor===0))throw new Error("Every split needs a category and non-zero amount");
