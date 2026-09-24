@@ -934,6 +934,8 @@ struct LedgerTransaction {
     amount_minor: i64,
     status: String,
     memo: Option<String>,
+    #[serde(default)]
+    flagged: bool,
     external_id: Option<String>,
     source: String,
     import_batch_id: Option<String>,
@@ -961,6 +963,8 @@ struct CreateTransactionRequest {
     amount_minor: i64,
     status: String,
     memo: Option<String>,
+    #[serde(default)]
+    flagged: bool,
     splits: Option<Vec<CreateTransactionSplitRequest>>,
 }
 
@@ -982,6 +986,8 @@ struct TransferRequest {
     amount_minor: i64,
     status: String,
     memo: Option<String>,
+    #[serde(default)]
+    flagged: bool,
 }
 
 #[derive(Serialize)]
@@ -1396,7 +1402,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 19;
+const CURRENT_SCHEMA_VERSION: i64 = 20;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_RECOVERY_RETENTION: usize = 7;
@@ -1631,6 +1637,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let fk_errors: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
         if fk_errors != 0 { return Err(format!("Ordinary↔investment cash transfer migration failed foreign-key validation with {fk_errors} violation(s)")); }
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(19, 'ordinary↔investment cash transfers')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 20 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/020_transaction_flags.sql")).map_err(|e| e.to_string())?;
+        let flagged_col: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_table_info('transactions') WHERE name='flagged'", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if flagged_col != 1 { return Err("Transaction flags migration did not add the flagged column".into()); }
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(20, 'transaction notes and flags')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2189,6 +2203,8 @@ struct TransactionQuery {
     status: Option<String>,
     search: Option<String>,
     #[serde(default)]
+    flagged_only: bool,
+    #[serde(default)]
     newest: bool,
 }
 
@@ -2255,6 +2271,7 @@ fn query_transactions(connection: &Connection, account_id: Option<&str>, stateme
         to_date: statement_end_date.map(str::to_string),
         status: None,
         search: None,
+        flagged_only: false,
         newest: false,
     }, reconciliation_candidates)?;
     let mut all = page.transactions;
@@ -2269,6 +2286,7 @@ fn query_transactions(connection: &Connection, account_id: Option<&str>, stateme
                 to_date: statement_end_date.map(str::to_string),
                 status: None,
                 search: None,
+                flagged_only: false,
                 newest: false,
             }, false)?;
             if next.transactions.is_empty() { break; }
@@ -2296,6 +2314,7 @@ fn list_transactions_page_inner(connection: &Connection, request: TransactionQue
     let from_date = request.from_date.as_deref();
     let to_date = request.to_date.as_deref();
     let account_id = request.account_id.as_deref();
+    let flagged_only = request.flagged_only;
     let filter_sql = "
         (?1 IS NULL OR account_id = ?1)
         AND (?2 IS NULL OR posted_date >= ?2)
@@ -2307,10 +2326,11 @@ fn list_transactions_page_inner(connection: &Connection, request: TransactionQue
         AND (?6 = 0 OR (status <> 'reconciled' AND NOT EXISTS (
           SELECT 1 FROM reconciliation_items item WHERE item.transaction_id = transactions.id
         )))
+        AND (?7 = 0 OR flagged = 1)
     ";
     let total_count: i64 = connection.query_row(
         &format!("SELECT COUNT(*) FROM transactions WHERE {filter_sql}"),
-        params![account_id, from_date, to_date, status, search, reconciliation_candidates],
+        params![account_id, from_date, to_date, status, search, reconciliation_candidates, flagged_only],
         |row| row.get(0),
     ).map_err(|e| e.to_string())?;
     let limit = if reconciliation_candidates { total_count.max(1) } else { request.limit };
@@ -2320,15 +2340,15 @@ fn list_transactions_page_inner(connection: &Connection, request: TransactionQue
         request.offset.min(total_count)
     };
     let mut statement = connection.prepare(&format!(
-        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, external_id, source, import_batch_id
+        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, flagged, external_id, source, import_batch_id
          FROM transactions
          WHERE {filter_sql}
          ORDER BY posted_date ASC, created_at ASC, id ASC
-         LIMIT ?7 OFFSET ?8"
+         LIMIT ?8 OFFSET ?9"
     )).map_err(|e| e.to_string())?;
-    let rows = statement.query_map(params![account_id, from_date, to_date, status, search, reconciliation_candidates, limit, offset], |row| Ok(LedgerTransaction {
+    let rows = statement.query_map(params![account_id, from_date, to_date, status, search, reconciliation_candidates, flagged_only, limit, offset], |row| Ok(LedgerTransaction {
         id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, original_payee: row.get(4)?, category: row.get(5)?,
-        amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, external_id: row.get(9)?, source: row.get(10)?, import_batch_id: row.get(11)?,
+        amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, flagged: row.get::<_, i64>(9)? != 0, external_id: row.get(10)?, source: row.get(11)?, import_batch_id: row.get(12)?,
         splits: vec![], transfer_link_id: None, transfer_account_id: None
     })).map_err(|e| e.to_string())?;
     let mut items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
@@ -2418,7 +2438,7 @@ fn clean_transaction_request(request: CreateTransactionRequest) -> Result<Ledger
     Ok(LedgerTransaction {
         id: Uuid::new_v4().to_string(), account_id, posted_date: request.posted_date, payee, original_payee: None,
         category: if splits.is_empty() { clean_required(request.category, "Category", 120)? } else { "Split transaction".into() },
-        amount_minor: request.amount_minor, status: request.status, memo, external_id: None,
+        amount_minor: request.amount_minor, status: request.status, memo, flagged: request.flagged, external_id: None,
         source: "manual".into(), import_batch_id: None, splits, transfer_link_id: None, transfer_account_id: None
     })
 }
@@ -2436,7 +2456,7 @@ fn create_transaction_inner(connection: &mut Connection, request: CreateTransact
     let account_type: Option<String> = tx.query_row("SELECT account_type FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![item.account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     let account_type=account_type.ok_or("Account does not exist")?;
     if account_type=="investment" { return Err("Investment activity must use the investment event workflow".into()); }
-    tx.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, memo, source) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'manual')", params![item.id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo]).map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, memo, flagged, source) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'manual')", params![item.id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo, item.flagged as i64]).map_err(|e| e.to_string())?;
     insert_transaction_splits(&tx, &item.id, &item.splits)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(item)
@@ -2458,6 +2478,7 @@ fn clean_transfer_request(request: TransferRequest) -> Result<TransferRequest, S
         amount_minor: request.amount_minor,
         status: request.status,
         memo: clean_optional(request.memo, 500)?,
+        flagged: request.flagged,
     })
 }
 
@@ -2480,8 +2501,8 @@ fn create_transfer_inner(connection: &mut Connection, request: TransferRequest) 
     let link_id=Uuid::new_v4().to_string();
     let from_transaction_id=Uuid::new_v4().to_string();
     let to_transaction_id=Uuid::new_v4().to_string();
-    tx.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![from_transaction_id,request.from_account_id,request.posted_date,request.payee,format!("Transfer: {to_name}"),-request.amount_minor,request.status,request.memo]).map_err(|e|e.to_string())?;
-    tx.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![to_transaction_id,request.to_account_id,request.posted_date,request.payee,format!("Transfer: {from_name}"),request.amount_minor,request.status,request.memo]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,flagged,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'transfer')",params![from_transaction_id,request.from_account_id,request.posted_date,request.payee,format!("Transfer: {to_name}"),-request.amount_minor,request.status,request.memo,request.flagged as i64]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,flagged,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'transfer')",params![to_transaction_id,request.to_account_id,request.posted_date,request.payee,format!("Transfer: {from_name}"),request.amount_minor,request.status,request.memo,request.flagged as i64]).map_err(|e|e.to_string())?;
     tx.execute("INSERT INTO transfer_links(id,from_transaction_id,to_transaction_id) VALUES(?1,?2,?3)",params![link_id,from_transaction_id,to_transaction_id]).map_err(|e|e.to_string())?;
     tx.commit().map_err(|e|e.to_string())?;
     Ok(TransferResult{link_id,from_transaction_id,to_transaction_id})
@@ -2496,8 +2517,8 @@ fn update_transfer_inner(connection:&mut Connection,transfer_id:String,request:T
     let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id IN (?1, ?2) LIMIT 1", params![from_transaction_id, to_transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if reconciled.is_some() { return Err("A reconciled transfer cannot be edited".into()); }
     let (from_name,to_name)=transfer_accounts(&tx,&request.from_account_id,&request.to_account_id)?;
-    let outgoing_updated=tx.execute("UPDATE transactions SET account_id=?2,posted_date=?3,payee=?4,category=?5,amount_minor=?6,status=?7,memo=?8,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND source='transfer'",params![from_transaction_id,request.from_account_id,request.posted_date,request.payee,format!("Transfer: {to_name}"),-request.amount_minor,request.status,request.memo]).map_err(|e|e.to_string())?;
-    let incoming_updated=tx.execute("UPDATE transactions SET account_id=?2,posted_date=?3,payee=?4,category=?5,amount_minor=?6,status=?7,memo=?8,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND source='transfer'",params![to_transaction_id,request.to_account_id,request.posted_date,request.payee,format!("Transfer: {from_name}"),request.amount_minor,request.status,request.memo]).map_err(|e|e.to_string())?;
+    let outgoing_updated=tx.execute("UPDATE transactions SET account_id=?2,posted_date=?3,payee=?4,category=?5,amount_minor=?6,status=?7,memo=?8,flagged=?9,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND source='transfer'",params![from_transaction_id,request.from_account_id,request.posted_date,request.payee,format!("Transfer: {to_name}"),-request.amount_minor,request.status,request.memo,request.flagged as i64]).map_err(|e|e.to_string())?;
+    let incoming_updated=tx.execute("UPDATE transactions SET account_id=?2,posted_date=?3,payee=?4,category=?5,amount_minor=?6,status=?7,memo=?8,flagged=?9,modified_at=CURRENT_TIMESTAMP WHERE id=?1 AND source='transfer'",params![to_transaction_id,request.to_account_id,request.posted_date,request.payee,format!("Transfer: {from_name}"),request.amount_minor,request.status,request.memo,request.flagged as i64]).map_err(|e|e.to_string())?;
     if outgoing_updated!=1||incoming_updated!=1{return Err("Transfer pair is incomplete; nothing was changed".into());}
     tx.commit().map_err(|e|e.to_string())?;
     Ok(TransferResult{link_id:transfer_id,from_transaction_id,to_transaction_id})
@@ -2866,9 +2887,9 @@ fn insert_scheduled_post(connection:&Connection,occurrence:&ScheduledOccurrence,
         connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![from_transaction_id,template.account_id,occurrence.due_date,template.payee,format!("Transfer: {to_name}"),-template.amount_minor,template.status,template.memo]).map_err(|e|e.to_string())?;
         connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'transfer')",params![to_transaction_id,destination_id,occurrence.due_date,template.payee,format!("Transfer: {from_name}"),template.amount_minor,template.status,template.memo]).map_err(|e|e.to_string())?;
         connection.execute("INSERT INTO transfer_links(id,from_transaction_id,to_transaction_id) VALUES(?1,?2,?3)",params![link_id,from_transaction_id,to_transaction_id]).map_err(|e|e.to_string())?;
-        return Ok(LedgerTransaction{id:from_transaction_id,account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),original_payee:None,category:format!("Transfer: {to_name}"),amount_minor:-template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),external_id:None,source:"transfer".into(),import_batch_id:None,splits:vec![],transfer_link_id:Some(link_id),transfer_account_id:Some(destination_id.clone())});
+        return Ok(LedgerTransaction{id:from_transaction_id,account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),original_payee:None,category:format!("Transfer: {to_name}"),amount_minor:-template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),flagged:false,external_id:None,source:"transfer".into(),import_batch_id:None,splits:vec![],transfer_link_id:Some(link_id),transfer_account_id:Some(destination_id.clone())});
     }
-    let item=clean_transaction_request(CreateTransactionRequest{account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),category:template.category.clone(),amount_minor:template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),splits:None})?;
+    let item=clean_transaction_request(CreateTransactionRequest{account_id:template.account_id.clone(),posted_date:occurrence.due_date.clone(),payee:template.payee.clone(),category:template.category.clone(),amount_minor:template.amount_minor,status:template.status.clone(),memo:template.memo.clone(),flagged:false,splits:None})?;
     connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'manual')",params![item.id,item.account_id,item.posted_date,item.payee,item.category,item.amount_minor,item.status,item.memo]).map_err(|e|e.to_string())?;
     Ok(item)
 }
@@ -3237,7 +3258,7 @@ fn update_transaction_inner(connection: &mut Connection, transaction_id: String,
     if import_batch_id.is_some() && item.account_id != existing_account_id { return Err("Imported transactions cannot be moved to another account; undo and re-import the batch instead".into()); }
     let account_exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![item.account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if account_exists.is_none() { return Err("Account does not exist".into()); }
-    tx.execute("UPDATE transactions SET account_id=?2, posted_date=?3, payee=?4, category=?5, amount_minor=?6, status=?7, memo=?8, modified_at=CURRENT_TIMESTAMP WHERE id=?1", params![transaction_id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo]).map_err(|e| e.to_string())?;
+    tx.execute("UPDATE transactions SET account_id=?2, posted_date=?3, payee=?4, category=?5, amount_minor=?6, status=?7, memo=?8, flagged=?9, modified_at=CURRENT_TIMESTAMP WHERE id=?1", params![transaction_id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo, item.flagged as i64]).map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM transaction_splits WHERE transaction_id = ?1", params![transaction_id]).map_err(|e| e.to_string())?;
     insert_transaction_splits(&tx, &transaction_id, &item.splits)?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -3253,6 +3274,65 @@ fn update_transaction(transaction_id: String, request: CreateTransactionRequest,
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
     update_transaction_inner(&mut connection, transaction_id, request)
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransactionAnnotationRequest {
+    #[serde(default)]
+    update_memo: bool,
+    #[serde(default)]
+    memo: Option<String>,
+    flagged: Option<bool>,
+}
+
+fn load_ledger_transaction(connection: &Connection, transaction_id: &str) -> Result<LedgerTransaction, String> {
+    let mut statement = connection.prepare(
+        "SELECT id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, flagged, external_id, source, import_batch_id
+         FROM transactions WHERE id = ?1"
+    ).map_err(|e| e.to_string())?;
+    let mut item = statement.query_row(params![transaction_id], |row| Ok(LedgerTransaction {
+        id: row.get(0)?, account_id: row.get(1)?, posted_date: row.get(2)?, payee: row.get(3)?, original_payee: row.get(4)?, category: row.get(5)?,
+        amount_minor: row.get(6)?, status: row.get(7)?, memo: row.get(8)?, flagged: row.get::<_, i64>(9)? != 0, external_id: row.get(10)?, source: row.get(11)?, import_batch_id: row.get(12)?,
+        splits: vec![], transfer_link_id: None, transfer_account_id: None
+    })).map_err(|_| "Transaction does not exist".to_string())?;
+    let mut split_statement = connection.prepare("SELECT id, category, amount_minor, memo FROM transaction_splits WHERE transaction_id = ?1 ORDER BY sort_order, rowid").map_err(|e| e.to_string())?;
+    let split_rows = split_statement.query_map(params![item.id], |row| Ok(LedgerTransactionSplit { id: row.get(0)?, category: row.get(1)?, amount_minor: row.get(2)?, memo: row.get(3)? })).map_err(|e| e.to_string())?;
+    item.splits = split_rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let mut transfer_statement = connection.prepare("SELECT l.id, CASE WHEN l.from_transaction_id = ?1 THEN destination.account_id ELSE origin.account_id END FROM transfer_links l JOIN transactions origin ON origin.id = l.from_transaction_id JOIN transactions destination ON destination.id = l.to_transaction_id WHERE l.from_transaction_id = ?1 OR l.to_transaction_id = ?1").map_err(|e| e.to_string())?;
+    let link: Option<(String,String)> = transfer_statement.query_row(params![item.id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e| e.to_string())?;
+    if let Some((link_id, linked_account_id)) = link { item.transfer_link_id = Some(link_id); item.transfer_account_id = Some(linked_account_id); }
+    else if let Some((link_id, investment_account_id)) = cross_domain_transfer::lookup_cross_domain_link(connection, &item.id)? {
+        item.transfer_link_id = Some(link_id);
+        item.transfer_account_id = Some(investment_account_id);
+    }
+    Ok(item)
+}
+
+fn update_transaction_annotation_inner(connection: &mut Connection, transaction_id: String, request: TransactionAnnotationRequest) -> Result<LedgerTransaction, String> {
+    let transaction_id = clean_required(transaction_id, "Transaction", 80)?;
+    if !request.update_memo && request.flagged.is_none() {
+        return Err("Annotation update requires a note and/or flag change".into());
+    }
+    let memo = if request.update_memo { Some(clean_optional(request.memo, 500)?) } else { None };
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let exists: Option<i64> = tx.query_row("SELECT 1 FROM transactions WHERE id = ?1", params![transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if exists.is_none() { return Err("Transaction does not exist".into()); }
+    if let Some(memo) = memo {
+        tx.execute("UPDATE transactions SET memo = ?2, modified_at = CURRENT_TIMESTAMP WHERE id = ?1", params![transaction_id, memo]).map_err(|e| e.to_string())?;
+    }
+    if let Some(flagged) = request.flagged {
+        tx.execute("UPDATE transactions SET flagged = ?2, modified_at = CURRENT_TIMESTAMP WHERE id = ?1", params![transaction_id, flagged as i64]).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    load_ledger_transaction(connection, &transaction_id)
+}
+
+#[tauri::command]
+fn update_transaction_annotation(transaction_id: String, request: TransactionAnnotationRequest, state: State<DbState>) -> Result<LedgerTransaction, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    update_transaction_annotation_inner(&mut connection, transaction_id, request)
+}
+
 
 fn delete_transaction_inner(connection: &Connection, transaction_id: String) -> Result<(), String> {
     let transaction_id = clean_required(transaction_id, "Transaction", 80)?;
@@ -3822,7 +3902,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, rename_category, merge_categories, remove_unused_category, rename_payee, merge_payees, remove_unused_payee, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, bulk_update_transaction_status, bulk_set_transaction_category, bulk_delete_transactions, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, rename_category, merge_categories, remove_unused_category, rename_payee, merge_payees, remove_unused_payee, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, update_transaction_annotation, delete_transaction, bulk_update_transaction_status, bulk_set_transaction_category, bulk_delete_transactions, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

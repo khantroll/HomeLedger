@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ArrowLeftRight, ChevronLeft, Download, MoreHorizontal, Scale, Search, Tags, Trash2 } from "lucide-react";
+import { ArrowLeftRight, ChevronLeft, Download, Flag, MoreHorizontal, Scale, Search, StickyNote, Tags, Trash2 } from "lucide-react";
 import {
   REGISTER_PAGE_SIZE,
   formatMoney,
@@ -89,6 +89,7 @@ export function AccountRegister({
   const [bulkCategory, setBulkCategory] = useState("");
   const [bulkStatus, setBulkStatus] = useState<"pending" | "cleared" | "review">("cleared");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
   const suggestions = useLedgerSuggestions();
 
   useEffect(() => {
@@ -145,6 +146,7 @@ export function AccountRegister({
         fromDate: fromDate || undefined,
         toDate: toDate || undefined,
         search: search || undefined,
+        flaggedOnly: flaggedOnly || undefined,
       });
       setTransactions(page.transactions);
       setOffset(page.offset);
@@ -157,7 +159,7 @@ export function AccountRegister({
     } finally {
       setLoading(false);
     }
-  }, [accountId, fromDate, locked, search, status, toDate]);
+  }, [accountId, flaggedOnly, fromDate, locked, search, status, toDate]);
 
   useEffect(() => {
     void loadNewest();
@@ -177,6 +179,7 @@ export function AccountRegister({
         fromDate: fromDate || undefined,
         toDate: toDate || undefined,
         search: search || undefined,
+        flaggedOnly: flaggedOnly || undefined,
       });
       const merged = mergeOlderRegisterPage(
         { transactions, offset, priorBalanceMinor, totalCount },
@@ -256,7 +259,17 @@ export function AccountRegister({
     toggleRow(id);
   }
 
-  async function applyBulkCategory() {
+  async function toggleFlag(transaction: Transaction) {
+    setError("");
+    try {
+      await repository.updateTransactionAnnotation(transaction.id, { flagged: !transaction.flagged });
+      setTransactions((current) => current.map((item) => item.id === transaction.id ? { ...item, flagged: !transaction.flagged } : item));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+    async function applyBulkCategory() {
     const category = bulkCategory.trim();
     // All-or-none: refuse mixed selections so protected rows are never silently skipped.
     if (categorySelection.blocked.length > 0) {
@@ -431,6 +444,15 @@ export function AccountRegister({
             <option value="review">Needs review</option>
           </select>
         </label>
+        <label className="register-flagged-filter">
+          <span>Flagged</span>
+          <input
+            type="checkbox"
+            checked={flaggedOnly}
+            onChange={(event) => setFlaggedOnly(event.target.checked)}
+            aria-label="Show only flagged transactions"
+          />
+        </label>
         <label>
           From
           <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} aria-label="Filter from date" />
@@ -444,7 +466,7 @@ export function AccountRegister({
           <input
             value={draftSearch}
             onChange={(event) => setDraftSearch(event.target.value)}
-            placeholder="Payee, category, or memo"
+            placeholder="Payee, category, or note"
             aria-label="Search register"
           />
           <button type="submit">Search</button>
@@ -560,7 +582,11 @@ export function AccountRegister({
                   return (
                     <tr
                       key={transaction.id}
-                      className={[transaction.id===focusTransactionId?"register-focus":"", selected?"register-selected":""].filter(Boolean).join(" ") || undefined}
+                      className={[
+                        transaction.id===focusTransactionId?"register-focus":"",
+                        selected?"register-selected":"",
+                        transaction.flagged?"register-flagged-row":"",
+                      ].filter(Boolean).join(" ") || undefined}
                       tabIndex={0}
                       onKeyDown={(event) => onRowKeyDown(event, transaction.id)}
                     >
@@ -577,6 +603,20 @@ export function AccountRegister({
                       <td>{transaction.postedDate}</td>
                       <td>
                         <strong>{transaction.payee}</strong>
+                        <span className="register-meta-icons">
+                          {transaction.flagged ? (
+                            <span className="register-flag-badge" title="Flagged for follow-up" aria-label="Flagged for follow-up">
+                              <Flag size={11} aria-hidden="true" />
+                              <span>Flagged</span>
+                            </span>
+                          ) : null}
+                          {transaction.memo?.trim() ? (
+                            <span className="register-note-badge" title={transaction.memo} aria-label="Has note">
+                              <StickyNote size={11} aria-hidden="true" />
+                              <span>Note</span>
+                            </span>
+                          ) : null}
+                        </span>
                         {transaction.transferLinkId && (
                           <small className="register-note">
                             <ArrowLeftRight size={11} />
@@ -601,6 +641,16 @@ export function AccountRegister({
                       )}
                       <td>
                         <div className="register-row-actions">
+                          <button
+                            type="button"
+                            className={transaction.flagged ? "register-flag-toggle is-flagged" : "register-flag-toggle"}
+                            aria-pressed={Boolean(transaction.flagged)}
+                            aria-label={transaction.flagged ? `Clear flag on ${transaction.payee}` : `Flag ${transaction.payee} for follow-up`}
+                            title={transaction.flagged ? "Clear flag" : "Flag for follow-up"}
+                            onClick={() => void toggleFlag(transaction)}
+                          >
+                            <Flag size={12} aria-hidden="true" />
+                          </button>
                           <button
                             className="edit-transaction"
                             onClick={() =>

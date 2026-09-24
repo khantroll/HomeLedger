@@ -370,6 +370,28 @@ describe("AccountRegister", () => {
     expect(screen.getByText(/2 selected/i)).toBeTruthy();
   });
 
+
+  it("shows note and flag markers and toggles flag via annotation without mutating amounts", async () => {
+    const user = userEvent.setup();
+    vi.mocked(repositoryModule.financeRepository.listTransactionsPage).mockResolvedValue({
+      transactions: [
+        tx({ id: "noted", postedDate: "2026-09-01", payee: "Utility", category: "Housing", amountMinor: -2500, status: "cleared", memo: "call about deposit", flagged: false }),
+      ],
+      totalCount: 1,
+      offset: 0,
+      limit: REGISTER_PAGE_SIZE,
+      priorBalanceMinor: 52500,
+    });
+    const annotate = vi.spyOn(repositoryModule.financeRepository, "updateTransactionAnnotation").mockResolvedValue(
+      tx({ id: "noted", postedDate: "2026-09-01", payee: "Utility", category: "Housing", amountMinor: -2500, status: "cleared", memo: "call about deposit", flagged: true }),
+    );
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    expect(await screen.findByLabelText("Has note")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Flag Utility for follow-up/i }));
+    expect(annotate).toHaveBeenCalledWith("noted", { flagged: true });
+    expect(await screen.findByLabelText("Flagged for follow-up")).toBeTruthy();
+  });
+
   it("clears selection when the register scope changes", async () => {
     const user = userEvent.setup();
     render(<AccountRegister accounts={accounts} onRequestDialog={vi.fn()} />);

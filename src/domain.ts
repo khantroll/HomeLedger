@@ -34,13 +34,27 @@ export interface Transaction {
   category: string;
   amountMinor: number;
   status: TransactionStatus;
+  /** Optional user-authored note (also used as seed text from statement import memos on new rows). */
   memo?: string;
+  /** Durable follow-up marker; does not affect accounting. */
+  flagged?: boolean;
   externalId?: string;
   splits?: TransactionSplit[];
   source?: "manual" | "import" | "transfer" | "adjustment";
   importBatchId?: string;
   transferLinkId?: string;
   transferAccountId?: string;
+}
+
+/** Maximum length for transaction notes (`memo`). Matches native SQLite CHECK. */
+export const TRANSACTION_NOTE_MAX_LENGTH = 500;
+
+/** Metadata-only annotation update (note and/or flag). Does not change financial fields. */
+export interface TransactionAnnotationInput {
+  /** When true, write `memo` (empty/whitespace clears the note). */
+  updateMemo?: boolean;
+  memo?: string;
+  flagged?: boolean;
 }
 
 /** Default register page size; large enough for daily use, small enough to stay responsive. */
@@ -59,6 +73,8 @@ export interface TransactionQuery {
   toDate?: string;
   status?: TransactionStatusFilter;
   search?: string;
+  /** When true, only return transactions with flagged=true. */
+  flaggedOnly?: boolean;
   /**
    * When true, ignore `offset` and return the newest matching window
    * (still ordered oldest→newest within the page for running balances).
@@ -104,6 +120,7 @@ export interface FinanceRepository {
   reorderAccounts(accountIds: string[]): Promise<void>;
   createTransaction(input: CreateTransactionInput): Promise<Transaction>;
   updateTransaction(id: string, input: CreateTransactionInput): Promise<Transaction>;
+  updateTransactionAnnotation(id: string, input: TransactionAnnotationInput): Promise<Transaction>;
   deleteTransaction(id: string): Promise<void>;
   createTransfer(input: CreateTransferInput): Promise<TransferResult>;
   updateTransfer(id: string, input: CreateTransferInput): Promise<TransferResult>;
@@ -426,6 +443,7 @@ export interface CreateTransactionInput {
   amountMinor: number;
   status: TransactionStatus;
   memo?: string;
+  flagged?: boolean;
   splits?: CreateTransactionSplit[];
 }
 
@@ -443,6 +461,7 @@ export interface CreateTransferInput {
   amountMinor: number;
   status: TransactionStatus;
   memo?: string;
+  flagged?: boolean;
 }
 
 export interface TransferResult {
