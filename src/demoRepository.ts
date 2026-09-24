@@ -791,25 +791,63 @@ export class DemoFinanceRepository implements FinanceRepository {
       const eligible=findScheduledMatches(row,input.accountId,this.scheduledTransactions,this.scheduledOccurrences).some(candidate=>candidate.occurrenceId===row.scheduledOccurrenceId);
       if(!eligible)throw new Error("The selected scheduled occurrence is no longer eligible for this transaction");
     });
-    const batchId = crypto.randomUUID();
-    const imported = prepared.map(row => ({
-      id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
-      category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
-      memo: row.memo, flagged: false, externalId: row.externalId, originalPayee: row.originalPayee,
-      splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
-      source: "import" as const, importBatchId: batchId
-    }));
-    prepared.forEach((row,index)=>{
-      if(!row.scheduledOccurrenceId)return;
-      const occurrence=this.scheduledOccurrences.find(item=>item.id===row.scheduledOccurrenceId)!;
-      occurrence.status="linked";occurrence.transactionId=imported[index].id;
-    });
-    this.transactions.unshift(...imported);
-    account.balanceMinor += imported.reduce((total, row) => total + row.amountMinor, 0);
-    this.importBatches.unshift({ id: batchId, accountId: account.id, accountName: account.name, sourceName: input.sourceName, importedAt: new Date().toISOString(), transactionCount: imported.length, totalMinor: imported.reduce((total, row) => total + row.amountMinor, 0) });
-    const transactionIds = imported.map(row => row.id);
-    this.importedTransactionIds.set(batchId, transactionIds);
-    return { batchId, importedCount: imported.length, transactionIds };
+    if (input.retainSource) {
+      const filename = sanitizeAttachmentFilename(input.retainSource.originalFilename);
+      const bytes = decodeAttachmentBase64(input.retainSource.contentBase64);
+      if (!bytes.length) throw new Error("Attachment content is empty");
+      if (bytes.length > ATTACHMENT_MAX_BYTES) throw new Error("Attachment exceeds the 10 MB size limit");
+      validateAttachmentExtension(filename);
+    }
+    const snapshot = {
+      transactions: structuredClone(this.transactions),
+      importBatches: structuredClone(this.importBatches),
+      importedTransactionIds: new Map<string, string[]>([...this.importedTransactionIds.entries()].map(([key, value]) => [key, [...value]])),
+      scheduledOccurrences: structuredClone(this.scheduledOccurrences),
+      attachments: new Map([...this.attachments.entries()].map(([key, value]) => [key, { meta: structuredClone(value.meta), contentBase64: value.contentBase64 }])),
+      transactionAttachmentIds: new Map([...this.transactionAttachmentIds.entries()].map(([key, value]) => [key, new Set(value)])),
+      batchAttachmentIds: new Map([...this.batchAttachmentIds.entries()].map(([key, value]) => [key, new Set(value)])),
+      balanceMinor: account.balanceMinor,
+    };
+    try {
+      const batchId = crypto.randomUUID();
+      const imported = prepared.map(row => ({
+        id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
+        category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
+        memo: row.memo, flagged: false, externalId: row.externalId, originalPayee: row.originalPayee,
+        splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
+        source: "import" as const, importBatchId: batchId
+      }));
+      prepared.forEach((row,index)=>{
+        if(!row.scheduledOccurrenceId)return;
+        const occurrence=this.scheduledOccurrences.find(item=>item.id===row.scheduledOccurrenceId)!;
+        occurrence.status="linked";occurrence.transactionId=imported[index].id;
+      });
+      this.transactions.unshift(...imported);
+      account.balanceMinor += imported.reduce((total, row) => total + row.amountMinor, 0);
+      this.importBatches.unshift({ id: batchId, accountId: account.id, accountName: account.name, sourceName: input.sourceName, importedAt: new Date().toISOString(), transactionCount: imported.length, totalMinor: imported.reduce((total, row) => total + row.amountMinor, 0) });
+      const transactionIds = imported.map(row => row.id);
+      this.importedTransactionIds.set(batchId, transactionIds);
+      if (input.retainSource) {
+        await this.retainImportSourceAttachment({
+          importBatchId: batchId,
+          transactionIds,
+          originalFilename: input.retainSource.originalFilename,
+          mediaType: input.retainSource.mediaType,
+          contentBase64: input.retainSource.contentBase64,
+        });
+      }
+      return { batchId, importedCount: imported.length, transactionIds };
+    } catch (error) {
+      this.transactions = snapshot.transactions;
+      this.importBatches = snapshot.importBatches;
+      this.importedTransactionIds = new Map(snapshot.importedTransactionIds);
+      this.scheduledOccurrences = snapshot.scheduledOccurrences;
+      this.attachments = new Map(snapshot.attachments);
+      this.transactionAttachmentIds = new Map(snapshot.transactionAttachmentIds);
+      this.batchAttachmentIds = new Map(snapshot.batchAttachmentIds);
+      account.balanceMinor = snapshot.balanceMinor;
+      throw error;
+    }
   }
   async listImportBatches(): Promise<ImportBatch[]> { return structuredClone(this.importBatches); }
   async undoImportBatch(batchId: string): Promise<UndoImportResult> {

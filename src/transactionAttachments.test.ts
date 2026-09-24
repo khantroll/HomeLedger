@@ -148,41 +148,39 @@ describe("transaction attachments", () => {
         { postedDate: "2026-09-23", payee: "Store A", amountMinor: -1100, externalId: "att-a" },
         { postedDate: "2026-09-23", payee: "Store B", amountMinor: -2200, externalId: "att-b" },
       ],
+      retainSource: {
+        originalFilename: "statement.csv",
+        contentBase64: toBase64("date,payee,amount\n2026-09-23,Store A,-11.00\n2026-09-23,Store B,-22.00"),
+      },
     });
     expect(imported.transactionIds).toHaveLength(2);
-    const retained = await repository.retainImportSourceAttachment({
-      importBatchId: imported.batchId,
-      transactionIds: imported.transactionIds,
-      originalFilename: "statement.csv",
-      contentBase64: toBase64("date,payee,amount\n2026-09-23,Store A,-11.00\n2026-09-23,Store B,-22.00"),
-    });
+    const retainedId = (await repository.listTransactionAttachments(imported.transactionIds[0]))[0].id;
     for (const id of imported.transactionIds) {
       const links = await repository.listTransactionAttachments(id);
       expect(links).toHaveLength(1);
-      expect(links[0].id).toBe(retained.id);
+      expect(links[0].id).toBe(retainedId);
       expect(links[0].sourceKind).toBe("import_retention");
     }
     const listed = await repository.listTransactions("checking");
     expect(listed.find((item) => item.id === imported.transactionIds[0])?.attachmentCount).toBe(1);
 
     await repository.undoImportBatch(imported.batchId);
-    await expect(repository.openAttachment(retained.id)).rejects.toThrow(/does not exist/i);
+    await expect(repository.openAttachment(retainedId)).rejects.toThrow(/does not exist/i);
   });
 
   it("keeps a shared attachment after undo when independently attached elsewhere", async () => {
     const repository = new DemoFinanceRepository();
+    const payload = toBase64("same-source-bytes");
     const imported = await repository.importTransactions({
       accountId: "checking",
       sourceName: "keep.csv",
       rows: [{ postedDate: "2026-09-24", payee: "Keep Me", amountMinor: -500, externalId: "keep-1" }],
+      retainSource: {
+        originalFilename: "keep.csv",
+        contentBase64: payload,
+      },
     });
-    const payload = toBase64("same-source-bytes");
-    const retained = await repository.retainImportSourceAttachment({
-      importBatchId: imported.batchId,
-      transactionIds: imported.transactionIds,
-      originalFilename: "keep.csv",
-      contentBase64: payload,
-    });
+    const retainedId = (await repository.listTransactionAttachments(imported.transactionIds[0]))[0].id;
     const manual = await repository.createTransaction({
       accountId: "checking",
       postedDate: "2026-09-24",
@@ -196,11 +194,29 @@ describe("transaction attachments", () => {
       originalFilename: "keep-copy.csv",
       contentBase64: payload,
     });
-    expect(linked.id).toBe(retained.id);
+    expect(linked.id).toBe(retainedId);
 
     await repository.undoImportBatch(imported.batchId);
     expect(await repository.listTransactionAttachments(manual.id)).toHaveLength(1);
-    await expect(repository.openAttachment(retained.id)).resolves.toBeUndefined();
+    await expect(repository.openAttachment(retainedId)).resolves.toBeUndefined();
+  });
+
+  it("rolls back the whole import when retainSource fails validation", async () => {
+    const repository = new DemoFinanceRepository();
+    const before = (await repository.listTransactions("checking")).length;
+    await expect(
+      repository.importTransactions({
+        accountId: "checking",
+        sourceName: "bad.exe",
+        rows: [{ postedDate: "2026-09-26", payee: "Nope", amountMinor: -100, externalId: "bad-retain" }],
+        retainSource: {
+          originalFilename: "bad.exe",
+          contentBase64: toBase64("MZ"),
+        },
+      }),
+    ).rejects.toThrow(/unsupported/i);
+    expect((await repository.listTransactions("checking")).length).toBe(before);
+    expect((await repository.listImportBatches()).some((batch) => batch.sourceName === "bad.exe")).toBe(false);
   });
 
   it("exposes attachmentCount on listed transactions", async () => {

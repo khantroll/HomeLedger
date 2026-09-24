@@ -1079,7 +1079,7 @@ struct ImportTransactionSplit {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ImportTransactionRow {
+pub(crate) struct ImportTransactionRow {
     posted_date: String,
     payee: String,
     original_payee: Option<String>,
@@ -1130,13 +1130,24 @@ struct ScheduledImportMatch {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ImportTransactionsRequest {
-    account_id: String,
-    source_name: String,
-    rows: Vec<ImportTransactionRow>,
+pub(crate) struct ImportSourceRetention {
+    pub(crate) original_filename: String,
+    pub(crate) media_type: Option<String>,
+    pub(crate) content_base64: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportTransactionsRequest {
+    pub(crate) account_id: String,
+    pub(crate) source_name: String,
+    pub(crate) rows: Vec<ImportTransactionRow>,
+    /// When present, retain the source document atomically with the import (all-or-none).
+    #[serde(default)]
+    pub(crate) retain_source: Option<ImportSourceRetention>,
+}
+
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ImportResult {
     batch_id: String,
@@ -3498,11 +3509,19 @@ fn bulk_delete_transactions(
     Ok(result)
 }
 
-fn import_transactions_inner(connection: &mut Connection, request: ImportTransactionsRequest) -> Result<ImportResult, String> {
+fn import_transactions_inner(
+    connection: &mut Connection,
+    store: Option<&attachments::AttachmentStore>,
+    request: ImportTransactionsRequest,
+) -> Result<ImportResult, String> {
     if request.rows.is_empty() { return Err("The import contains no transactions".into()); }
     if request.rows.len() > 10_000 { return Err("A single import is limited to 10,000 transactions".into()); }
     let source_name = clean_required(request.source_name, "Source filename", 255)?;
     let account_id = clean_required(request.account_id, "Account", 80)?;
+    let retain_source = request.retain_source;
+    if retain_source.is_some() && store.is_none() {
+        return Err("Attachment store is required when retaining an import source document".into());
+    }
 
     let mut selected_occurrences=HashSet::new();
     for row in &request.rows {
@@ -3574,14 +3593,35 @@ fn import_transactions_inner(connection: &mut Connection, request: ImportTransac
         }
         transaction_ids.push(transaction_id);
     }
+    if let Some(retain) = retain_source {
+        let Some(store) = store else {
+            return Err("Attachment store is required when retaining an import source document".into());
+        };
+        // Attachment staging + links share this SQLite transaction. On failure the whole import rolls back.
+        // Newly created files are removed by retain_import_source_in_transaction; shared files are never deleted.
+        attachments::retain_import_source_in_transaction(
+            &tx,
+            store,
+            &batch_id,
+            &transaction_ids,
+            retain.original_filename,
+            retain.media_type,
+            &retain.content_base64,
+        )?;
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(ImportResult { batch_id, imported_count, transaction_ids })
 }
 
 #[tauri::command]
-fn import_transactions(request: ImportTransactionsRequest, state: State<DbState>) -> Result<ImportResult, String> {
+fn import_transactions(
+    request: ImportTransactionsRequest,
+    state: State<DbState>,
+    attachments: State<attachments::AttachmentState>,
+) -> Result<ImportResult, String> {
     let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
-    import_transactions_inner(&mut connection, request)
+    let store = attachments.0.lock().map_err(|_| "Attachment store lock failed".to_string())?;
+    import_transactions_inner(&mut connection, Some(&store), request)
 }
 
 #[tauri::command]

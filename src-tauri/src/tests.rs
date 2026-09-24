@@ -281,22 +281,24 @@ fn transaction_notes_and_flags_are_metadata_only_and_survive_edits() {
     }, false).unwrap();
     assert_eq!(note_search.total_count, 1);
 
-    let imported = import_transactions_inner(&mut connection, ImportTransactionsRequest {
+    let imported = import_transactions_inner(&mut connection, None, ImportTransactionsRequest {
         account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
             posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
             amount_minor: -5500, memo: Some("imported statement memo".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
         }],
+        retain_source: None,
     }).unwrap();
     assert_eq!(imported.imported_count, 1);
     let imported_id: String = connection.query_row("SELECT id FROM transactions WHERE external_id='ext-1'", [], |r| r.get(0)).unwrap();
     update_transaction_annotation_inner(&mut connection, imported_id.clone(), TransactionAnnotationRequest {
         update_memo: true, memo: Some("User note after import".into()), flagged: Some(true),
     }).unwrap();
-    let redo_error = match import_transactions_inner(&mut connection, ImportTransactionsRequest {
+    let redo_error = match import_transactions_inner(&mut connection, None, ImportTransactionsRequest {
         account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
             posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
             amount_minor: -5500, memo: Some("should not overwrite".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
         }],
+        retain_source: None,
     }) {
         Ok(_) => panic!("duplicate import unexpectedly succeeded"),
         Err(error) => error,
@@ -423,11 +425,12 @@ fn statement_import_is_atomic_and_rejects_duplicates() {
                 ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None },
                 ImportTransactionSplit { category: "Household".into(), amount_minor: -250, memo: Some("Supplies".into()) },
             ])
-        }]
+        }],
+        retain_source: None,
     };
-    let imported = import_transactions_inner(&mut connection, request()).unwrap();
+    let imported = import_transactions_inner(&mut connection, None, request()).unwrap();
     assert_eq!(imported.imported_count, 1);
-    assert!(import_transactions_inner(&mut connection, request()).is_err());
+    assert!(import_transactions_inner(&mut connection, None, request()).is_err());
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 1);
     let split_count: i64 = connection.query_row("SELECT COUNT(*) FROM transaction_splits", [], |row| row.get(0)).unwrap();
@@ -455,9 +458,10 @@ fn statement_import_rejects_unbalanced_splits_before_writing() {
             external_id: None, category: Some("Split transaction".into()),
             scheduled_occurrence_id: None,
             splits: Some(vec![ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None }])
-        }]
+        }],
+        retain_source: None,
     };
-    assert!(import_transactions_inner(&mut connection, request).is_err());
+    assert!(import_transactions_inner(&mut connection, None, request).is_err());
     let count: i64 = connection.query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 0);
 }
@@ -468,13 +472,14 @@ fn statement_import_applies_deterministic_merchant_rules() {
     apply_migrations(&mut connection).unwrap();
     connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 0, 'Household')", []).unwrap();
     connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled) VALUES('rule','Market','NEIGHBORHOOD MARKET','neighborhood market','contains','expense','Neighborhood Market','Food: Groceries',100,1)", []).unwrap();
-    import_transactions_inner(&mut connection, ImportTransactionsRequest {
+    import_transactions_inner(&mut connection, None, ImportTransactionsRequest {
         account_id: "a".into(), source_name: "rules.csv".into(),
         rows: vec![ImportTransactionRow {
             posted_date: "2026-09-18".into(), payee: "SQ *NEIGHBORHOOD MARKET #42".into(), original_payee: None,
             amount_minor: -1250, memo: None, external_id: None, category: None, splits: None,
             scheduled_occurrence_id: None,
         }],
+        retain_source: None,
     }).unwrap();
     let imported: (String,String,String) = connection.query_row("SELECT payee,original_payee,category FROM transactions", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
     assert_eq!(imported, ("Neighborhood Market".into(), "SQ *NEIGHBORHOOD MARKET #42".into(), "Food: Groceries".into()));
@@ -622,10 +627,11 @@ fn statement_import_links_an_eligible_occurrence_in_the_same_transaction() {
     insert_scheduled_transaction(&connection,&template).unwrap();
     generate_scheduled_occurrences_inner(&mut connection,ScheduledOccurrenceQuery{from_date:"2026-01-01".into(),to_date:"2026-01-31".into(),scheduled_transaction_id:Some(template.id)}).unwrap();
     let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
-    let imported=import_transactions_inner(&mut connection,ImportTransactionsRequest{
+    let imported=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
         account_id:"a".into(),source_name:"statement.csv".into(),rows:vec![ImportTransactionRow{
             posted_date:"2026-01-30".into(),payee:"UTILITY PAYMENT".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id.clone()),
         }],
+        retain_source:None,
     }).unwrap();
     assert_eq!(imported.imported_count,1);
     let linked:(String,Option<String>)=connection.query_row("SELECT status,transaction_id FROM scheduled_occurrences WHERE id=?1",[occurrence_id],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
@@ -643,10 +649,11 @@ fn statement_import_rolls_back_when_selected_occurrence_is_ineligible() {
     insert_scheduled_transaction(&connection,&template).unwrap();
     generate_scheduled_occurrences_inner(&mut connection,ScheduledOccurrenceQuery{from_date:"2026-01-01".into(),to_date:"2026-01-31".into(),scheduled_transaction_id:Some(template.id)}).unwrap();
     let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
-    let result=import_transactions_inner(&mut connection,ImportTransactionsRequest{
+    let result=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
         account_id:"a".into(),source_name:"statement.csv".into(),rows:vec![ImportTransactionRow{
             posted_date:"2026-01-30".into(),payee:"Unrelated merchant".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id),
         }],
+        retain_source:None,
     });
     assert!(result.is_err());
     let counts:(i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions),(SELECT COUNT(*) FROM import_batches)",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();

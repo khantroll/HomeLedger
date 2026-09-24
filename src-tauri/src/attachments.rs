@@ -282,28 +282,31 @@ fn find_attachment_by_hash(connection: &Connection, sha256_hex: &str) -> Result<
 }
 
 fn insert_attachment_bytes(
-    connection: &mut Connection,
+    connection: &Connection,
     store: &AttachmentStore,
     original_filename: String,
     media_type: Option<String>,
     content_base64: &str,
     source_kind: &str,
-) -> Result<AttachmentRecord, String> {
+) -> Result<AttachmentWriteOutcome, String> {
     let filename = sanitize_original_filename(&original_filename)?;
     let bytes = decode_content(content_base64)?;
     validate_supported_type(&filename, &bytes)?;
     let media = infer_media_type(&filename, media_type.as_deref())?;
     let hash = sha256_hex(&bytes);
     if let Some(existing) = find_attachment_by_hash(connection, &hash)? {
-        // Reuse physical object; keep original metadata of first writer.
-        return Ok(existing);
+        // Reuse physical object; never rewrite or delete shared bytes.
+        return Ok(AttachmentWriteOutcome {
+            record: existing,
+            created_new_file: false,
+            path: None,
+        });
     }
     let id = Uuid::new_v4().to_string();
     let storage_key = id.clone();
     let path = store.path_for_key(&storage_key)?;
     write_bytes_atomic(&path, &bytes)?;
-    let tx = connection.transaction().map_err(|e| e.to_string())?;
-    let inserted = tx.execute(
+    let inserted = connection.execute(
         "INSERT INTO attachments(id, storage_key, original_filename, media_type, byte_size, sha256_hex, source_kind) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![id, storage_key, filename, media, bytes.len() as i64, hash, source_kind],
     );
@@ -311,11 +314,110 @@ fn insert_attachment_bytes(
         let _ = std::fs::remove_file(&path);
         return Err(error.to_string());
     }
-    tx.commit().map_err(|e| {
-        let _ = std::fs::remove_file(&path);
-        e.to_string()
-    })?;
-    load_attachment(connection, &id)
+    let record = load_attachment(connection, &id)?;
+    Ok(AttachmentWriteOutcome {
+        record,
+        created_new_file: true,
+        path: Some(path),
+    })
+}
+
+/// Result of staging attachment bytes. Only `created_new_file` paths may be deleted on rollback.
+pub struct AttachmentWriteOutcome {
+    pub record: AttachmentRecord,
+    pub created_new_file: bool,
+    pub path: Option<PathBuf>,
+}
+
+#[cfg(test)]
+pub static FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn maybe_fail_after_attachment_before_links() -> Result<(), String> {
+    #[cfg(test)]
+    {
+        if FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("forced post-attachment linking failure".into());
+        }
+    }
+    Ok(())
+}
+
+/// Link an attachment to an import batch and its transactions. Caller owns the SQLite transaction.
+pub fn link_attachment_to_import_batch(
+    connection: &Connection,
+    batch_id: &str,
+    transaction_ids: &[String],
+    attachment_id: &str,
+) -> Result<(), String> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO import_batch_attachments(import_batch_id, attachment_id) VALUES(?1, ?2)",
+            params![batch_id, attachment_id],
+        )
+        .map_err(|e| e.to_string())?;
+    for transaction_id in transaction_ids {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO transaction_attachments(transaction_id, attachment_id) VALUES(?1, ?2)",
+                params![transaction_id, attachment_id],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Stage + link retained import source inside the caller's open transaction.
+/// On error, the caller must roll back the SQLite transaction and delete `outcome.path`
+/// only when `outcome.created_new_file` is true (never delete a pre-existing shared file).
+pub fn retain_import_source_in_transaction(
+    connection: &Connection,
+    store: &AttachmentStore,
+    batch_id: &str,
+    transaction_ids: &[String],
+    original_filename: String,
+    media_type: Option<String>,
+    content_base64: &str,
+) -> Result<AttachmentWriteOutcome, String> {
+    if transaction_ids.is_empty() {
+        return Err("Select at least one imported transaction".into());
+    }
+    for transaction_id in transaction_ids {
+        let linked: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM transactions WHERE id = ?1 AND import_batch_id = ?2",
+                params![transaction_id, batch_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if linked.is_none() {
+            return Err("A selected transaction does not belong to this import batch".into());
+        }
+    }
+    let outcome = insert_attachment_bytes(
+        connection,
+        store,
+        original_filename,
+        media_type,
+        content_base64,
+        "import_retention",
+    )?;
+    let finish = (|| {
+        maybe_fail_after_attachment_before_links()?;
+        link_attachment_to_import_batch(connection, batch_id, transaction_ids, &outcome.record.id)?;
+        Ok(())
+    })();
+    if let Err(error) = finish {
+        // Roll back only bytes we just created. Never delete a pre-existing shared object.
+        if outcome.created_new_file {
+            if let Some(path) = &outcome.path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        return Err(error);
+    }
+    Ok(outcome)
 }
 
 pub fn list_transaction_attachments_inner(connection: &Connection, transaction_id: &str) -> Result<Vec<AttachmentRecord>, String> {
@@ -373,21 +475,36 @@ pub fn attach_bytes_to_transaction_inner(
         "import_retention" => "import_retention",
         _ => return Err("Unsupported attachment source".into()),
     };
-    let attachment = insert_attachment_bytes(
-        connection,
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let outcome = insert_attachment_bytes(
+        &tx,
         store,
         request.original_filename,
         request.media_type,
         &request.content_base64,
         source_kind,
     )?;
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO transaction_attachments(transaction_id, attachment_id) VALUES(?1, ?2)",
-            params![transaction_id, attachment.id],
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(attachment)
+    let link_result = tx.execute(
+        "INSERT OR IGNORE INTO transaction_attachments(transaction_id, attachment_id) VALUES(?1, ?2)",
+        params![transaction_id, outcome.record.id],
+    );
+    if let Err(error) = link_result {
+        if outcome.created_new_file {
+            if let Some(path) = &outcome.path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        return Err(error.to_string());
+    }
+    if let Err(error) = tx.commit() {
+        if outcome.created_new_file {
+            if let Some(path) = &outcome.path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        return Err(error.to_string());
+    }
+    Ok(outcome.record)
 }
 
 pub fn detach_transaction_attachment_inner(
@@ -425,45 +542,33 @@ pub fn retain_import_source_inner(
     if batch_ok.is_none() {
         return Err("Import batch does not exist".into());
     }
-    if request.transaction_ids.is_empty() {
-        return Err("Select at least one imported transaction".into());
-    }
-    for transaction_id in &request.transaction_ids {
-        let linked: Option<i64> = connection
-            .query_row(
-                "SELECT 1 FROM transactions WHERE id = ?1 AND import_batch_id = ?2",
-                params![transaction_id, batch_id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if linked.is_none() {
-            return Err("A selected transaction does not belong to this import batch".into());
-        }
-    }
-    let attachment = insert_attachment_bytes(
-        connection,
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let outcome = match retain_import_source_in_transaction(
+        &tx,
         store,
+        &batch_id,
+        &request.transaction_ids,
         request.original_filename,
         request.media_type,
         &request.content_base64,
-        "import_retention",
-    )?;
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO import_batch_attachments(import_batch_id, attachment_id) VALUES(?1, ?2)",
-            params![batch_id, attachment.id],
-        )
-        .map_err(|e| e.to_string())?;
-    for transaction_id in &request.transaction_ids {
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO transaction_attachments(transaction_id, attachment_id) VALUES(?1, ?2)",
-                params![transaction_id, attachment.id],
-            )
-            .map_err(|e| e.to_string())?;
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            drop(tx);
+            // SQLite rolled back on drop; remove only a newly created file.
+            // (outcome unavailable on Err — retain_import_source_in_transaction cleans nothing for shared.)
+            return Err(error);
+        }
+    };
+    if let Err(error) = tx.commit() {
+        if outcome.created_new_file {
+            if let Some(path) = &outcome.path {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        return Err(error.to_string());
     }
-    Ok(attachment)
+    Ok(outcome.record)
 }
 
 pub fn open_attachment_inner(connection: &Connection, store: &AttachmentStore, attachment_id: &str) -> Result<(), String> {
@@ -958,8 +1063,10 @@ mod tests {
     #[test]
     fn import_retention_dedupes_and_undo_cleans() {
         let (_dir, mut connection, store, _) = setup();
+        let content = B64.encode(pdf_bytes());
         let imported = crate::import_transactions_inner(
             &mut connection,
+            Some(&store),
             crate::ImportTransactionsRequest {
                 account_id: "a".into(),
                 source_name: "statement.pdf".into(),
@@ -987,18 +1094,11 @@ mod tests {
                         scheduled_occurrence_id: None,
                     },
                 ],
-            },
-        )
-        .unwrap();
-        let retained = retain_import_source_inner(
-            &mut connection,
-            &store,
-            RetainImportSourceRequest {
-                import_batch_id: imported.batch_id.clone(),
-                transaction_ids: imported.transaction_ids.clone(),
-                original_filename: "statement.pdf".into(),
-                media_type: None,
-                content_base64: B64.encode(pdf_bytes()),
+                retain_source: Some(crate::ImportSourceRetention {
+                    original_filename: "statement.pdf".into(),
+                    media_type: None,
+                    content_base64: content,
+                }),
             },
         )
         .unwrap();
@@ -1007,12 +1107,173 @@ mod tests {
         for id in &imported.transaction_ids {
             assert_eq!(list_transaction_attachments_inner(&connection, id).unwrap().len(), 1);
         }
-        let path = store.path_for_key(&retained.storage_key).unwrap();
+        let attachment_id: String = connection
+            .query_row("SELECT attachment_id FROM import_batch_attachments WHERE import_batch_id = ?1", params![imported.batch_id], |row| row.get(0))
+            .unwrap();
+        let path = store.path_for_key(&load_attachment(&connection, &attachment_id).unwrap().storage_key).unwrap();
         assert!(path.exists());
 
         crate::undo_import_batch_inner(&mut connection, &imported.batch_id).unwrap();
         cleanup_import_batch_attachments_inner(&mut connection, &store, &imported.batch_id).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn import_retention_link_failure_is_all_or_none_and_preserves_shared_bytes() {
+        use std::sync::atomic::Ordering;
+        let (_dir, mut connection, store, _) = setup();
+        let content = B64.encode(pdf_bytes());
+
+        // Pre-existing shared attachment linked to an unrelated transaction.
+        let preexisting = attach_bytes_to_transaction_inner(
+            &mut connection,
+            &store,
+            AttachBytesRequest {
+                transaction_id: "t1".into(),
+                original_filename: "shared-statement.pdf".into(),
+                media_type: None,
+                content_base64: content.clone(),
+                source_kind: None,
+            },
+        )
+        .unwrap();
+        let shared_path = store.path_for_key(&preexisting.storage_key).unwrap();
+        assert!(shared_path.exists());
+        let files_before: Vec<_> = std::fs::read_dir(store.root())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(files_before.len(), 1);
+        let attachment_rows_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))
+            .unwrap();
+        let txn_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
+            .unwrap();
+        let batches_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM import_batches", [], |row| row.get(0))
+            .unwrap();
+        let links_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM transaction_attachments", [], |row| row.get(0))
+            .unwrap();
+
+        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(true, Ordering::SeqCst);
+        let err = crate::import_transactions_inner(
+            &mut connection,
+            Some(&store),
+            crate::ImportTransactionsRequest {
+                account_id: "a".into(),
+                source_name: "shared-statement.pdf".into(),
+                rows: vec![
+                    crate::ImportTransactionRow {
+                        posted_date: "2026-09-12".into(),
+                        payee: "Utility".into(),
+                        original_payee: None,
+                        amount_minor: -3300,
+                        memo: None,
+                        external_id: Some("force-fail-1".into()),
+                        category: None,
+                        splits: None,
+                        scheduled_occurrence_id: None,
+                    },
+                    crate::ImportTransactionRow {
+                        posted_date: "2026-09-13".into(),
+                        payee: "Grocery".into(),
+                        original_payee: None,
+                        amount_minor: -4400,
+                        memo: None,
+                        external_id: Some("force-fail-2".into()),
+                        category: None,
+                        splits: None,
+                        scheduled_occurrence_id: None,
+                    },
+                ],
+                retain_source: Some(crate::ImportSourceRetention {
+                    original_filename: "shared-statement.pdf".into(),
+                    media_type: None,
+                    content_base64: content,
+                }),
+            },
+        )
+        .unwrap_err();
+        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(false, Ordering::SeqCst);
+        assert!(err.to_lowercase().contains("forced post-attachment"));
+
+        // All-or-none: no imported rows/batch/partial links; shared file untouched.
+        let txn_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
+            .unwrap();
+        let batches_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM import_batches", [], |row| row.get(0))
+            .unwrap();
+        let attachment_rows_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM attachments", [], |row| row.get(0))
+            .unwrap();
+        let links_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM transaction_attachments", [], |row| row.get(0))
+            .unwrap();
+        let batch_links: i64 = connection
+            .query_row("SELECT COUNT(*) FROM import_batch_attachments", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(txn_after, txn_before);
+        assert_eq!(batches_after, batches_before);
+        assert_eq!(attachment_rows_after, attachment_rows_before);
+        assert_eq!(links_after, links_before);
+        assert_eq!(batch_links, 0);
+        assert!(shared_path.exists());
+        let files_after: Vec<_> = std::fs::read_dir(store.root())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(files_after, files_before);
+        assert_eq!(
+            list_transaction_attachments_inner(&connection, "t1").unwrap()[0].id,
+            preexisting.id
+        );
+    }
+
+    #[test]
+    fn import_retention_new_file_link_failure_leaves_no_orphan_bytes() {
+        use std::sync::atomic::Ordering;
+        let (_dir, mut connection, store, _) = setup();
+        let content = B64.encode(b"%PDF-1.4\n% unique-orphan-fixture\n");
+        assert_eq!(std::fs::read_dir(store.root()).unwrap().count(), 0);
+
+        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(true, Ordering::SeqCst);
+        let err = crate::import_transactions_inner(
+            &mut connection,
+            Some(&store),
+            crate::ImportTransactionsRequest {
+                account_id: "a".into(),
+                source_name: "orphan.pdf".into(),
+                rows: vec![crate::ImportTransactionRow {
+                    posted_date: "2026-09-14".into(),
+                    payee: "Orphan".into(),
+                    original_payee: None,
+                    amount_minor: -100,
+                    memo: None,
+                    external_id: Some("orphan-1".into()),
+                    category: None,
+                    splits: None,
+                    scheduled_occurrence_id: None,
+                }],
+                retain_source: Some(crate::ImportSourceRetention {
+                    original_filename: "orphan.pdf".into(),
+                    media_type: None,
+                    content_base64: content,
+                }),
+            },
+        )
+        .unwrap_err();
+        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(false, Ordering::SeqCst);
+        assert!(err.to_lowercase().contains("forced post-attachment"));
+
+        let txn: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE source='import'", [], |r| r.get(0)).unwrap();
+        let batches: i64 = connection.query_row("SELECT COUNT(*) FROM import_batches", [], |r| r.get(0)).unwrap();
+        let attachments: i64 = connection.query_row("SELECT COUNT(*) FROM attachments", [], |r| r.get(0)).unwrap();
+        let links: i64 = connection.query_row("SELECT COUNT(*) FROM transaction_attachments", [], |r| r.get(0)).unwrap();
+        assert_eq!((txn, batches, attachments, links), (0, 0, 0, 0));
+        assert_eq!(std::fs::read_dir(store.root()).unwrap().count(), 0);
     }
 
     #[test]

@@ -418,6 +418,15 @@ export interface ImportTransactionsInput {
   accountId: string;
   sourceName: string;
   rows: ImportTransactionRow[];
+  /**
+   * When set, retain the source document atomically with the import (all-or-none).
+   * Failure retains nothing and imports nothing.
+   */
+  retainSource?: {
+    originalFilename: string;
+    mediaType?: string;
+    contentBase64: string;
+  };
 }
 
 export interface ImportResult {

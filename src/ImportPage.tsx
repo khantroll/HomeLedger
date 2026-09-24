@@ -169,23 +169,17 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     if(!valid.length){setError("There are no new valid transactions to import.");return;}
     setSaving(true);setError("");
     try{
-      const result=await financeRepository.importTransactions({accountId,sourceName:fileName,rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)}))});
-      let retainNote="";
-      if(retainSourceDocument&&sourceContentBase64&&result.transactionIds.length){
-        try{
-          await financeRepository.retainImportSourceAttachment({
-            importBatchId:result.batchId,
-            transactionIds:result.transactionIds,
-            originalFilename:fileName,
-            mediaType:sourceMediaType,
-            contentBase64:sourceContentBase64,
-          });
-          retainNote=" Source document retained with the imported transactions.";
-        }catch(reason){
-          retainNote=` Import succeeded, but retaining the source document failed: ${reason instanceof Error?reason.message:String(reason)}`;
-        }
-      }
-      setMessage(`Imported ${result.importedCount} transactions as one atomic batch.${retainNote}`);
+      const result=await financeRepository.importTransactions({
+        accountId,
+        sourceName:fileName,
+        rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)})),
+        retainSource:retainSourceDocument&&sourceContentBase64?{
+          originalFilename:fileName,
+          mediaType:sourceMediaType,
+          contentBase64:sourceContentBase64,
+        }:undefined,
+      });
+      setMessage(`Imported ${result.importedCount} transactions as one atomic batch.${retainSourceDocument&&sourceContentBase64?" Source document retained with the imported transactions.":""}`);
       setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSelectedScheduledMatches(new Map());await onImported();await loadHistory();
     }
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
