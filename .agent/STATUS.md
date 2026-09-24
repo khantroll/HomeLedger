@@ -4,12 +4,12 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T20:12:00Z
+- **Updated:** 2026-09-24T20:23:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `56273ab81766a194f17389409456322860ac651f` — #62 Register Bulk Actions merged
 - **Open PRs (verified):** PR #63 — Transaction Notes & Flags (`cursor/transaction-notes-flags-1f15`), draft, intentionally unmerged
-- **Scope delivered:** Reuse `transactions.memo` as user note; additive `flagged` column (migration 020); annotation-only mutation; register indicators + flagged filter; Find already searches memo
-- **Next action:** Exact-head GitHub CI, then architecture/integrity review of PR #63. Do not merge automatically. Do not start PR #64.
+- **Scope delivered:** Notes & flags; flagged-only filter hides non-contiguous running Balance
+- **Next action:** Exact-head GitHub CI on flagged-balance fix, then architecture/integrity review of PR #63. Do not merge automatically. Do not start PR #64.
 
 ## Handoff protocol
 

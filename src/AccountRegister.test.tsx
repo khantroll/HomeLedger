@@ -151,6 +151,15 @@ describe("AccountRegister", () => {
     expect(screen.queryByRole("columnheader", { name: "Balance" })).toBeNull();
   });
 
+  it("hides the Balance column while the flagged-only filter skips ledger rows", async () => {
+    const user = userEvent.setup();
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    expect(await screen.findByRole("columnheader", { name: "Balance" })).toBeTruthy();
+    await user.click(screen.getByLabelText("Show only flagged transactions"));
+    expect(await screen.findByText(/Running balance hides while the flagged filter is active/)).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Balance" })).toBeNull();
+  });
+
   it("hides Transfer and Reconcile in the global all-accounts view", async () => {
     render(<AccountRegister accounts={accounts} onRequestDialog={vi.fn()} />);
     expect(await screen.findByRole("heading", { name: "All accounts" })).toBeTruthy();

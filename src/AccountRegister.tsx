@@ -128,8 +128,8 @@ export function AccountRegister({
   }, [accountId, accounts, locked]);
 
   const selectedAccount = accounts.find((item) => item.id === accountId);
-  const showLedgerBalance = Boolean(selectedAccount) && registerShowsLedgerBalance({ status, search });
-  const balanceHiddenReason = selectedAccount ? filteredBalanceUnavailableReason({ status, search }) : undefined;
+  const showLedgerBalance = Boolean(selectedAccount) && registerShowsLedgerBalance({ status, search, flaggedOnly });
+  const balanceHiddenReason = selectedAccount ? filteredBalanceUnavailableReason({ status, search, flaggedOnly }) : undefined;
 
   const loadNewest = useCallback(async () => {
     if (locked && !accountId) return;

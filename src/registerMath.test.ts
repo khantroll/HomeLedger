@@ -18,8 +18,10 @@ describe("registerMath", () => {
     expect(registerShowsLedgerBalance({ status: "all", search: "  " })).toBe(true);
     expect(registerShowsLedgerBalance({ status: "review" })).toBe(false);
     expect(registerShowsLedgerBalance({ status: "all", search: "Utility" })).toBe(false);
+    expect(registerShowsLedgerBalance({ status: "all", flaggedOnly: true })).toBe(false);
     expect(filteredBalanceUnavailableReason({ status: "pending" })).toMatch(/status filter/);
     expect(filteredBalanceUnavailableReason({ status: "all", search: "x" })).toMatch(/search/);
+    expect(filteredBalanceUnavailableReason({ status: "all", flaggedOnly: true })).toMatch(/flagged filter/);
   });
 
   it("keeps newer running balances stable when earlier history is prepended", () => {
