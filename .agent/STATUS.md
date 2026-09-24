@@ -4,14 +4,14 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-23T19:51:00Z
-- **Updated by:** ChatGPT
-- **Canonical main (verified):** `9e8c590dd0b082df3c4774b878d0c93c20dca3be` — merged #57/#58 state
-- **Open PRs (verified at task start):** none
-- **Current work:** PR #59 — Financial Find (`feat/financial-find`), open draft and intentionally unmerged
-- **Scope:** local deterministic search across transactions, accounts, scheduled items, and securities; focused navigation through existing workspaces; no native index or AI
-- **Validation:** exact-head GitHub CI must be green before review handoff
-- **Next action:** Review PR #59 after exact-head CI. Do not merge automatically and do not begin the next v0.52 slice.
+- **Updated:** 2026-09-24T00:58:00Z
+- **Updated by:** Cursor cloud agent
+- **Canonical main (verified):** `9e8c590dd0b082df3c4774b878d0c93c20dca3be` — #56/#57/#58 merged
+- **Open PRs (verified):** PR #59 — Financial Find (`feat/financial-find`), draft, intentionally unmerged
+- **Current head:** `feat/financial-find` (push after this handoff)
+- **Scope:** local deterministic Find across transactions, accounts, schedules, securities; Ctrl/Cmd+K/F; focused register/Bills/Portfolio navigation; no AI/cloud/index
+- **Local validation:** 317→web tests + production build; Clippy `-D warnings`; 87 Rust tests — all green
+- **Next action:** Confirm exact-head GitHub CI green on final push; leave #59 open for architecture/integrity review. Do not start next Everyday Money slice.
 
 ## Handoff protocol
 

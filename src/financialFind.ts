@@ -1,4 +1,5 @@
 import type { Account, ScheduledTransaction, Security, Transaction } from "./domain";
+import { normalizeMerchant } from "./merchantRules";
 
 export type FinancialFindResult =
   | { kind:"transaction"; id:string; title:string; detail:string; meta:string; accountId:string; transactionId:string; archived:boolean; score:number }
@@ -16,10 +17,21 @@ export interface FinancialFindData {
 
 function textScore(value:string|undefined, query:string):number {
   if(!value)return 0;
-  const v=value.toLocaleLowerCase(),q=query.toLocaleLowerCase();
-  if(v===q)return 100;
-  if(v.startsWith(q))return 70;
-  if(v.includes(q))return 40;
+  const rawValue=value.toLocaleLowerCase(),rawQuery=query.toLocaleLowerCase();
+  if(rawValue===rawQuery)return 100;
+  if(rawValue.startsWith(rawQuery))return 70;
+  if(rawValue.includes(rawQuery))return 40;
+  const v=normalizeMerchant(value),q=normalizeMerchant(query);
+  if(!v||!q)return 0;
+  if(v===q)return 95;
+  if(v.startsWith(q))return 65;
+  if(v.includes(q))return 35;
+  // Collapse punctuation-induced spaces so "Lowe's" matches "lowes".
+  const vCompact=v.replace(/\s+/g,""),qCompact=q.replace(/\s+/g,"");
+  if(!vCompact||!qCompact)return 0;
+  if(vCompact===qCompact)return 90;
+  if(vCompact.startsWith(qCompact))return 60;
+  if(vCompact.includes(qCompact))return 30;
   return 0;
 }
 function amountText(amountMinor:number){return (Math.abs(amountMinor)/100).toFixed(2);}

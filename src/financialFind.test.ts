@@ -40,6 +40,14 @@ describe("Financial Find matching",()=>{
    expect(financialFind("credit union",{accounts:withInstitution,transactions,schedules,securities}).some(r=>r.kind==="account"&&r.accountId==="checking")).toBe(true);
    expect(financialFind("auto-pay",{accounts,transactions,schedules:withMemo,securities}).some(r=>r.kind==="schedule")).toBe(true);
  });
+ it("matches split category/memo and punctuation-normalized payees",()=>{
+   const splitTxn:Transaction={id:"t-split",accountId:"checking",postedDate:"2026-09-14",payee:"Hardware Store",category:"Split",amountMinor:-5000,status:"cleared",splits:[{id:"sp1",category:"Lumber",amountMinor:-3000,memo:"2x4 pack"},{id:"sp2",category:"Paint",amountMinor:-2000}]};
+   const punctuated:Transaction={id:"t-apos",accountId:"checking",postedDate:"2026-09-15",payee:"Lowe's",category:"Home Improvement",amountMinor:-1000,status:"cleared"};
+   const data={accounts,transactions:[...transactions,splitTxn,punctuated],schedules,securities};
+   expect(financialFind("lumber",data).some(r=>r.id==="transaction:t-split")).toBe(true);
+   expect(financialFind("2x4",data).some(r=>r.id==="transaction:t-split")).toBe(true);
+   expect(financialFind("lowes",data).some(r=>r.id==="transaction:t-apos")).toBe(true);
+ });
  it("retains historical archived-account transactions and marks inactive entities",()=>{
    const historical=financialFind("LOWES #42",{accounts,transactions,schedules,securities})[0];
    expect(historical).toMatchObject({kind:"transaction",transactionId:"t2",archived:true});
