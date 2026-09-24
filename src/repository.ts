@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupHealth, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateInvestmentAccountInput, CreateTransactionInput, CreateTransferInput, CrossDomainCashTransferResult, DebtPlan, DebtPlanInput, FinanceRepository, HoldingSnapshot, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, InvestmentAccountSettings, InvestmentEventInput, InvestmentEventRevision, InvestmentRepository, LotAllocation, MerchantRule, MerchantRuleInput, PortfolioSnapshot, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Security, SecurityIdentifier, SecurityInput, SecurityPrice, SecurityPriceInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
+import type { Account, BackupHealth, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, CompleteReconciliationInput, CreateAccountInput, CreateInvestmentAccountInput, CreateTransactionInput, CreateTransferInput, CrossDomainCashTransferResult, DebtPlan, DebtPlanInput, FinanceRepository, HoldingSnapshot, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, InvestmentAccountSettings, InvestmentEventInput, InvestmentEventRevision, InvestmentRepository, LabelRewriteResult, LotAllocation, MerchantRule, MerchantRuleInput, PortfolioSnapshot, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Security, SecurityIdentifier, SecurityInput, SecurityPrice, SecurityPriceInput, Transaction, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
 import type { ParsedWorkbook, WorkbookRepository } from "./workbookImport";
 import type { PdfExtraction, PdfRepository } from "./pdfImport";
 
@@ -8,6 +8,12 @@ class TauriFinanceRepository implements FinanceRepository {
   listAccounts(includeArchived=false): Promise<Account[]> { return invoke("list_accounts", { includeArchived }); }
   listCategories():Promise<string[]>{return invoke("list_categories");}
   listPayees():Promise<string[]>{return invoke("list_payees");}
+  renameCategory(from:string,to:string):Promise<LabelRewriteResult>{return invoke("rename_category",{from,to});}
+  mergeCategories(from:string,into:string):Promise<LabelRewriteResult>{return invoke("merge_categories",{from,into});}
+  removeUnusedCategory(name:string):Promise<void>{return invoke("remove_unused_category",{name});}
+  renamePayee(from:string,to:string):Promise<LabelRewriteResult>{return invoke("rename_payee",{from,to});}
+  mergePayees(from:string,into:string):Promise<LabelRewriteResult>{return invoke("merge_payees",{from,into});}
+  removeUnusedPayee(name:string):Promise<void>{return invoke("remove_unused_payee",{name});}
   listTransactions(accountId?: string): Promise<Transaction[]> { return invoke("list_transactions", { accountId: accountId ?? null }); }
   listTransactionsPage(query: TransactionQuery = {}): Promise<TransactionPage> { return invoke("list_transactions_page", { request: query }); }
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]> { return invoke("list_reconciliation_transactions", { accountId, statementEndDate }); }

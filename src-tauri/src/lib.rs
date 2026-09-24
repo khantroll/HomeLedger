@@ -1261,6 +1261,20 @@ struct BudgetCategory {
     rollover_enabled: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LabelRewriteResult {
+    from: String,
+    to: String,
+    operation: String,
+    transactions: i64,
+    splits: i64,
+    schedules: i64,
+    budget_categories: i64,
+    merchant_rules: i64,
+    catalog_removed: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BudgetCategoryRequest {
@@ -1645,6 +1659,398 @@ fn refresh_label_memory(connection: &Connection) -> Result<(), String> {
            UNION SELECT rename_to AS payee FROM merchant_rules WHERE rename_to IS NOT NULL
          ) WHERE trim(payee) <> '';"
     ).map_err(|e| e.to_string())
+}
+
+fn labels_equal(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+fn is_reserved_category(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.eq_ignore_ascii_case("Split transaction") || trimmed.to_ascii_lowercase().starts_with("transfer:")
+}
+
+fn category_label_exists(connection: &Connection, name: &str) -> Result<bool, String> {
+    let found: Option<i64> = connection.query_row(
+        "SELECT 1 WHERE EXISTS(
+            SELECT 1 FROM transactions WHERE category = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM transaction_splits WHERE category = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM scheduled_transactions WHERE kind = 'transaction' AND category = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM budget_categories WHERE category = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM merchant_rules WHERE category = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM categories WHERE archived_at IS NULL AND name = ?1 COLLATE NOCASE
+         )",
+        [name],
+        |row| row.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    Ok(found.is_some())
+}
+
+fn payee_label_exists(connection: &Connection, name: &str) -> Result<bool, String> {
+    let found: Option<i64> = connection.query_row(
+        "SELECT 1 WHERE EXISTS(
+            SELECT 1 FROM transactions WHERE payee = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM scheduled_transactions WHERE payee = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM merchant_rules WHERE rename_to = ?1 COLLATE NOCASE
+            UNION ALL SELECT 1 FROM payees WHERE archived_at IS NULL AND name = ?1 COLLATE NOCASE
+         )",
+        [name],
+        |row| row.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    Ok(found.is_some())
+}
+
+fn category_reference_count(connection: &Connection, name: &str) -> Result<i64, String> {
+    connection.query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM transactions WHERE category = ?1 COLLATE NOCASE)
+          + (SELECT COUNT(*) FROM transaction_splits WHERE category = ?1 COLLATE NOCASE)
+          + (SELECT COUNT(*) FROM scheduled_transactions WHERE kind = 'transaction' AND category = ?1 COLLATE NOCASE)
+          + (SELECT COUNT(*) FROM budget_categories WHERE category = ?1 COLLATE NOCASE)
+          + (SELECT COUNT(*) FROM merchant_rules WHERE category = ?1 COLLATE NOCASE)",
+        [name],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())
+}
+
+fn payee_reference_count(connection: &Connection, name: &str) -> Result<i64, String> {
+    connection.query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM transactions WHERE payee = ?1 COLLATE NOCASE)
+          + (SELECT COUNT(*) FROM scheduled_transactions WHERE payee = ?1 COLLATE NOCASE)
+          + (SELECT COUNT(*) FROM merchant_rules WHERE rename_to = ?1 COLLATE NOCASE)",
+        [name],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())
+}
+
+fn merge_budget_category_rows(tx: &rusqlite::Transaction<'_>, from: &str, to: &str) -> Result<i64, String> {
+    let source: Option<(String, i64)> = tx.query_row(
+        "SELECT id, rollover_enabled FROM budget_categories WHERE category = ?1 COLLATE NOCASE",
+        [from],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some((source_id, source_rollover)) = source else { return Ok(0); };
+    let target: Option<(String, i64)> = tx.query_row(
+        "SELECT id, rollover_enabled FROM budget_categories WHERE category = ?1 COLLATE NOCASE",
+        [to],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    if let Some((target_id, _)) = target {
+        if source_id == target_id {
+            tx.execute(
+                "UPDATE budget_categories SET category = ?2, modified_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                params![source_id, to],
+            ).map_err(|e| e.to_string())?;
+            return Ok(1);
+        }
+        let mut statement = tx.prepare(
+            "SELECT month, planned_minor FROM budget_allocations WHERE budget_category_id = ?1",
+        ).map_err(|e| e.to_string())?;
+        let allocations = statement.query_map([&source_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(statement);
+        for (month, planned) in allocations {
+            let existing: Option<i64> = tx.query_row(
+                "SELECT planned_minor FROM budget_allocations WHERE budget_category_id = ?1 AND month = ?2",
+                params![target_id, month],
+                |row| row.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if let Some(current) = existing {
+                let summed = current.checked_add(planned).ok_or_else(|| "Budget allocation overflow".to_string())?;
+                tx.execute(
+                    "UPDATE budget_allocations SET planned_minor = ?3, modified_at = CURRENT_TIMESTAMP WHERE budget_category_id = ?1 AND month = ?2",
+                    params![target_id, month, summed],
+                ).map_err(|e| e.to_string())?;
+            } else {
+                tx.execute(
+                    "INSERT INTO budget_allocations(id, budget_category_id, month, planned_minor) VALUES(?1, ?2, ?3, ?4)",
+                    params![Uuid::new_v4().to_string(), target_id, month, planned],
+                ).map_err(|e| e.to_string())?;
+            }
+        }
+        tx.execute("DELETE FROM budget_categories WHERE id = ?1", params![source_id]).map_err(|e| e.to_string())?;
+        Ok(1)
+    } else {
+        tx.execute(
+            "UPDATE budget_categories SET category = ?2, rollover_enabled = ?3, modified_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            params![source_id, to, source_rollover],
+        ).map_err(|e| e.to_string())?;
+        Ok(1)
+    }
+}
+
+fn rewrite_category_surfaces(tx: &rusqlite::Transaction<'_>, from: &str, to: &str) -> Result<LabelRewriteResult, String> {
+    let transactions = tx.execute(
+        "UPDATE transactions SET category = ?2 WHERE category = ?1 COLLATE NOCASE AND category NOT LIKE 'Transfer:%' AND category <> 'Split transaction'",
+        params![from, to],
+    ).map_err(|e| e.to_string())? as i64;
+    let splits = tx.execute(
+        "UPDATE transaction_splits SET category = ?2 WHERE category = ?1 COLLATE NOCASE",
+        params![from, to],
+    ).map_err(|e| e.to_string())? as i64;
+    let schedules = tx.execute(
+        "UPDATE scheduled_transactions SET category = ?2 WHERE kind = 'transaction' AND category = ?1 COLLATE NOCASE",
+        params![from, to],
+    ).map_err(|e| e.to_string())? as i64;
+    let merchant_rules = tx.execute(
+        "UPDATE merchant_rules SET category = ?2, modified_at = CURRENT_TIMESTAMP WHERE category = ?1 COLLATE NOCASE",
+        params![from, to],
+    ).map_err(|e| e.to_string())? as i64;
+    let budget_categories = merge_budget_category_rows(tx, from, to)?;
+    // Keep one catalog row for the destination casing; drop the source row when distinct.
+    if !labels_equal(from, to) {
+        tx.execute("DELETE FROM categories WHERE name = ?1 COLLATE NOCASE", [from]).map_err(|e| e.to_string())?;
+    } else {
+        tx.execute(
+            "UPDATE categories SET name = ?2, modified_at = CURRENT_TIMESTAMP WHERE name = ?1 COLLATE NOCASE",
+            params![from, to],
+        ).map_err(|e| e.to_string())?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO categories(id, name) VALUES(?1, ?2)",
+        params![format!("category-{}", Uuid::new_v4()), to],
+    ).map_err(|e| e.to_string())?;
+    // Prefer exact destination casing on the surviving catalog row.
+    tx.execute(
+        "UPDATE categories SET name = ?1, modified_at = CURRENT_TIMESTAMP WHERE name = ?1 COLLATE NOCASE",
+        [to],
+    ).map_err(|e| e.to_string())?;
+    Ok(LabelRewriteResult {
+        from: from.to_string(),
+        to: to.to_string(),
+        operation: "rewrite".into(),
+        transactions,
+        splits,
+        schedules,
+        budget_categories,
+        merchant_rules,
+        catalog_removed: !labels_equal(from, to),
+    })
+}
+
+fn rename_category_inner(connection: &mut Connection, from_raw: String, to_raw: String) -> Result<LabelRewriteResult, String> {
+    let from = clean_required(from_raw, "Category", 120)?;
+    let to = clean_required(to_raw, "Category", 120)?;
+    if is_reserved_category(&from) || is_reserved_category(&to) {
+        return Err("Split and transfer categories cannot be renamed through category management".into());
+    }
+    if !category_label_exists(connection, &from)? {
+        return Err("Category does not exist".into());
+    }
+    if labels_equal(&from, &to) {
+        if from == to { return Err("Category is already named that way".into()); }
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        let mut result = rewrite_category_surfaces(&tx, &from, &to)?;
+        result.operation = "rename".into();
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(result);
+    }
+    if category_label_exists(connection, &to)? {
+        return Err("Category already exists; use merge instead".into());
+    }
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let mut result = rewrite_category_surfaces(&tx, &from, &to)?;
+    result.operation = "rename".into();
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+fn merge_categories_inner(connection: &mut Connection, from_raw: String, into_raw: String) -> Result<LabelRewriteResult, String> {
+    let from = clean_required(from_raw, "Category", 120)?;
+    let into = clean_required(into_raw, "Category", 120)?;
+    if is_reserved_category(&from) || is_reserved_category(&into) {
+        return Err("Split and transfer categories cannot be merged through category management".into());
+    }
+    if labels_equal(&from, &into) {
+        return Err("Choose two different categories to merge".into());
+    }
+    if !category_label_exists(connection, &from)? {
+        return Err("Source category does not exist".into());
+    }
+    if !category_label_exists(connection, &into)? {
+        return Err("Target category does not exist".into());
+    }
+    let canonical: String = connection.query_row(
+        "SELECT name FROM categories WHERE archived_at IS NULL AND name = ?1 COLLATE NOCASE
+         UNION SELECT category FROM budget_categories WHERE category = ?1 COLLATE NOCASE
+         UNION SELECT category FROM transactions WHERE category = ?1 COLLATE NOCASE
+         UNION SELECT category FROM transaction_splits WHERE category = ?1 COLLATE NOCASE
+         UNION SELECT category FROM scheduled_transactions WHERE kind = 'transaction' AND category = ?1 COLLATE NOCASE
+         UNION SELECT category FROM merchant_rules WHERE category = ?1 COLLATE NOCASE
+         LIMIT 1",
+        [&into],
+        |row| row.get(0),
+    ).unwrap_or(into.clone());
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let mut result = rewrite_category_surfaces(&tx, &from, &canonical)?;
+    result.operation = "merge".into();
+    result.to = canonical;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+fn remove_unused_category_inner(connection: &mut Connection, name_raw: String) -> Result<(), String> {
+    let name = clean_required(name_raw, "Category", 120)?;
+    if is_reserved_category(&name) {
+        return Err("Split and transfer categories cannot be removed".into());
+    }
+    if category_reference_count(connection, &name)? > 0 {
+        return Err("Category is still referenced by ledger or planning data".into());
+    }
+    let removed = connection.execute(
+        "DELETE FROM categories WHERE name = ?1 COLLATE NOCASE",
+        [&name],
+    ).map_err(|e| e.to_string())?;
+    if removed == 0 { return Err("Category does not exist in autocomplete memory".into()); }
+    Ok(())
+}
+
+fn rewrite_payee_surfaces(tx: &rusqlite::Transaction<'_>, from: &str, to: &str) -> Result<LabelRewriteResult, String> {
+    // Display payee only — original_payee / external_id / import_batch_id stay untouched.
+    let transactions = tx.execute(
+        "UPDATE transactions SET payee = ?2 WHERE payee = ?1 COLLATE NOCASE",
+        params![from, to],
+    ).map_err(|e| e.to_string())? as i64;
+    let schedules = tx.execute(
+        "UPDATE scheduled_transactions SET payee = ?2 WHERE payee = ?1 COLLATE NOCASE",
+        params![from, to],
+    ).map_err(|e| e.to_string())? as i64;
+    let merchant_rules = tx.execute(
+        "UPDATE merchant_rules SET rename_to = ?2, modified_at = CURRENT_TIMESTAMP WHERE rename_to = ?1 COLLATE NOCASE",
+        params![from, to],
+    ).map_err(|e| e.to_string())? as i64;
+    if !labels_equal(from, to) {
+        tx.execute("DELETE FROM payees WHERE name = ?1 COLLATE NOCASE", [from]).map_err(|e| e.to_string())?;
+    } else {
+        tx.execute(
+            "UPDATE payees SET name = ?2, modified_at = CURRENT_TIMESTAMP WHERE name = ?1 COLLATE NOCASE",
+            params![from, to],
+        ).map_err(|e| e.to_string())?;
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO payees(id, name) VALUES(?1, ?2)",
+        params![format!("payee-{}", Uuid::new_v4()), to],
+    ).map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE payees SET name = ?1, modified_at = CURRENT_TIMESTAMP WHERE name = ?1 COLLATE NOCASE",
+        [to],
+    ).map_err(|e| e.to_string())?;
+    Ok(LabelRewriteResult {
+        from: from.to_string(),
+        to: to.to_string(),
+        operation: "rewrite".into(),
+        transactions,
+        splits: 0,
+        schedules,
+        budget_categories: 0,
+        merchant_rules,
+        catalog_removed: !labels_equal(from, to),
+    })
+}
+
+fn rename_payee_inner(connection: &mut Connection, from_raw: String, to_raw: String) -> Result<LabelRewriteResult, String> {
+    let from = clean_required(from_raw, "Payee", 160)?;
+    let to = clean_required(to_raw, "Payee", 160)?;
+    if !payee_label_exists(connection, &from)? {
+        return Err("Payee does not exist".into());
+    }
+    if labels_equal(&from, &to) {
+        if from == to { return Err("Payee is already named that way".into()); }
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        let mut result = rewrite_payee_surfaces(&tx, &from, &to)?;
+        result.operation = "rename".into();
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(result);
+    }
+    if payee_label_exists(connection, &to)? {
+        return Err("Payee already exists; use merge instead".into());
+    }
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let mut result = rewrite_payee_surfaces(&tx, &from, &to)?;
+    result.operation = "rename".into();
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+fn merge_payees_inner(connection: &mut Connection, from_raw: String, into_raw: String) -> Result<LabelRewriteResult, String> {
+    let from = clean_required(from_raw, "Payee", 160)?;
+    let into = clean_required(into_raw, "Payee", 160)?;
+    if labels_equal(&from, &into) {
+        return Err("Choose two different payees to merge".into());
+    }
+    if !payee_label_exists(connection, &from)? {
+        return Err("Source payee does not exist".into());
+    }
+    if !payee_label_exists(connection, &into)? {
+        return Err("Target payee does not exist".into());
+    }
+    let canonical: String = connection.query_row(
+        "SELECT name FROM payees WHERE archived_at IS NULL AND name = ?1 COLLATE NOCASE
+         UNION SELECT payee FROM transactions WHERE payee = ?1 COLLATE NOCASE
+         UNION SELECT payee FROM scheduled_transactions WHERE payee = ?1 COLLATE NOCASE
+         UNION SELECT rename_to FROM merchant_rules WHERE rename_to = ?1 COLLATE NOCASE
+         LIMIT 1",
+        [&into],
+        |row| row.get(0),
+    ).unwrap_or(into.clone());
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    let mut result = rewrite_payee_surfaces(&tx, &from, &canonical)?;
+    result.operation = "merge".into();
+    result.to = canonical;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+fn remove_unused_payee_inner(connection: &mut Connection, name_raw: String) -> Result<(), String> {
+    let name = clean_required(name_raw, "Payee", 160)?;
+    if payee_reference_count(connection, &name)? > 0 {
+        return Err("Payee is still referenced by ledger or planning data".into());
+    }
+    let removed = connection.execute(
+        "DELETE FROM payees WHERE name = ?1 COLLATE NOCASE",
+        [&name],
+    ).map_err(|e| e.to_string())?;
+    if removed == 0 { return Err("Payee does not exist in autocomplete memory".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_category(from: String, to: String, state: State<DbState>) -> Result<LabelRewriteResult, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    rename_category_inner(&mut connection, from, to)
+}
+
+#[tauri::command]
+fn merge_categories(from: String, into: String, state: State<DbState>) -> Result<LabelRewriteResult, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    merge_categories_inner(&mut connection, from, into)
+}
+
+#[tauri::command]
+fn remove_unused_category(name: String, state: State<DbState>) -> Result<(), String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    remove_unused_category_inner(&mut connection, name)
+}
+
+#[tauri::command]
+fn rename_payee(from: String, to: String, state: State<DbState>) -> Result<LabelRewriteResult, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    rename_payee_inner(&mut connection, from, to)
+}
+
+#[tauri::command]
+fn merge_payees(from: String, into: String, state: State<DbState>) -> Result<LabelRewriteResult, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    merge_payees_inner(&mut connection, from, into)
+}
+
+#[tauri::command]
+fn remove_unused_payee(name: String, state: State<DbState>) -> Result<(), String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    remove_unused_payee_inner(&mut connection, name)
 }
 
 #[tauri::command]
@@ -3283,7 +3689,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, rename_category, merge_categories, remove_unused_category, rename_payee, merge_payees, remove_unused_payee, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

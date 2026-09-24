@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, FolderTree, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
 import { formatMoney, parseMoney, type Account, type AccountType, type BudgetMonth, type CreateTransactionInput, type MerchantRuleInput, type ScheduledOccurrence, type ScheduledTransaction, type ScheduledTransactionInput, type Security, type Transaction } from "./domain";
 import { financeRepository as repository, investmentRepository, isNativeApp } from "./repository";
 import { calculateHouseholdValuation, householdCurrencies } from "./householdValuation";
@@ -12,6 +12,7 @@ import { ReconciliationDialog } from "./ReconciliationDialog";
 import "./register.css";
 import "./accountLifecycle.css";
 import { RuleDialog, RulesPage } from "./RulesPage";
+import { CategoriesPage } from "./CategoriesPage";
 import { BillsPage, ScheduleDialog } from "./BillsPage";
 import { BudgetPage } from "./BudgetPage";
 import { ForecastPage } from "./ForecastPage";
@@ -41,7 +42,7 @@ type EditorDialog =
   | null;
 
 const navItems = [
-  ["Overview", LayoutDashboard], ["Accounts", Landmark], ["Portfolio", BriefcaseBusiness], ["Transactions", ReceiptText], ["Imports", FileInput], ["Rules", ListFilter],
+  ["Overview", LayoutDashboard], ["Accounts", Landmark], ["Portfolio", BriefcaseBusiness], ["Transactions", ReceiptText], ["Imports", FileInput], ["Rules", ListFilter], ["Categories", FolderTree],
   ["Budget", Tags], ["Bills", CalendarDays], ["Forecast", TrendingUp], ["Debt", CircleDollarSign], ["Reports", BarChart3], ["AI Insights", Bot], ["Settings", Settings],
 ] as const;
 
@@ -249,6 +250,8 @@ export default function App() {
             <ImportPage accounts={activeAccounts} transactions={transactions} onImported={refresh} />
           ) : active === "Rules" ? (
             <RulesPage />
+          ) : active === "Categories" ? (
+            <CategoriesPage />
           ) : active === "Budget" ? (
             <BudgetPage transactions={transactions} accounts={accounts} schedules={scheduledTemplates} occurrences={scheduledOccurrences} onMonthChange={loadOccurrenceMonth} navigationFocus={navigationIntent?.page==="Budget"?navigationIntent.focus:undefined} onNavigate={openIntent} />
           ) : active === "Bills" ? (

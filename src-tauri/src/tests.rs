@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest, UpdateAccountRequest};
+use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, merge_categories_inner, merge_payees_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, remove_unused_category_inner, remove_unused_payee_inner, rename_category_inner, rename_payee_inner, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest, UpdateAccountRequest};
 use calamine::Data;
 use rusqlite::Connection;
 use crate::investment::{snapshot_inner, SCALE_E8};
@@ -137,6 +137,93 @@ fn shared_catalogs_remember_ledger_and_planning_labels() {
     let payees: Vec<String> = connection.prepare("SELECT name FROM payees ORDER BY name").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
     assert_eq!(categories, vec!["Food: Groceries", "Home: Repairs"]);
     assert_eq!(payees, vec!["Neighborhood Market"]);
+}
+
+#[test]
+fn category_rename_and_merge_rewrite_authoritative_surfaces_atomically() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 5000, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, original_payee, category, amount_minor, status, source, import_batch_id) VALUES('t1', 'a', '2026-08-01', 'Market', 'MARKET #1', 'Food: Groceries', -1000, 'cleared', 'import', NULL), ('t2', 'a', '2026-08-02', 'Cafe', NULL, 'Split transaction', -1500, 'cleared', 'manual', NULL), ('xfer', 'a', '2026-08-03', 'Savings', NULL, 'Transfer: Savings', -200, 'cleared', 'transfer', NULL)", []).unwrap();
+    connection.execute("INSERT INTO transaction_splits(id, transaction_id, category, amount_minor, sort_order) VALUES('s1', 't2', 'Food: Groceries', -900, 0), ('s2', 't2', 'Food: Dining', -600, 1)", []).unwrap();
+    connection.execute("INSERT INTO scheduled_transactions(id, kind, account_id, payee, category, amount_minor, status, frequency, anchor_date) VALUES('sched', 'transaction', 'a', 'Market', 'Food: Groceries', -500, 'cleared', 'monthly', '2026-08-01')", []).unwrap();
+    connection.execute("INSERT INTO budget_categories(id, category, rollover_enabled) VALUES('groc', 'Food: Groceries', 1), ('dining', 'Food: Dining', 0)", []).unwrap();
+    connection.execute("INSERT INTO budget_allocations(id, budget_category_id, month, planned_minor) VALUES('ag', 'groc', '2026-08', 4000), ('ad', 'dining', '2026-08', 2000)", []).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id, name, pattern, normalized_pattern, match_type, direction, rename_to, category, priority, enabled) VALUES('r1', 'Market groceries', 'MARKET', 'market', 'contains', 'expense', 'Market', 'Food: Groceries', 100, 1)", []).unwrap();
+    refresh_label_memory(&connection).unwrap();
+
+    let renamed = rename_category_inner(&mut connection, "Food: Groceries".into(), "Food: Market".into()).unwrap();
+    assert_eq!(renamed.operation, "rename");
+    assert_eq!((renamed.transactions, renamed.splits, renamed.schedules, renamed.budget_categories, renamed.merchant_rules), (1, 1, 1, 1, 1));
+    let category: String = connection.query_row("SELECT category FROM transactions WHERE id='t1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(category, "Food: Market");
+    let split: String = connection.query_row("SELECT category FROM transaction_splits WHERE id='s1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(split, "Food: Market");
+    let transfer: String = connection.query_row("SELECT category FROM transactions WHERE id='xfer'", [], |r| r.get(0)).unwrap();
+    assert_eq!(transfer, "Transfer: Savings");
+    let original: Option<String> = connection.query_row("SELECT original_payee FROM transactions WHERE id='t1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(original.as_deref(), Some("MARKET #1"));
+    let balance: i64 = connection.query_row("SELECT opening_balance_minor + COALESCE((SELECT SUM(amount_minor) FROM transactions),0) FROM accounts WHERE id='a'", [], |r| r.get(0)).unwrap();
+    assert_eq!(balance, 5000 - 1000 - 1500 - 200);
+
+    assert!(rename_category_inner(&mut connection, "Food: Market".into(), "Food: Dining".into()).unwrap_err().contains("use merge"));
+    let merged = merge_categories_inner(&mut connection, "Food: Market".into(), "Food: Dining".into()).unwrap();
+    assert_eq!(merged.operation, "merge");
+    let remaining: i64 = connection.query_row("SELECT COUNT(*) FROM budget_categories WHERE category = 'Food: Market' COLLATE NOCASE", [], |r| r.get(0)).unwrap();
+    assert_eq!(remaining, 0);
+    let planned: i64 = connection.query_row("SELECT planned_minor FROM budget_allocations a JOIN budget_categories c ON c.id=a.budget_category_id WHERE c.category='Food: Dining' AND a.month='2026-08'", [], |r| r.get(0)).unwrap();
+    assert_eq!(planned, 6000);
+    let catalogs: Vec<String> = connection.prepare("SELECT name FROM categories WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert!(catalogs.iter().any(|n| n == "Food: Dining"));
+    assert!(!catalogs.iter().any(|n| n.eq_ignore_ascii_case("Food: Market")));
+}
+
+#[test]
+fn payee_rename_merge_preserve_import_provenance_and_support_unused_cleanup() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 0, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, original_payee, category, amount_minor, status, source) VALUES('t1', 'a', '2026-08-01', 'Corner Bakery', 'CORNER BAKERY #44', 'Food: Dining', -800, 'cleared', 'import'), ('t2', 'a', '2026-08-02', 'Corner Cafe', NULL, 'Food: Dining', -400, 'cleared', 'manual')", []).unwrap();
+    connection.execute("INSERT INTO scheduled_transactions(id, kind, account_id, payee, category, amount_minor, status, frequency, anchor_date) VALUES('sched', 'transaction', 'a', 'Corner Bakery', 'Food: Dining', -800, 'cleared', 'monthly', '2026-08-01')", []).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id, name, pattern, normalized_pattern, match_type, direction, rename_to, category, priority, enabled) VALUES('r1', 'Bakery', 'CORNER BAKERY', 'corner bakery', 'contains', 'expense', 'Corner Bakery', 'Food: Dining', 50, 1)", []).unwrap();
+    refresh_label_memory(&connection).unwrap();
+
+    let renamed = rename_payee_inner(&mut connection, "Corner Bakery".into(), "Neighborhood Bakery".into()).unwrap();
+    assert_eq!(renamed.transactions, 1);
+    assert_eq!(renamed.schedules, 1);
+    assert_eq!(renamed.merchant_rules, 1);
+    let original: Option<String> = connection.query_row("SELECT original_payee FROM transactions WHERE id='t1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(original.as_deref(), Some("CORNER BAKERY #44"));
+    let payee: String = connection.query_row("SELECT payee FROM transactions WHERE id='t1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(payee, "Neighborhood Bakery");
+    let pattern: String = connection.query_row("SELECT pattern FROM merchant_rules WHERE id='r1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(pattern, "CORNER BAKERY");
+
+    assert!(rename_payee_inner(&mut connection, "Neighborhood Bakery".into(), "Corner Cafe".into()).unwrap_err().contains("use merge"));
+    merge_payees_inner(&mut connection, "Neighborhood Bakery".into(), "Corner Cafe".into()).unwrap();
+    let payees: Vec<String> = connection.prepare("SELECT DISTINCT payee FROM transactions ORDER BY payee").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(payees, vec!["Corner Cafe"]);
+
+    connection.execute("INSERT INTO payees(id, name) VALUES('orphan', 'Stale Memory Payee')", []).unwrap();
+    remove_unused_payee_inner(&mut connection, "Stale Memory Payee".into()).unwrap();
+    assert!(remove_unused_payee_inner(&mut connection, "Corner Cafe".into()).unwrap_err().contains("still referenced"));
+    connection.execute("INSERT INTO categories(id, name) VALUES('orphan-cat', 'Unused: Label')", []).unwrap();
+    remove_unused_category_inner(&mut connection, "Unused: Label".into()).unwrap();
+    assert!(rename_category_inner(&mut connection, "Food: Dining".into(), "food: dining".into()).is_ok());
+    let cased: String = connection.query_row("SELECT category FROM transactions WHERE id='t1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(cased, "food: dining");
+}
+
+#[test]
+fn category_rename_collision_and_reserved_labels_are_rejected() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 0, 'Household'), ('b', 'Savings', 'savings', 'USD', 0, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, source) VALUES('t1', 'a', '2026-08-01', 'Store', 'Food', -100, 'cleared', 'manual'), ('t2', 'a', '2026-08-02', 'Move', 'Transfer: Savings', -50, 'cleared', 'transfer')", []).unwrap();
+    refresh_label_memory(&connection).unwrap();
+    assert!(rename_category_inner(&mut connection, "Transfer: Savings".into(), "Housing".into()).is_err());
+    assert!(rename_category_inner(&mut connection, "Food".into(), "Split transaction".into()).is_err());
+    assert!(merge_categories_inner(&mut connection, "Food".into(), "Food".into()).is_err());
 }
 
 #[test]

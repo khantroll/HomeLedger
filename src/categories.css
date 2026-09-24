@@ -1,0 +1,20 @@
+.categories-page{display:grid;gap:16px}
+.categories-intro .panel-heading{align-items:flex-start}
+.categories-explainer{display:flex;gap:12px;align-items:flex-start;padding:15px 17px;color:#40545d}
+.categories-explainer svg{color:var(--teal);flex:none}
+.categories-explainer div{display:grid;gap:3px}
+.categories-explainer span{color:var(--muted);font-size:11px;line-height:1.45}
+.categories-toolbar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.categories-tabs{display:flex;gap:6px}
+.categories-tabs button{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#f7fafb;color:#40545d;padding:7px 11px;border-radius:6px}
+.categories-tabs button.active{background:var(--teal);border-color:var(--teal);color:#fff}
+.categories-search{display:flex;align-items:center;gap:8px;min-width:min(280px,100%);border:1px solid var(--line);border-radius:6px;padding:0 10px;background:#fff}
+.categories-search input{border:0;outline:0;width:100%;padding:8px 0;background:transparent}
+.categories-search svg{color:var(--muted);flex:none}
+.categories-notice{margin:0 0 12px;color:#29664d;font-size:12px}
+.categories-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.categories-actions .edit-transaction,.categories-actions .delete-link{display:inline-flex;align-items:center;gap:4px}
+.memory-only{display:inline-block;margin-left:8px;padding:2px 6px;border-radius:8px;background:#e9eef0;color:#64747f;font-size:10px;font-weight:600}
+.categories-dialog{width:min(520px,calc(100vw - 32px))}
+.categories-confirm{margin:0;padding:10px 12px;border:1px solid #d7e8e4;background:#eef8f5;color:#245a4a;font-size:12px;border-radius:6px}
+@media(max-width:720px){.categories-actions{justify-content:flex-start}}
