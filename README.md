@@ -55,7 +55,7 @@ HomeLedger also maintains rotating automatic recovery snapshots in its private a
 
 XLS/XLSX workbooks are decoded by the native Rust process with bounded file, worksheet, row, column, cell and text limits. Searchable PDFs are extracted locally with bounded input and text sizes. Image and scanned-PDF OCR use packaged PDF.js, Tesseract WASM and English language data without uploading statements or fetching processing assets from a CDN. PDF pages are rasterized and recognized sequentially.
 
-The user reviews normalized rows before commit. Original workbook, PDF or image contents are not retained as ledger attachments. Delimited and structured financial files are parsed locally; approved normalized transaction data and supported provenance are retained according to the import format.
+The user reviews normalized rows before commit. By default, original workbook, PDF or image contents are not retained as ledger attachments. An optional import setting can keep the source document in HomeLedger’s managed attachment store and link it to the import batch and imported transactions without duplicating file bytes. Delimited and structured financial files are parsed locally; approved normalized transaction data and supported provenance are retained according to the import format.
 
 Duplicate detection, merchant rules and scheduled-occurrence matching are deterministic. Scheduled matching never weakens duplicate detection and never links without an explicit choice. Native import commands revalidate applicable rules and matching constraints before atomic commit.
 

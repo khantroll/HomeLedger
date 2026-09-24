@@ -401,6 +401,22 @@ describe("AccountRegister", () => {
     expect(await screen.findByLabelText("Flagged for follow-up")).toBeTruthy();
   });
 
+  it("shows an attachment badge when attachmentCount is present", async () => {
+    vi.mocked(repositoryModule.financeRepository.listTransactionsPage).mockResolvedValue({
+      transactions: [
+        tx({ id: "with-att", postedDate: "2026-09-01", payee: "Utility", category: "Housing", amountMinor: -2500, status: "cleared", attachmentCount: 2 }),
+        tx({ id: "single-att", postedDate: "2026-09-02", payee: "Cafe", category: "Food", amountMinor: -400, status: "cleared", attachmentCount: 1 }),
+      ],
+      totalCount: 2,
+      offset: 0,
+      limit: REGISTER_PAGE_SIZE,
+      priorBalanceMinor: 52500,
+    });
+    render(<AccountRegister accounts={accounts} lockedAccountId="checking" onRequestDialog={vi.fn()} />);
+    expect(await screen.findByLabelText("2 attachments")).toBeTruthy();
+    expect(screen.getByLabelText("1 attachment")).toBeTruthy();
+  });
+
   it("clears selection when the register scope changes", async () => {
     const user = userEvent.setup();
     render(<AccountRegister accounts={accounts} onRequestDialog={vi.fn()} />);

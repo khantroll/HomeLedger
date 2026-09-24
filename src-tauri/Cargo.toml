@@ -25,3 +25,4 @@ calamine = { version = "0.36.1", features = ["chrono"] }
 pdf-extract = "=0.12.1"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 keyring = "3"
+sha2 = "0.10"

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { DemoFinanceRepository } from "./demoRepository";
-import type { Account, BackupHealth, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, BulkMutationResult, BulkSetTransactionCategoryInput, BulkTransactionIdsInput, BulkUpdateTransactionStatusInput, CompleteReconciliationInput, CreateAccountInput, CreateInvestmentAccountInput, CreateTransactionInput, CreateTransferInput, CrossDomainCashTransferResult, DebtPlan, DebtPlanInput, FinanceRepository, HoldingSnapshot, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, InvestmentAccountSettings, InvestmentEventInput, InvestmentEventRevision, InvestmentRepository, LabelRewriteResult, LotAllocation, MerchantRule, MerchantRuleInput, PortfolioSnapshot, Reconciliation, RestoreResult, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Security, SecurityIdentifier, SecurityInput, SecurityPrice, SecurityPriceInput, Transaction, TransactionAnnotationInput, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
+import type { Account, AttachBytesInput, BackupHealth, BackupRepository, BudgetAllocationInput, BudgetCategory, BudgetCategoryInput, BudgetMonth, BulkMutationResult, BulkSetTransactionCategoryInput, BulkTransactionIdsInput, BulkUpdateTransactionStatusInput, CompleteReconciliationInput, CreateAccountInput, CreateInvestmentAccountInput, CreateTransactionInput, CreateTransferInput, CrossDomainCashTransferResult, DebtPlan, DebtPlanInput, FinanceRepository, HoldingSnapshot, ImportBatch, ImportProfile, ImportProfileInput, ImportResult, ImportTransactionsInput, InvestmentAccountSettings, InvestmentEventInput, InvestmentEventRevision, InvestmentRepository, LabelRewriteResult, LotAllocation, MerchantRule, MerchantRuleInput, PickedAttachmentFile, PortfolioSnapshot, Reconciliation, RestoreResult, RetainImportSourceInput, SavingsGoal, SavingsGoalInput, ScheduledAutoPostInput, ScheduledImportMatch, ScheduledImportMatchInput, ScheduledOccurrence, ScheduledOccurrenceQuery, ScheduledPostResult, ScheduledTransaction, ScheduledTransactionInput, Security, SecurityIdentifier, SecurityInput, SecurityPrice, SecurityPriceInput, Transaction, TransactionAnnotationInput, TransactionAttachment, TransactionPage, TransactionQuery, TransferResult, UndoImportResult, UpdateAccountInput } from "./domain";
 import type { ParsedWorkbook, WorkbookRepository } from "./workbookImport";
 import type { PdfExtraction, PdfRepository } from "./pdfImport";
 
@@ -69,6 +69,12 @@ class TauriFinanceRepository implements FinanceRepository {
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult> { return invoke("import_transactions", { request: input }); }
   listImportBatches(): Promise<ImportBatch[]> { return invoke("list_import_batches"); }
   undoImportBatch(batchId: string): Promise<UndoImportResult> { return invoke("undo_import_batch", { batchId }); }
+  listTransactionAttachments(transactionId: string): Promise<TransactionAttachment[]> { return invoke("list_transaction_attachments", { transactionId }); }
+  attachBytesToTransaction(input: AttachBytesInput): Promise<TransactionAttachment> { return invoke("attach_bytes_to_transaction", { request: input }); }
+  detachTransactionAttachment(transactionId: string, attachmentId: string): Promise<void> { return invoke("detach_transaction_attachment", { transactionId, attachmentId }); }
+  openAttachment(attachmentId: string): Promise<void> { return invoke("open_attachment", { attachmentId }); }
+  retainImportSourceAttachment(input: RetainImportSourceInput): Promise<TransactionAttachment> { return invoke("retain_import_source_attachment", { request: input }); }
+  pickAndReadAttachmentFile(): Promise<PickedAttachmentFile | null> { return invoke("pick_and_read_attachment_file"); }
 }
 
 export const isNativeApp = "__TAURI_INTERNALS__" in window;

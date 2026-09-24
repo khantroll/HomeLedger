@@ -44,7 +44,50 @@ export interface Transaction {
   importBatchId?: string;
   transferLinkId?: string;
   transferAccountId?: string;
+  /** Number of linked receipt/document attachments (metadata only; does not affect balances). */
+  attachmentCount?: number;
 }
+
+export interface TransactionAttachment {
+  id: string;
+  storageKey: string;
+  originalFilename: string;
+  mediaType: string;
+  byteSize: number;
+  sha256Hex: string;
+  sourceKind: "manual" | "import_retention" | string;
+  createdAt: string;
+}
+
+export interface AttachBytesInput {
+  transactionId: string;
+  originalFilename: string;
+  mediaType?: string;
+  contentBase64: string;
+  sourceKind?: "manual" | "import_retention";
+}
+
+export interface RetainImportSourceInput {
+  importBatchId: string;
+  transactionIds: string[];
+  originalFilename: string;
+  mediaType?: string;
+  contentBase64: string;
+}
+
+export interface PickedAttachmentFile {
+  originalFilename: string;
+  mediaType?: string;
+  contentBase64: string;
+}
+
+/** Matches native `MAX_ATTACHMENT_BYTES`. */
+export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Matches native `ALLOWED_EXTENSIONS`. */
+export const ATTACHMENT_ALLOWED_EXTENSIONS = [
+  "pdf", "png", "jpg", "jpeg", "tif", "tiff", "webp", "xls", "xlsx", "csv", "tsv", "txt", "ofx", "qfx", "qif", "xml",
+] as const;
 
 /** Maximum length for transaction notes (`memo`). Matches native SQLite CHECK. */
 export const TRANSACTION_NOTE_MAX_LENGTH = 500;
@@ -161,6 +204,12 @@ export interface FinanceRepository {
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
+  listTransactionAttachments(transactionId: string): Promise<TransactionAttachment[]>;
+  attachBytesToTransaction(input: AttachBytesInput): Promise<TransactionAttachment>;
+  detachTransactionAttachment(transactionId: string, attachmentId: string): Promise<void>;
+  openAttachment(attachmentId: string): Promise<void>;
+  retainImportSourceAttachment(input: RetainImportSourceInput): Promise<TransactionAttachment>;
+  pickAndReadAttachmentFile(): Promise<PickedAttachmentFile | null>;
 }
 
 /** Result of an atomic category/payee rename or merge across ledger surfaces. */
@@ -369,11 +418,22 @@ export interface ImportTransactionsInput {
   accountId: string;
   sourceName: string;
   rows: ImportTransactionRow[];
+  /**
+   * When set, retain the source document atomically with the import (all-or-none).
+   * Failure retains nothing and imports nothing.
+   */
+  retainSource?: {
+    originalFilename: string;
+    mediaType?: string;
+    contentBase64: string;
+  };
 }
 
 export interface ImportResult {
   batchId: string;
   importedCount: number;
+  /** IDs of rows created by this import, in source order. */
+  transactionIds: string[];
 }
 
 export interface ImportBatch {

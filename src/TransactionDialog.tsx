@@ -1,6 +1,6 @@
-import { useMemo, useState, type FormEvent } from "react";
-import { Plus, Trash2, X } from "lucide-react";
-import { formatMoney, parseMoney, sumMoney, TRANSACTION_NOTE_MAX_LENGTH, type Account, type CreateTransactionInput, type CreateTransactionSplit, type Transaction, type TransactionSplit, type TransactionStatus } from "./domain";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Paperclip, Plus, Trash2, X } from "lucide-react";
+import { formatMoney, parseMoney, sumMoney, TRANSACTION_NOTE_MAX_LENGTH, type Account, type CreateTransactionInput, type CreateTransactionSplit, type Transaction, type TransactionAttachment, type TransactionSplit, type TransactionStatus } from "./domain";
 import { financeRepository as repository } from "./repository";
 import { SuggestionLists, useLedgerSuggestions } from "./useLedgerSuggestions";
 import "./transactionEditor.css";
@@ -12,12 +12,26 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
   const [error,setError]=useState("");
   const [saving,setSaving]=useState(false);
   const [confirmDelete,setConfirmDelete]=useState(false);
+  const [attachments,setAttachments]=useState<TransactionAttachment[]>([]);
+  const [attachmentsLoading,setAttachmentsLoading]=useState(false);
+  const [attachmentBusy,setAttachmentBusy]=useState(false);
   const seed=transaction??draft;
   const [splitMode,setSplitMode]=useState(Boolean(seed?.splits?.length));
   const [splits,setSplits]=useState<SplitDraft[]>(()=>seed?.splits?.map(toDraft)??[]);
   const splitTotal=useMemo(()=>{
     try{return sumMoney(splits.map(split=>signedAmount(split)));}catch{return null;}
   },[splits]);
+
+  useEffect(()=>{
+    if(!transaction){setAttachments([]);return;}
+    let cancelled=false;
+    setAttachmentsLoading(true);
+    void repository.listTransactionAttachments(transaction.id)
+      .then((rows)=>{if(!cancelled)setAttachments(rows);})
+      .catch((reason)=>{if(!cancelled)setError(reason instanceof Error?reason.message:String(reason));})
+      .finally(()=>{if(!cancelled)setAttachmentsLoading(false);});
+    return()=>{cancelled=true;};
+  },[transaction]);
 
   function enableSplits(){
     if(splitMode){setSplitMode(false);return;}
@@ -68,6 +82,42 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));setSaving(false);setConfirmDelete(false);}
   }
 
+  async function attachFile(){
+    if(!transaction)return;
+    setAttachmentBusy(true);setError("");
+    try{
+      const picked=await repository.pickAndReadAttachmentFile();
+      if(!picked)return;
+      const attached=await repository.attachBytesToTransaction({
+        transactionId:transaction.id,
+        originalFilename:picked.originalFilename,
+        mediaType:picked.mediaType,
+        contentBase64:picked.contentBase64,
+        sourceKind:"manual",
+      });
+      setAttachments(await repository.listTransactionAttachments(transaction.id).catch(()=>[...attachments.filter((item)=>item.id!==attached.id),attached]));
+    }catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
+    finally{setAttachmentBusy(false);}
+  }
+
+  async function openAttached(attachment:TransactionAttachment){
+    setAttachmentBusy(true);setError("");
+    try{await repository.openAttachment(attachment.id);}
+    catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
+    finally{setAttachmentBusy(false);}
+  }
+
+  async function removeAttached(attachment:TransactionAttachment){
+    if(!transaction)return;
+    if(!window.confirm(`Remove “${attachment.originalFilename}” from this transaction?`))return;
+    setAttachmentBusy(true);setError("");
+    try{
+      await repository.detachTransactionAttachment(transaction.id,attachment.id);
+      setAttachments((current)=>current.filter((item)=>item.id!==attachment.id));
+    }catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
+    finally{setAttachmentBusy(false);}
+  }
+
   const imported=Boolean(transaction?.importBatchId);
   const defaultDirection=seed&&seed.amountMinor>=0?"income":"expense";
   const defaultAmount=seed?(Math.abs(seed.amountMinor)/100).toFixed(2):"";
@@ -80,6 +130,13 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
     <label>Status<select name="status" defaultValue={seed?.status??"cleared"}><option value="pending">Pending</option><option value="cleared">Cleared</option>{transaction?.status==="reconciled"&&<option value="reconciled" disabled>Reconciled by statement</option>}<option value="review">Needs review</option></select></label>
     <label>Note<textarea name="memo" defaultValue={seed?.memo} maxLength={TRANSACTION_NOTE_MAX_LENGTH} placeholder="Optional context for this transaction" aria-label="Transaction note"/></label>
     <label className="flag-toggle"><input type="checkbox" name="flagged" defaultChecked={Boolean(seed?.flagged)}/> Flag for follow-up</label>
+    {transaction&&<section className="attachment-editor" aria-label="Attachments">
+      <div className="attachment-heading"><div><strong>Attachments</strong><small>Receipts and retained import documents. Does not change balances.</small></div>
+        <button type="button" disabled={attachmentBusy||saving} onClick={()=>void attachFile()}><Paperclip size={13}/> Attach receipt/document…</button>
+      </div>
+      {attachmentsLoading?<p className="attachment-empty">Loading attachments…</p>:attachments.length===0?<p className="attachment-empty">No attachments yet.</p>:
+        <ul className="attachment-list">{attachments.map((item)=><li key={item.id}><div className="attachment-meta"><strong title={item.originalFilename}>{item.originalFilename}</strong><small>{formatByteSize(item.byteSize)}</small></div><div className="attachment-actions"><button type="button" disabled={attachmentBusy||saving} onClick={()=>void openAttached(item)}>Open</button><button type="button" className="attachment-remove" disabled={attachmentBusy||saving} onClick={()=>void removeAttached(item)}>Remove</button></div></li>)}</ul>}
+    </section>}
     {imported&&<p className="imported-note">This transaction came from an import batch. You can edit it, but deletion stays with the complete-batch Undo command.</p>}
     {error&&<p className="form-error">{error}</p>}
     <div className="transaction-actions">{transaction&&!imported?<button type="button" className={confirmDelete?"danger-action":"delete-link"} disabled={saving} onClick={remove}>{confirmDelete?"Confirm permanent deletion":"Delete transaction"}</button>:<span/>}<div className="form-actions"><button type="button" onClick={onClose} disabled={saving}>Cancel</button><button className="primary" disabled={saving||Boolean(splitMode&&splitTotal===null)}>{saving?"Saving…":"Save"}</button></div></div>
@@ -91,3 +148,8 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
 function blankSplit():SplitDraft{return{key:crypto.randomUUID(),category:"",direction:"expense",amount:"",memo:""};}
 function toDraft(split:TransactionSplit|CreateTransactionSplit):SplitDraft{return{key:"id" in split?split.id:crypto.randomUUID(),category:split.category,direction:split.amountMinor>=0?"income":"expense",amount:(Math.abs(split.amountMinor)/100).toFixed(2),memo:split.memo??""};}
 function signedAmount(split:SplitDraft):number{const amount=parseMoney(split.amount);return split.direction==="expense"?-Math.abs(amount):Math.abs(amount);}
+function formatByteSize(bytes:number):string{
+  if(bytes<1024)return`${bytes} B`;
+  if(bytes<1024*1024)return`${(bytes/1024).toFixed(bytes%1024===0?0:1)} KB`;
+  return`${(bytes/(1024*1024)).toFixed(1)} MB`;
+}

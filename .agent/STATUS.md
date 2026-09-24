@@ -4,12 +4,12 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T20:23:00Z
+- **Updated:** 2026-09-24T21:47:00Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `56273ab81766a194f17389409456322860ac651f` — #62 Register Bulk Actions merged
-- **Open PRs (verified):** PR #63 — Transaction Notes & Flags (`cursor/transaction-notes-flags-1f15`), draft, intentionally unmerged
-- **Scope delivered:** Notes & flags; flagged-only filter hides non-contiguous running Balance
-- **Next action:** Exact-head GitHub CI on flagged-balance fix, then architecture/integrity review of PR #63. Do not merge automatically. Do not start PR #64.
+- **Canonical main (verified):** `5fc8077fe18f25d296c9f1ea04d0e0f90b3e2835` — #63 Transaction Notes & Flags squash-merged
+- **Open PRs (in progress):** PR #64 — Transaction Attachments & Receipt Retention (`cursor/transaction-attachments-1f15`), draft, intentionally unmerged
+- **Scope delivered:** Attachments + atomic import source retention (all-or-none); shared-byte safe rollback; attachment-aware `.hlb`; recovery DB-only + live store validation
+- **Next action:** Exact-head GitHub CI on retention all-or-none tip. Do not merge automatically. Do not start PR #65. Do not make a STATUS-only tip commit after CI passes.
 
 ## Handoff protocol
 

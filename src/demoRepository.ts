@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, normalizeTransactionQuery, TRANSACTION_NOTE_MAX_LENGTH, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type BulkMutationResult, type BulkSetTransactionCategoryInput, type BulkTransactionIdsInput, type BulkUpdateTransactionStatusInput, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionAnnotationInput, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
+import { reconciliationDifference, sumMoney, normalizeTransactionQuery, ATTACHMENT_ALLOWED_EXTENSIONS, ATTACHMENT_MAX_BYTES, TRANSACTION_NOTE_MAX_LENGTH, type Account, type AttachBytesInput, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type BulkMutationResult, type BulkSetTransactionCategoryInput, type BulkTransactionIdsInput, type BulkUpdateTransactionStatusInput, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type PickedAttachmentFile, type Reconciliation, type RetainImportSourceInput, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionAnnotationInput, type TransactionAttachment, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
 import { isRememberedCategoryLabel } from "./labelVocabulary";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
@@ -43,6 +43,9 @@ export class DemoFinanceRepository implements FinanceRepository {
   private categoryMemory=new Set(initialTransactions.map(item=>item.category).filter(isRememberedCategory));
   private payeeMemory=new Set(initialTransactions.map(item=>item.payee));
   private crossDomainLinks=new Map<string,{ordinaryTransactionId:string;investmentEventId:string;ordinaryAccountId:string;investmentAccountId:string;investmentCashEffectMinor:number;status:string;amountMinor:number}>();
+  private attachments=new Map<string,{meta:TransactionAttachment;contentBase64:string}>();
+  private transactionAttachmentIds=new Map<string,Set<string>>();
+  private batchAttachmentIds=new Map<string,Set<string>>();
 
   async listAccounts(includeArchived = false): Promise<Account[]> {
     return structuredClone(this.accounts
@@ -139,6 +142,9 @@ export class DemoFinanceRepository implements FinanceRepository {
       transactions:structuredClone(this.transactions),
       categoryMemory:new Set(this.categoryMemory),
       payeeMemory:new Set(this.payeeMemory),
+      attachments:new Map([...this.attachments.entries()].map(([id,value])=>[id,{meta:structuredClone(value.meta),contentBase64:value.contentBase64}])),
+      transactionAttachmentIds:new Map([...this.transactionAttachmentIds.entries()].map(([id,set])=>[id,new Set(set)])),
+      batchAttachmentIds:new Map([...this.batchAttachmentIds.entries()].map(([id,set])=>[id,new Set(set)])),
     };
     try{return run();}
     catch(error){
@@ -146,6 +152,9 @@ export class DemoFinanceRepository implements FinanceRepository {
       this.transactions=snapshot.transactions;
       this.categoryMemory=snapshot.categoryMemory;
       this.payeeMemory=snapshot.payeeMemory;
+      this.attachments=snapshot.attachments;
+      this.transactionAttachmentIds=snapshot.transactionAttachmentIds;
+      this.batchAttachmentIds=snapshot.batchAttachmentIds;
       throw error;
     }
   }
@@ -168,6 +177,62 @@ export class DemoFinanceRepository implements FinanceRepository {
     this.transactions.splice(index,1);
     const account=this.accounts.find(item=>item.id===transaction.accountId);
     if(account)account.balanceMinor-=transaction.amountMinor;
+    this.clearTransactionAttachmentLinks(id);
+  }
+  private clearTransactionAttachmentLinks(transactionId:string):void{
+    const linked=this.transactionAttachmentIds.get(transactionId);
+    if(!linked)return;
+    const ids=[...linked];
+    this.transactionAttachmentIds.delete(transactionId);
+    for(const attachmentId of ids)this.garbageCollectAttachment(attachmentId);
+  }
+  private attachmentCountFor(transactionId:string):number{
+    return this.transactionAttachmentIds.get(transactionId)?.size??0;
+  }
+  private withAttachmentCount(transaction:Transaction):Transaction{
+    return{...transaction,attachmentCount:this.attachmentCountFor(transaction.id)};
+  }
+  private garbageCollectAttachment(attachmentId:string):boolean{
+    let refs=0;
+    for(const set of this.transactionAttachmentIds.values())if(set.has(attachmentId))refs+=1;
+    for(const set of this.batchAttachmentIds.values())if(set.has(attachmentId))refs+=1;
+    if(refs>0)return false;
+    return this.attachments.delete(attachmentId);
+  }
+  private linkTransactionAttachment(transactionId:string,attachmentId:string):void{
+    let set=this.transactionAttachmentIds.get(transactionId);
+    if(!set){set=new Set();this.transactionAttachmentIds.set(transactionId,set);}
+    set.add(attachmentId);
+  }
+  private linkBatchAttachment(batchId:string,attachmentId:string):void{
+    let set=this.batchAttachmentIds.get(batchId);
+    if(!set){set=new Set();this.batchAttachmentIds.set(batchId,set);}
+    set.add(attachmentId);
+  }
+  private async insertAttachmentBytes(originalFilename:string,mediaType:string|undefined,contentBase64:string,sourceKind:string):Promise<TransactionAttachment>{
+    const filename=sanitizeAttachmentFilename(originalFilename);
+    const bytes=decodeAttachmentBase64(contentBase64);
+    if(!bytes.length)throw new Error("Attachment content is empty");
+    if(bytes.length>ATTACHMENT_MAX_BYTES)throw new Error("Attachment exceeds the 10 MB size limit");
+    validateAttachmentExtension(filename);
+    const media=inferAttachmentMediaType(filename,mediaType);
+    const hash=await sha256Hex(bytes);
+    for(const stored of this.attachments.values()){
+      if(stored.meta.sha256Hex===hash)return structuredClone(stored.meta);
+    }
+    const id=crypto.randomUUID();
+    const meta:TransactionAttachment={
+      id,
+      storageKey:id,
+      originalFilename:filename,
+      mediaType:media,
+      byteSize:bytes.length,
+      sha256Hex:hash,
+      sourceKind,
+      createdAt:new Date().toISOString(),
+    };
+    this.attachments.set(id,{meta,contentBase64:contentBase64.trim()});
+    return structuredClone(meta);
   }
   private withAtomicLabelRewrite(run:()=>LabelRewriteResult):LabelRewriteResult{
     const snapshot={
@@ -311,7 +376,7 @@ export class DemoFinanceRepository implements FinanceRepository {
   }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
     const rows = accountId ? this.transactions.filter((item) => item.accountId === accountId) : this.transactions;
-    return structuredClone([...rows].sort((a, b) => b.postedDate.localeCompare(a.postedDate) || b.id.localeCompare(a.id)));
+    return structuredClone([...rows].sort((a, b) => b.postedDate.localeCompare(a.postedDate) || b.id.localeCompare(a.id)).map((item) => this.withAttachmentCount(item)));
   }
   async listTransactionsPage(query: TransactionQuery = {}): Promise<TransactionPage> {
     const normalized = normalizeTransactionQuery(query);
@@ -335,7 +400,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     }).sort((a, b) => a.postedDate.localeCompare(b.postedDate) || a.id.localeCompare(b.id));
     const totalCount = matched.length;
     const offset = normalized.newest ? Math.max(0, totalCount - normalized.limit) : Math.min(normalized.offset, totalCount);
-    const transactions = matched.slice(offset, offset + normalized.limit);
+    const transactions = matched.slice(offset, offset + normalized.limit).map((item) => this.withAttachmentCount(item));
     let priorBalanceMinor: number | undefined;
     if (normalized.accountId) {
       const opening = this.openingBalances.get(normalized.accountId) ?? 0;
@@ -486,6 +551,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     this.transactions.splice(index,1);
     const account=this.accounts.find(item=>item.id===transaction.accountId);
     if(account)account.balanceMinor-=transaction.amountMinor;
+    this.clearTransactionAttachmentLinks(id);
   }
   async createTransfer(input: CreateTransferInput): Promise<TransferResult> {
     validateTransferInput(input,this.accounts);
@@ -517,6 +583,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     if(pair.some(item=>this.reconciledTransactionIds.has(item.id)))throw new Error("A reconciled transfer cannot be deleted");
     for(const item of pair){const account=this.accounts.find(account=>account.id===item.accountId);if(account)account.balanceMinor-=item.amountMinor;}
     this.transactions=this.transactions.filter(item=>item.transferLinkId!==id);
+    for(const item of pair)this.clearTransactionAttachmentLinks(item.id);
   }
   async createOrdinaryInvestmentCashTransfer(input:CreateTransferInput):Promise<CrossDomainCashTransferResult>{
     return this.saveCrossDomainTransfer(undefined,input);
@@ -536,6 +603,7 @@ export class DemoFinanceRepository implements FinanceRepository {
     const investmentAccount=this.accounts.find(item=>item.id===link.investmentAccountId);
     if(investmentAccount)investmentAccount.balanceMinor-=link.investmentCashEffectMinor;
     this.transactions=this.transactions.filter(item=>item.id!==ordinary.id);
+    this.clearTransactionAttachmentLinks(ordinary.id);
     this.crossDomainLinks.delete(id);
   }
   private saveCrossDomainTransfer(existingId:string|undefined,input:CreateTransferInput):CrossDomainCashTransferResult{
@@ -723,24 +791,63 @@ export class DemoFinanceRepository implements FinanceRepository {
       const eligible=findScheduledMatches(row,input.accountId,this.scheduledTransactions,this.scheduledOccurrences).some(candidate=>candidate.occurrenceId===row.scheduledOccurrenceId);
       if(!eligible)throw new Error("The selected scheduled occurrence is no longer eligible for this transaction");
     });
-    const batchId = crypto.randomUUID();
-    const imported = prepared.map(row => ({
-      id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
-      category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
-      memo: row.memo, flagged: false, externalId: row.externalId, originalPayee: row.originalPayee,
-      splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
-      source: "import" as const, importBatchId: batchId
-    }));
-    prepared.forEach((row,index)=>{
-      if(!row.scheduledOccurrenceId)return;
-      const occurrence=this.scheduledOccurrences.find(item=>item.id===row.scheduledOccurrenceId)!;
-      occurrence.status="linked";occurrence.transactionId=imported[index].id;
-    });
-    this.transactions.unshift(...imported);
-    account.balanceMinor += imported.reduce((total, row) => total + row.amountMinor, 0);
-    this.importBatches.unshift({ id: batchId, accountId: account.id, accountName: account.name, sourceName: input.sourceName, importedAt: new Date().toISOString(), transactionCount: imported.length, totalMinor: imported.reduce((total, row) => total + row.amountMinor, 0) });
-    this.importedTransactionIds.set(batchId, imported.map(row => row.id));
-    return { batchId, importedCount: imported.length };
+    if (input.retainSource) {
+      const filename = sanitizeAttachmentFilename(input.retainSource.originalFilename);
+      const bytes = decodeAttachmentBase64(input.retainSource.contentBase64);
+      if (!bytes.length) throw new Error("Attachment content is empty");
+      if (bytes.length > ATTACHMENT_MAX_BYTES) throw new Error("Attachment exceeds the 10 MB size limit");
+      validateAttachmentExtension(filename);
+    }
+    const snapshot = {
+      transactions: structuredClone(this.transactions),
+      importBatches: structuredClone(this.importBatches),
+      importedTransactionIds: new Map<string, string[]>([...this.importedTransactionIds.entries()].map(([key, value]) => [key, [...value]])),
+      scheduledOccurrences: structuredClone(this.scheduledOccurrences),
+      attachments: new Map([...this.attachments.entries()].map(([key, value]) => [key, { meta: structuredClone(value.meta), contentBase64: value.contentBase64 }])),
+      transactionAttachmentIds: new Map([...this.transactionAttachmentIds.entries()].map(([key, value]) => [key, new Set(value)])),
+      batchAttachmentIds: new Map([...this.batchAttachmentIds.entries()].map(([key, value]) => [key, new Set(value)])),
+      balanceMinor: account.balanceMinor,
+    };
+    try {
+      const batchId = crypto.randomUUID();
+      const imported = prepared.map(row => ({
+        id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
+        category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
+        memo: row.memo, flagged: false, externalId: row.externalId, originalPayee: row.originalPayee,
+        splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
+        source: "import" as const, importBatchId: batchId
+      }));
+      prepared.forEach((row,index)=>{
+        if(!row.scheduledOccurrenceId)return;
+        const occurrence=this.scheduledOccurrences.find(item=>item.id===row.scheduledOccurrenceId)!;
+        occurrence.status="linked";occurrence.transactionId=imported[index].id;
+      });
+      this.transactions.unshift(...imported);
+      account.balanceMinor += imported.reduce((total, row) => total + row.amountMinor, 0);
+      this.importBatches.unshift({ id: batchId, accountId: account.id, accountName: account.name, sourceName: input.sourceName, importedAt: new Date().toISOString(), transactionCount: imported.length, totalMinor: imported.reduce((total, row) => total + row.amountMinor, 0) });
+      const transactionIds = imported.map(row => row.id);
+      this.importedTransactionIds.set(batchId, transactionIds);
+      if (input.retainSource) {
+        await this.retainImportSourceAttachment({
+          importBatchId: batchId,
+          transactionIds,
+          originalFilename: input.retainSource.originalFilename,
+          mediaType: input.retainSource.mediaType,
+          contentBase64: input.retainSource.contentBase64,
+        });
+      }
+      return { batchId, importedCount: imported.length, transactionIds };
+    } catch (error) {
+      this.transactions = snapshot.transactions;
+      this.importBatches = snapshot.importBatches;
+      this.importedTransactionIds = new Map(snapshot.importedTransactionIds);
+      this.scheduledOccurrences = snapshot.scheduledOccurrences;
+      this.attachments = new Map(snapshot.attachments);
+      this.transactionAttachmentIds = new Map(snapshot.transactionAttachmentIds);
+      this.batchAttachmentIds = new Map(snapshot.batchAttachmentIds);
+      account.balanceMinor = snapshot.balanceMinor;
+      throw error;
+    }
   }
   async listImportBatches(): Promise<ImportBatch[]> { return structuredClone(this.importBatches); }
   async undoImportBatch(batchId: string): Promise<UndoImportResult> {
@@ -755,7 +862,61 @@ export class DemoFinanceRepository implements FinanceRepository {
     const account = this.accounts.find(item => item.id === batch.accountId);
     if (account) account.balanceMinor -= removed.reduce((total, row) => total + row.amountMinor, 0);
     batch.undoneAt = new Date().toISOString();
+    for (const id of ids) this.clearTransactionAttachmentLinks(id);
+    const batchLinks = this.batchAttachmentIds.get(batchId);
+    if (batchLinks) {
+      const attachmentIds = [...batchLinks];
+      this.batchAttachmentIds.delete(batchId);
+      for (const attachmentId of attachmentIds) this.garbageCollectAttachment(attachmentId);
+    }
     return { batchId, removedCount: removed.length };
+  }
+  async listTransactionAttachments(transactionId: string): Promise<TransactionAttachment[]> {
+    if (!this.transactions.some((item) => item.id === transactionId)) throw new Error("Transaction does not exist");
+    const ids = [...(this.transactionAttachmentIds.get(transactionId) ?? [])];
+    return ids
+      .map((id) => this.attachments.get(id)?.meta)
+      .filter((item): item is TransactionAttachment => Boolean(item))
+      .map((item) => structuredClone(item))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  }
+  async attachBytesToTransaction(input: AttachBytesInput): Promise<TransactionAttachment> {
+    const transactionId = input.transactionId.trim();
+    if (!transactionId) throw new Error("Transaction is required");
+    if (!this.transactions.some((item) => item.id === transactionId)) throw new Error("Transaction does not exist");
+    const sourceKind = input.sourceKind ?? "manual";
+    if (sourceKind !== "manual" && sourceKind !== "import_retention") throw new Error("Unsupported attachment source");
+    const attachment = await this.insertAttachmentBytes(input.originalFilename, input.mediaType, input.contentBase64, sourceKind);
+    this.linkTransactionAttachment(transactionId, attachment.id);
+    return attachment;
+  }
+  async detachTransactionAttachment(transactionId: string, attachmentId: string): Promise<void> {
+    const linked = this.transactionAttachmentIds.get(transactionId);
+    if (!linked?.has(attachmentId)) throw new Error("Attachment is not linked to this transaction");
+    linked.delete(attachmentId);
+    if (!linked.size) this.transactionAttachmentIds.delete(transactionId);
+    this.garbageCollectAttachment(attachmentId);
+  }
+  async openAttachment(attachmentId: string): Promise<void> {
+    if (!this.attachments.has(attachmentId)) throw new Error("Attachment does not exist");
+  }
+  async retainImportSourceAttachment(input: RetainImportSourceInput): Promise<TransactionAttachment> {
+    const batchId = input.importBatchId.trim();
+    if (!batchId) throw new Error("Import batch is required");
+    const batch = this.importBatches.find((item) => item.id === batchId);
+    if (!batch || batch.undoneAt) throw new Error("Import batch does not exist");
+    if (!input.transactionIds.length) throw new Error("Select at least one imported transaction");
+    for (const transactionId of input.transactionIds) {
+      const row = this.transactions.find((item) => item.id === transactionId);
+      if (!row || row.importBatchId !== batchId) throw new Error("A selected transaction does not belong to this import batch");
+    }
+    const attachment = await this.insertAttachmentBytes(input.originalFilename, input.mediaType, input.contentBase64, "import_retention");
+    this.linkBatchAttachment(batchId, attachment.id);
+    for (const transactionId of input.transactionIds) this.linkTransactionAttachment(transactionId, attachment.id);
+    return attachment;
+  }
+  async pickAndReadAttachmentFile(): Promise<PickedAttachmentFile | null> {
+    return null;
   }
 }
 
@@ -863,4 +1024,69 @@ function validateScheduledTransaction(input:ScheduledTransactionInput,accounts:A
 
 function validateOccurrenceQuery(input:ScheduledOccurrenceQuery){
   if(!/^\d{4}-\d{2}-\d{2}$/.test(input.fromDate)||!/^\d{4}-\d{2}-\d{2}$/.test(input.toDate)||input.fromDate>input.toDate)throw new Error("Occurrence query dates are invalid");
+}
+
+function sanitizeAttachmentFilename(value:string):string{
+  const name=value.trim().replace(/[\\/]/g,"_").replace(/^\.+|\.+$/g,"").trim();
+  if(!name)throw new Error("Original filename is required");
+  if([...name].length>260)throw new Error("Original filename is too long");
+  if(name.includes("\0"))throw new Error("Original filename is invalid");
+  return name;
+}
+
+function attachmentExtension(filename:string):string{
+  const idx=filename.lastIndexOf(".");
+  if(idx<0)return "";
+  return filename.slice(idx+1).toLocaleLowerCase();
+}
+
+function validateAttachmentExtension(filename:string):void{
+  const ext=attachmentExtension(filename);
+  if(!(ATTACHMENT_ALLOWED_EXTENSIONS as readonly string[]).includes(ext)){
+    throw new Error(`Unsupported attachment type .${ext}`);
+  }
+}
+
+function inferAttachmentMediaType(filename:string,provided?:string):string{
+  const value=provided?.trim();
+  if(value){
+    if([...value].length>120)throw new Error("Media type is too long");
+    return value;
+  }
+  switch(attachmentExtension(filename)){
+    case"pdf":return"application/pdf";
+    case"png":return"image/png";
+    case"jpg":case"jpeg":return"image/jpeg";
+    case"tif":case"tiff":return"image/tiff";
+    case"webp":return"image/webp";
+    case"xls":return"application/vnd.ms-excel";
+    case"xlsx":return"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case"csv":return"text/csv";
+    case"tsv":return"text/tab-separated-values";
+    case"txt":return"text/plain";
+    case"ofx":case"qfx":return"application/x-ofx";
+    case"qif":return"application/qif";
+    case"xml":return"application/xml";
+    default:return"application/octet-stream";
+  }
+}
+
+function decodeAttachmentBase64(contentBase64:string):Uint8Array{
+  try{
+    const binary=atob(contentBase64.trim());
+    const bytes=new Uint8Array(binary.length);
+    for(let i=0;i<binary.length;i+=1)bytes[i]=binary.charCodeAt(i);
+    return bytes;
+  }catch{
+    throw new Error("Attachment content is not valid base64");
+  }
+}
+
+async function sha256Hex(bytes:Uint8Array):Promise<string>{
+  if(globalThis.crypto?.subtle){
+    const copy=new Uint8Array(bytes);
+    const digest=await crypto.subtle.digest("SHA-256",copy);
+    return[...new Uint8Array(digest)].map((b)=>b.toString(16).padStart(2,"0")).join("");
+  }
+  return `len-${bytes.length}-${bytes[0]??0}-${bytes[bytes.length-1]??0}`;
 }
