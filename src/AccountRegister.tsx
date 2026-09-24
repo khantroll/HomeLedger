@@ -46,6 +46,8 @@ interface AccountRegisterProps {
   /** Optional starting status for contextual entry into the global register. */
   initialStatus?: TransactionStatusFilter;
   initialSearch?: string;
+  /** Optional posted-date window used with focusTransactionId so Find landings are not lost to pagination. */
+  focusPostedDate?: string;
   focusTransactionId?: string;
   refreshToken?: number;
   onRequestDialog: (request: RegisterDialogRequest) => void;
@@ -58,6 +60,7 @@ export function AccountRegister({
   initialAccountId,
   initialStatus = "all",
   initialSearch = "",
+  focusPostedDate,
   focusTransactionId,
   refreshToken = 0,
   onRequestDialog,
@@ -66,8 +69,8 @@ export function AccountRegister({
   const locked = Boolean(lockedAccountId);
   const [accountId, setAccountId] = useState(lockedAccountId ?? initialAccountId ?? "");
   const [status, setStatus] = useState<TransactionStatusFilter>(initialStatus);
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [fromDate, setFromDate] = useState(focusPostedDate ?? "");
+  const [toDate, setToDate] = useState(focusPostedDate ?? "");
   const [search, setSearch] = useState(initialSearch);
   const [draftSearch, setDraftSearch] = useState(initialSearch);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -97,9 +100,16 @@ export function AccountRegister({
   }, [initialSearch, locked]);
 
   useEffect(() => {
+    if (!locked && focusPostedDate) {
+      setFromDate(focusPostedDate);
+      setToDate(focusPostedDate);
+    }
+  }, [focusPostedDate, locked]);
+
+  useEffect(() => {
     if (!focusTransactionId || loading) return;
     const row = document.querySelector<HTMLElement>(`tr.register-focus`);
-    row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    row?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }, [focusTransactionId, loading, transactions]);
 
   useEffect(() => {
@@ -268,7 +278,7 @@ export function AccountRegister({
               aria-label="Filter register by account"
             >
               <option value="">All accounts</option>
-              {accounts.map((account) => (
+              {accounts.filter((account) => !account.archived).map((account) => (
                 <option key={account.id} value={account.id}>
                   {account.name}
                 </option>

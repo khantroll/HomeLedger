@@ -22,7 +22,16 @@ export type BudgetNavigationFocus = {
  * Only fields justified by those workflows; not a general router.
  */
 export type NavigationIntent =
-  | { page: "Transactions"; status: "review" | "all"; accountId?: string; search?: string; transactionId?: string }
+  | {
+      page: "Transactions";
+      status: "review" | "all";
+      accountId?: string;
+      /** Optional register text filter; focusTransactionId remains authoritative for landing. */
+      search?: string;
+      transactionId?: string;
+      /** When set with transactionId, narrow the register date window so the focused row is loadable. */
+      postedDate?: string;
+    }
   | { page: "Bills"; focus: BillsNavigationFocus }
   | { page: "Forecast"; focus?: ForecastNavigationFocus }
   | { page: "Budget"; focus?: BudgetNavigationFocus }

@@ -28,6 +28,7 @@ import { PortfolioPage } from "./PortfolioPage";
 import { InvestmentAccountDialog } from "./InvestmentEditors";
 import { FinancialFindDialog } from "./FinancialFindDialog";
 import type { FinancialFindResult } from "./financialFind";
+import { resolveFinancialFindLanding } from "./financialFindNavigation";
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -109,10 +110,18 @@ export default function App() {
 
   useEffect(() => {
     const openFind = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === "f" || event.key.toLowerCase() === "k")) {
-        event.preventDefault();
-        setFindOpen(true);
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key !== "f" && key !== "k") return;
+      // Ctrl/Cmd+K always opens Find. Ctrl/Cmd+F opens Find unless the user is typing in a
+      // field that still benefits from the host find/replace shortcut (e.g. multi-line notes).
+      if (key === "f") {
+        const target = event.target;
+        if (target instanceof HTMLTextAreaElement) return;
+        if (target instanceof HTMLElement && target.isContentEditable) return;
       }
+      event.preventDefault();
+      setFindOpen(true);
     };
     window.addEventListener("keydown", openFind);
     return () => window.removeEventListener("keydown", openFind);
@@ -120,21 +129,30 @@ export default function App() {
 
   function openFindResult(result: FinancialFindResult) {
     setFindOpen(false);
-    if(result.kind==="transaction"){
-      const source=transactions.find(item=>item.id===result.transactionId);
-      const account=accounts.find(item=>item.id===result.accountId);
-      if(account?.archived){ setActive("Reports"); setNavigationIntent(undefined); return; }
+    const landing = resolveFinancialFindLanding(result, {
+      accounts,
+      transactions,
+      occurrences: scheduledOccurrences,
+    });
+    if (landing.kind === "accounts") {
       setRegisterAccountId(undefined);
-      setNavigationIntent({page:"Transactions",status:"all",accountId:result.accountId,search:source?.payee??result.title,transactionId:result.transactionId});
-      setActive("Transactions");
+      setNavigationIntent(undefined);
+      setActive("Accounts");
       return;
     }
-    if(result.kind==="schedule"){
-      const due=scheduledOccurrences.filter(item=>item.scheduledTransactionId===result.templateId&&item.status==="expected").sort((a,b)=>a.dueDate.localeCompare(b.dueDate))[0]?.dueDate??result.dueDate??todayIso();
-      setNavigationIntent({page:"Bills",focus:{kind:"day",dueDate:due}});setActive("Bills");setRegisterAccountId(undefined);return;
+    if (landing.kind === "bills") {
+      setRegisterAccountId(undefined);
+      setNavigationIntent(undefined);
+      setActive("Bills");
+      return;
     }
-    if(result.kind==="account"){openAccountDestination(result.accountId);return;}
-    setNavigationIntent({page:"Portfolio",focus:{accountId:result.accountId,securityId:result.securityId}});setActive("Portfolio");setRegisterAccountId(undefined);
+    if (landing.kind === "account-destination") {
+      openAccountDestination(landing.accountId);
+      return;
+    }
+    setRegisterAccountId(undefined);
+    setNavigationIntent(landing.intent);
+    setActive(landing.intent.page);
   }
 
   function openNav(label: string, intent?: NavigationIntent) {
@@ -253,7 +271,7 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <AccountRegister accounts={activeAccounts} initialAccountId={navigationIntent?.page==="Transactions"?navigationIntent.accountId:undefined} initialStatus={navigationIntent?.page==="Transactions"?navigationIntent.status:"all"} initialSearch={navigationIntent?.page==="Transactions"?navigationIntent.search:undefined} focusTransactionId={navigationIntent?.page==="Transactions"?navigationIntent.transactionId:undefined} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
+              <AccountRegister accounts={accounts} initialAccountId={navigationIntent?.page==="Transactions"?navigationIntent.accountId:undefined} initialStatus={navigationIntent?.page==="Transactions"?navigationIntent.status:"all"} initialSearch={navigationIntent?.page==="Transactions"?navigationIntent.search:undefined} focusPostedDate={navigationIntent?.page==="Transactions"?navigationIntent.postedDate:undefined} focusTransactionId={navigationIntent?.page==="Transactions"?navigationIntent.transactionId:undefined} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
             </>
           ) : active === "Accounts" ? (
             <>
