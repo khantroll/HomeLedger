@@ -95,6 +95,26 @@ describe("budgetPlanning", () => {
     expect(proposal.lines.some((line) => /Transfer/.test(line.category))).toBe(false);
   });
 
+  it("averages an intermittent category across every valid household-history month", () => {
+    const intermittent = [
+      tx({ id: "repair-june", postedDate: "2026-06-10", category: "Car Repair", amountMinor: -30000 }),
+      tx({ id: "grocery-june", postedDate: "2026-06-12", category: "Food: Groceries", amountMinor: -40000 }),
+      tx({ id: "grocery-july", postedDate: "2026-07-12", category: "Food: Groceries", amountMinor: -45000 }),
+      tx({ id: "grocery-august", postedDate: "2026-08-12", category: "Food: Groceries", amountMinor: -50000 }),
+    ];
+    const proposal = buildBudgetPlanProposal("average-3", {
+      targetMonth: "2026-09",
+      transactions: intermittent,
+      accounts,
+      schedules: [],
+      occurrences: [],
+    });
+    expect(proposal.label).toBe("3-month average");
+    expect(proposal.monthsUsed).toEqual(["2026-08", "2026-07", "2026-06"]);
+    expect(proposal.lines.find((line) => line.category === "Car Repair")?.suggestedPlannedMinor).toBe(10000);
+    expect(proposal.lines.find((line) => line.category === "Car Repair")?.basis).toBe("3-month average");
+  });
+
   it("labels a shorter average honestly when history is incomplete", () => {
     const shortHistory = history.filter((item) => item.postedDate >= "2026-07-01");
     const proposal = buildBudgetPlanProposal("average-3", {
