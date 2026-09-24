@@ -94,14 +94,15 @@ function buildAverageProposal(
   const candidateMonths = completedHistoryMonths(input.targetMonth, requested);
   const monthsUsed = candidateMonths.filter((month) => monthHasExpense(month, input.transactions, accountIds));
   const current = currentByCategory(input.currentBudget);
-  const totals = new Map<string, { category: string; values: number[] }>();
+  const totals = new Map<string, { category: string; totalMinor: number }>();
 
   for (const month of monthsUsed) {
     const byCategory = monthlyExpenseByCategory(month, input.transactions, accountIds);
     for (const [key, row] of byCategory) {
-      const entry = totals.get(key) ?? { category: row.category, values: [] };
-      // Missing months are omitted from the average rather than treated as zero spend.
-      entry.values.push(row.spentMinor);
+      const entry = totals.get(key) ?? { category: row.category, totalMinor: 0 };
+      // Every category uses the same valid household-history window. If this category is
+      // absent from another month in monthsUsed, that month contributes zero implicitly.
+      entry.totalMinor = sumMoney([entry.totalMinor, row.spentMinor]);
       // Prefer an existing budget label casing when present.
       entry.category = current.get(key)?.category ?? entry.category;
       totals.set(key, entry);
@@ -125,7 +126,7 @@ function buildAverageProposal(
   const lines: BudgetPlanProposalLine[] = [...totals.entries()]
     .map(([key, entry]) => {
       const existing = current.get(key);
-      const suggested = averageMinor(entry.values);
+      const suggested = actualCount > 0 ? averageMinor([entry.totalMinor, ...Array(actualCount - 1).fill(0)]) : 0;
       return {
         key,
         category: existing?.category ?? entry.category,
