@@ -1,4 +1,4 @@
-use super::{apply_migrations, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, merge_categories_inner, merge_payees_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, remove_unused_category_inner, remove_unused_payee_inner, rename_category_inner, rename_payee_inner, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest, UpdateAccountRequest};
+use super::{apply_migrations, bulk_delete_transactions_inner, bulk_set_transaction_category_inner, bulk_update_transaction_status_inner, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, merge_categories_inner, merge_payees_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, remove_unused_category_inner, remove_unused_payee_inner, rename_category_inner, rename_payee_inner, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, BulkSetTransactionCategoryRequest, BulkTransactionIdsRequest, BulkUpdateTransactionStatusRequest, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransferRequest, UpdateAccountRequest};
 use calamine::Data;
 use rusqlite::Connection;
 use crate::investment::{snapshot_inner, SCALE_E8};
@@ -224,6 +224,65 @@ fn category_rename_collision_and_reserved_labels_are_rejected() {
     assert!(rename_category_inner(&mut connection, "Transfer: Savings".into(), "Housing".into()).is_err());
     assert!(rename_category_inner(&mut connection, "Food".into(), "Split transaction".into()).is_err());
     assert!(merge_categories_inner(&mut connection, "Food".into(), "Food".into()).is_err());
+}
+
+#[test]
+fn bulk_register_actions_are_atomic_and_protect_transfers_splits_and_reconciled() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id, name, account_type, currency, opening_balance_minor, owner_label) VALUES('a', 'Checking', 'checking', 'USD', 10000, 'Household'), ('b', 'Savings', 'savings', 'USD', 0, 'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id, account_id, posted_date, payee, category, amount_minor, status, source) VALUES('t1', 'a', '2026-08-01', 'Market', 'Food: Groceries', -1000, 'review', 'manual'), ('t2', 'a', '2026-08-02', 'Cafe', 'Food: Dining', -500, 'pending', 'manual'), ('t3', 'a', '2026-08-03', 'Trip', 'Split transaction', -1500, 'cleared', 'manual'), ('rec', 'a', '2026-08-04', 'Old', 'Housing', -200, 'reconciled', 'manual')", []).unwrap();
+    connection.execute("INSERT INTO transaction_splits(id, transaction_id, category, amount_minor, sort_order) VALUES('s1', 't3', 'Food: Groceries', -900, 0), ('s2', 't3', 'Food: Dining', -600, 1)", []).unwrap();
+    connection.execute("INSERT INTO reconciliations(id, account_id, statement_end_date, opening_balance_minor, closing_balance_minor) VALUES('r1', 'a', '2026-08-31', 10000, 6800)", []).unwrap();
+    connection.execute("INSERT INTO reconciliation_items(reconciliation_id, transaction_id, amount_minor, status_before) VALUES('r1', 'rec', -200, 'cleared')", []).unwrap();
+    create_transfer_inner(&mut connection, TransferRequest {
+        from_account_id: "a".into(), to_account_id: "b".into(), posted_date: "2026-08-05".into(), payee: "Move".into(),
+        amount_minor: 250, status: "cleared".into(), memo: None,
+    }).unwrap();
+
+    let status = bulk_update_transaction_status_inner(&mut connection, BulkUpdateTransactionStatusRequest {
+        transaction_ids: vec!["t1".into(), "t2".into()],
+        status: "cleared".into(),
+    }).unwrap();
+    assert_eq!(status.updated_count, 2);
+    let statuses: Vec<String> = connection.prepare("SELECT status FROM transactions WHERE id IN ('t1','t2') ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(statuses, vec!["cleared", "cleared"]);
+
+    let category = bulk_set_transaction_category_inner(&mut connection, BulkSetTransactionCategoryRequest {
+        transaction_ids: vec!["t1".into(), "t2".into()],
+        category: "Food: Market".into(),
+    }).unwrap();
+    assert_eq!(category.updated_count, 2);
+    let categories: Vec<String> = connection.prepare("SELECT category FROM transactions WHERE id IN ('t1','t2') ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(categories, vec!["Food: Market", "Food: Market"]);
+
+    assert!(bulk_set_transaction_category_inner(&mut connection, BulkSetTransactionCategoryRequest {
+        transaction_ids: vec!["t1".into(), "t3".into()],
+        category: "Housing".into(),
+    }).unwrap_err().contains("Split"));
+    let unchanged: String = connection.query_row("SELECT category FROM transactions WHERE id='t1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(unchanged, "Food: Market");
+
+    assert!(bulk_update_transaction_status_inner(&mut connection, BulkUpdateTransactionStatusRequest {
+        transaction_ids: vec!["t1".into(), "rec".into()],
+        status: "pending".into(),
+    }).unwrap_err().contains("Reconciled"));
+    let still_cleared: String = connection.query_row("SELECT status FROM transactions WHERE id='t1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(still_cleared, "cleared");
+
+    let transfer_id: String = connection.query_row("SELECT id FROM transactions WHERE source='transfer' LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert!(bulk_delete_transactions_inner(&mut connection, BulkTransactionIdsRequest {
+        transaction_ids: vec!["t2".into(), transfer_id],
+    }).unwrap_err().contains("transfer"));
+    let t2_exists: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE id='t2'", [], |r| r.get(0)).unwrap();
+    assert_eq!(t2_exists, 1);
+
+    let deleted = bulk_delete_transactions_inner(&mut connection, BulkTransactionIdsRequest {
+        transaction_ids: vec!["t2".into()],
+    }).unwrap();
+    assert_eq!(deleted.deleted_count, 1);
+    let remaining: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE id='t2'", [], |r| r.get(0)).unwrap();
+    assert_eq!(remaining, 0);
 }
 
 #[test]

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
-import { ArrowLeftRight, ChevronLeft, Download, MoreHorizontal, Scale, Search } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { ArrowLeftRight, ChevronLeft, Download, MoreHorizontal, Scale, Search, Tags, Trash2 } from "lucide-react";
 import {
   REGISTER_PAGE_SIZE,
   formatMoney,
@@ -26,6 +26,8 @@ import {
   scheduledDraftFromTransaction,
   transactionReuseEligibility,
 } from "./transactionReuse";
+import { normalizeBulkStatus, registerBulkEligibility, selectedIdsEligibleFor } from "./registerBulk";
+import { SuggestionLists, useLedgerSuggestions } from "./useLedgerSuggestions";
 import { todayIso } from "./scheduledPresentation";
 import "./register.css";
 import "./registerExport.css";
@@ -82,6 +84,12 @@ export function AccountRegister({
   const [exporting,setExporting]=useState(false);
   const [exportNotice,setExportNotice]=useState("");
   const [error, setError] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkCategory, setBulkCategory] = useState("");
+  const [bulkStatus, setBulkStatus] = useState<"pending" | "cleared" | "review">("cleared");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const suggestions = useLedgerSuggestions();
 
   useEffect(() => {
     if (lockedAccountId) setAccountId(lockedAccountId);
@@ -126,6 +134,8 @@ export function AccountRegister({
     if (locked && !accountId) return;
     setLoading(true);
     setError("");
+    setSelectedIds(new Set());
+    setConfirmDelete(false);
     try {
       const page = await repository.listTransactionsPage({
         accountId: accountId || undefined,
@@ -190,10 +200,131 @@ export function AccountRegister({
 
   const hasOlder = offset > 0;
   const shownThrough = offset + transactions.length;
+  const visibleIds = useMemo(() => transactions.map((item) => item.id), [transactions]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const categorySelection = useMemo(() => selectedIdsEligibleFor(transactions, selectedIds, "category"), [selectedIds, transactions]);
+  const statusSelection = useMemo(() => selectedIdsEligibleFor(transactions, selectedIds, "status"), [selectedIds, transactions]);
+  const deleteSelection = useMemo(() => selectedIdsEligibleFor(transactions, selectedIds, "delete"), [selectedIds, transactions]);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => visibleIds.includes(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [visibleIds]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+      if (confirmDelete) { setConfirmDelete(false); return; }
+      if (selectedIds.size) setSelectedIds(new Set());
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [confirmDelete, selectedIds.size]);
 
   function chooseAccount(next: string) {
     setAccountId(next);
     onAccountChange?.(next || undefined);
+  }
+
+  function toggleRow(id: string) {
+    setConfirmDelete(false);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectVisible() {
+    setConfirmDelete(false);
+    setSelectedIds((current) => {
+      if (allVisibleSelected) return new Set();
+      return new Set(visibleIds);
+    });
+  }
+
+  function onRowKeyDown(event: ReactKeyboardEvent<HTMLTableRowElement>, id: string) {
+    if (event.key !== " ") return;
+    const target = event.target as HTMLElement;
+    if (target.tagName === "INPUT" || target.tagName === "BUTTON" || target.tagName === "A" || target.isContentEditable) return;
+    event.preventDefault();
+    toggleRow(id);
+  }
+
+  async function applyBulkCategory() {
+    const category = bulkCategory.trim();
+    // All-or-none: refuse mixed selections so protected rows are never silently skipped.
+    if (categorySelection.blocked.length > 0) {
+      setError("Selected batch includes protected or ineligible transactions (transfers, splits, reconciled, or reserved). Nothing was changed.");
+      return;
+    }
+    if (!categorySelection.eligibleIds.length) {
+      setError("Select eligible transactions first.");
+      return;
+    }
+    if (!category) { setError("Category is required"); return; }
+    setBulkBusy(true); setError("");
+    try {
+      await repository.bulkSetTransactionCategory({ transactionIds: categorySelection.eligibleIds, category });
+      setSelectedIds(new Set());
+      setBulkCategory("");
+      await loadNewest();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function applyBulkStatus() {
+    if (statusSelection.blocked.length > 0) {
+      setError("Selected batch includes protected or ineligible transactions (transfers, reconciled, or scheduled). Nothing was changed.");
+      return;
+    }
+    if (!statusSelection.eligibleIds.length) {
+      setError("Select eligible transactions first.");
+      return;
+    }
+    setBulkBusy(true); setError("");
+    try {
+      await repository.bulkUpdateTransactionStatus({ transactionIds: statusSelection.eligibleIds, status: normalizeBulkStatus(bulkStatus) });
+      setSelectedIds(new Set());
+      await loadNewest();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function applyBulkDelete() {
+    if (deleteSelection.blocked.length > 0) {
+      setError("Selected batch includes protected or ineligible transactions (transfers, reconciled, imported, or scheduled). Nothing was changed.");
+      setConfirmDelete(false);
+      return;
+    }
+    if (!deleteSelection.eligibleIds.length) {
+      setError("Select eligible transactions first.");
+      return;
+    }
+    if (!confirmDelete) { setConfirmDelete(true); return; }
+    setBulkBusy(true); setError("");
+    try {
+      await repository.bulkDeleteTransactions({ transactionIds: deleteSelection.eligibleIds });
+      setSelectedIds(new Set());
+      setConfirmDelete(false);
+      await loadNewest();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setConfirmDelete(false);
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   function applySearch(event: FormEvent) {
@@ -327,6 +458,45 @@ export function AccountRegister({
       )}
       {exportNotice&&<div className="success-banner" role="status">{exportNotice}</div>}
 
+      {selectedIds.size > 0 && (
+        <section className="panel register-bulk-bar" aria-label="Bulk register actions">
+          <div className="register-bulk-summary">
+            <strong>{selectedIds.size} selected</strong>
+            <span>
+              {categorySelection.blocked.length || statusSelection.blocked.length || deleteSelection.blocked.length
+                ? "Selection includes protected rows. Bulk actions require every selected transaction to be eligible; mixed batches change nothing."
+                : "Apply one explicit action to the selected rows."}
+            </span>
+          </div>
+          <div className="register-bulk-controls">
+            <label>
+              Category
+              <input list={suggestions.categoryListId} value={bulkCategory} onChange={(event) => setBulkCategory(event.target.value)} placeholder="Food: Groceries" maxLength={120} aria-label="Bulk category" />
+            </label>
+            <button type="button" disabled={bulkBusy || !categorySelection.eligibleIds.length} onClick={() => void applyBulkCategory()}>
+              <Tags size={13} /> Change category ({categorySelection.eligibleIds.length})
+            </button>
+            <label>
+              Status
+              <select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value as "pending" | "cleared" | "review")} aria-label="Bulk status">
+                <option value="pending">Pending</option>
+                <option value="cleared">Cleared</option>
+                <option value="review">Needs review</option>
+              </select>
+            </label>
+            <button type="button" disabled={bulkBusy || !statusSelection.eligibleIds.length} onClick={() => void applyBulkStatus()}>
+              Set status ({statusSelection.eligibleIds.length})
+            </button>
+            <button type="button" className={confirmDelete ? "danger-action" : "delete-link"} disabled={bulkBusy || !deleteSelection.eligibleIds.length} onClick={() => void applyBulkDelete()}>
+              <Trash2 size={13} />
+              {confirmDelete ? `Confirm delete ${deleteSelection.eligibleIds.length}` : `Delete (${deleteSelection.eligibleIds.length})`}
+            </button>
+            <button type="button" disabled={bulkBusy} onClick={() => { setSelectedIds(new Set()); setConfirmDelete(false); }}>Clear selection</button>
+          </div>
+          <SuggestionLists {...suggestions} />
+        </section>
+      )}
+
       <section className="panel register-ledger">
         <div className="panel-heading">
           <div>
@@ -360,6 +530,14 @@ export function AccountRegister({
             <table className="register-table">
               <thead>
                 <tr>
+                  <th className="register-select-col">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={toggleSelectVisible}
+                      aria-label="Select all visible transactions"
+                    />
+                  </th>
                   {!selectedAccount && <th>Account</th>}
                   <th>Date</th>
                   <th>Payee</th>
@@ -377,8 +555,24 @@ export function AccountRegister({
                   const linked = transaction.transferAccountId
                     ? accounts.find((item) => item.id === transaction.transferAccountId)
                     : undefined;
+                  const eligibility = registerBulkEligibility(transaction);
+                  const selected = selectedIds.has(transaction.id);
                   return (
-                    <tr key={transaction.id} className={transaction.id===focusTransactionId?"register-focus":undefined}>
+                    <tr
+                      key={transaction.id}
+                      className={[transaction.id===focusTransactionId?"register-focus":"", selected?"register-selected":""].filter(Boolean).join(" ") || undefined}
+                      tabIndex={0}
+                      onKeyDown={(event) => onRowKeyDown(event, transaction.id)}
+                    >
+                      <td className="register-select-col">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => toggleRow(transaction.id)}
+                          aria-label={`Select ${transaction.payee} on ${transaction.postedDate}`}
+                          title={eligibility.reasons.length ? `Protected: ${eligibility.reasons.join(", ")}` : undefined}
+                        />
+                      </td>
                       {!selectedAccount && <td>{account?.name ?? "Missing account"}</td>}
                       <td>{transaction.postedDate}</td>
                       <td>

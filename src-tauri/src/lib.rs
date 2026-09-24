@@ -1277,6 +1277,33 @@ struct LabelRewriteResult {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct BulkTransactionIdsRequest {
+    transaction_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkUpdateTransactionStatusRequest {
+    transaction_ids: Vec<String>,
+    status: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkSetTransactionCategoryRequest {
+    transaction_ids: Vec<String>,
+    category: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkMutationResult {
+    updated_count: usize,
+    deleted_count: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BudgetCategoryRequest {
     category: String,
     rollover_enabled: bool,
@@ -3251,6 +3278,112 @@ fn delete_transaction(transaction_id: String, state: State<DbState>) -> Result<(
     delete_transaction_inner(&connection, transaction_id)
 }
 
+fn validate_bulk_transaction_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
+    if ids.is_empty() { return Err("Select at least one transaction".into()); }
+    if ids.len() > 1000 { return Err("Bulk actions are limited to 1,000 transactions".into()); }
+    let mut selected = HashSet::new();
+    let mut cleaned = Vec::with_capacity(ids.len());
+    for id in ids {
+        let id = clean_required(id, "Transaction", 80)?;
+        if !selected.insert(id.clone()) { return Err("A transaction was selected more than once".into()); }
+        cleaned.push(id);
+    }
+    Ok(cleaned)
+}
+
+fn assert_bulk_editable(connection: &Connection, transaction_id: &str) -> Result<(), String> {
+    let exists: Option<i64> = connection.query_row("SELECT 1 FROM transactions WHERE id = ?1", [transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if exists.is_none() { return Err(format!("Transaction {transaction_id} does not exist")); }
+    let reconciled: Option<i64> = connection.query_row("SELECT 1 FROM reconciliation_items WHERE transaction_id = ?1", [transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if reconciled.is_some() { return Err("Reconciled transactions cannot be edited".into()); }
+    let scheduled: Option<i64> = connection.query_row("SELECT 1 FROM scheduled_occurrences WHERE transaction_id = ?1", [transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if scheduled.is_some() { return Err("Transactions linked to scheduled occurrences cannot be edited".into()); }
+    let linked: Option<i64> = connection.query_row("SELECT 1 FROM transfer_links WHERE from_transaction_id = ?1 OR to_transaction_id = ?1", [transaction_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if linked.is_some() { return Err("Linked transfers must be edited through the transfer editor".into()); }
+    if cross_domain_transfer::transaction_is_cross_domain_linked(connection, transaction_id)? {
+        return Err("Ordinary↔investment cash transfers must be edited through the transfer editor".into());
+    }
+    Ok(())
+}
+
+fn bulk_update_transaction_status_inner(connection: &mut Connection, request: BulkUpdateTransactionStatusRequest) -> Result<BulkMutationResult, String> {
+    const STATUSES: &[&str] = &["pending", "cleared", "review"];
+    if !STATUSES.contains(&request.status.as_str()) { return Err("Unsupported transaction status".into()); }
+    let ids = validate_bulk_transaction_ids(request.transaction_ids)?;
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    for id in &ids {
+        assert_bulk_editable(&tx, id)?;
+        let changed = tx.execute(
+            "UPDATE transactions SET status = ?2, modified_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            params![id, request.status],
+        ).map_err(|e| e.to_string())?;
+        if changed != 1 { return Err(format!("Transaction {id} could not be updated")); }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(BulkMutationResult { updated_count: ids.len(), deleted_count: 0 })
+}
+
+fn bulk_set_transaction_category_inner(connection: &mut Connection, request: BulkSetTransactionCategoryRequest) -> Result<BulkMutationResult, String> {
+    let category = clean_required(request.category, "Category", 120)?;
+    if is_reserved_category(&category) {
+        return Err("Split and transfer categories cannot be assigned through bulk edit".into());
+    }
+    let ids = validate_bulk_transaction_ids(request.transaction_ids)?;
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    for id in &ids {
+        assert_bulk_editable(&tx, id)?;
+        let has_splits: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM transaction_splits WHERE transaction_id = ?1)",
+            [id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        if has_splits {
+            return Err("Split transactions cannot receive a bulk category change; edit their split lines individually".into());
+        }
+        let current: String = tx.query_row("SELECT category FROM transactions WHERE id = ?1", [id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if is_reserved_category(&current) {
+            return Err("Transfer and split parent categories cannot be rewritten through bulk category edit".into());
+        }
+        let changed = tx.execute(
+            "UPDATE transactions SET category = ?2, modified_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            params![id, category],
+        ).map_err(|e| e.to_string())?;
+        if changed != 1 { return Err(format!("Transaction {id} could not be updated")); }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    refresh_label_memory(connection)?;
+    Ok(BulkMutationResult { updated_count: ids.len(), deleted_count: 0 })
+}
+
+fn bulk_delete_transactions_inner(connection: &mut Connection, request: BulkTransactionIdsRequest) -> Result<BulkMutationResult, String> {
+    let ids = validate_bulk_transaction_ids(request.transaction_ids)?;
+    let tx = connection.transaction().map_err(|e| e.to_string())?;
+    for id in &ids {
+        // Reuse the authoritative single-delete guards inside one SQLite transaction.
+        delete_transaction_inner(&tx, id.clone())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(BulkMutationResult { updated_count: 0, deleted_count: ids.len() })
+}
+
+#[tauri::command]
+fn bulk_update_transaction_status(request: BulkUpdateTransactionStatusRequest, state: State<DbState>) -> Result<BulkMutationResult, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    bulk_update_transaction_status_inner(&mut connection, request)
+}
+
+#[tauri::command]
+fn bulk_set_transaction_category(request: BulkSetTransactionCategoryRequest, state: State<DbState>) -> Result<BulkMutationResult, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    bulk_set_transaction_category_inner(&mut connection, request)
+}
+
+#[tauri::command]
+fn bulk_delete_transactions(request: BulkTransactionIdsRequest, state: State<DbState>) -> Result<BulkMutationResult, String> {
+    let mut connection = state.0.lock().map_err(|_| "Database lock failed".to_string())?;
+    bulk_delete_transactions_inner(&mut connection, request)
+}
+
 fn import_transactions_inner(connection: &mut Connection, request: ImportTransactionsRequest) -> Result<ImportResult, String> {
     if request.rows.is_empty() { return Err("The import contains no transactions".into()); }
     if request.rows.len() > 10_000 { return Err("A single import is limited to 10,000 transactions".into()); }
@@ -3689,7 +3822,7 @@ pub fn run() {
             app.manage(DbState(Mutex::new(connection)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, rename_category, merge_categories, remove_unused_category, rename_payee, merge_payees, remove_unused_payee, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
+        .invoke_handler(tauri::generate_handler![test_local_ai, query_local_ai, query_openai_ai, query_anthropic_ai, query_gemini_ai, set_ai_provider_credential, clear_ai_provider_credential, ai_provider_credential_status, list_accounts, list_categories, list_payees, rename_category, merge_categories, remove_unused_category, rename_payee, merge_payees, remove_unused_payee, create_account, investment::create_investment_account, investment::get_investment_account_settings, investment::save_investment_account_settings, investment::list_securities, investment::create_security, investment::update_security, investment::set_security_archived, investment::add_security_identifier, investment::list_security_identifiers, investment::remove_security_identifier, investment::create_investment_event, investment::update_pending_investment_event, investment::correct_historical_investment_event, investment::get_investment_event_history, investment::list_investment_events, investment::set_specific_lot_allocations, investment::derive_investment_holdings, investment::calculate_portfolio_snapshot, investment::add_manual_security_price, investment::add_market_provider_security_price, investment::delete_manual_security_price, investment::list_security_prices, cross_domain_transfer::create_ordinary_investment_cash_transfer, cross_domain_transfer::update_ordinary_investment_cash_transfer, cross_domain_transfer::delete_ordinary_investment_cash_transfer, update_account, set_account_archived, reorder_accounts, list_transactions, list_transactions_page, list_reconciliation_transactions, list_reconciliations, complete_reconciliation, create_transaction, update_transaction, delete_transaction, bulk_update_transaction_status, bulk_set_transaction_category, bulk_delete_transactions, create_transfer, update_transfer, delete_transfer, list_merchant_rules, create_merchant_rule, update_merchant_rule, delete_merchant_rule, list_import_profiles, save_import_profile, delete_import_profile, list_scheduled_transactions, create_scheduled_transaction, update_scheduled_transaction, delete_scheduled_transaction, generate_scheduled_occurrences, list_scheduled_occurrences, post_scheduled_occurrence, process_scheduled_auto_post, skip_scheduled_occurrence, link_scheduled_occurrence, find_scheduled_occurrence_matches, list_budget_categories, create_budget_category, update_budget_category, delete_budget_category, set_budget_allocation, get_budget_month, list_savings_goals, create_savings_goal, update_savings_goal, delete_savings_goal, get_debt_plan, save_debt_plan, import_transactions, list_import_batches, undo_import_batch, parse_workbook, extract_pdf_text, get_backup_health, set_recovery_retention, create_automatic_recovery_snapshot, restore_recovery_snapshot, export_backup_snapshot, save_backup_file, save_csv_file, choose_backup_file, restore_backup_snapshot])
         .run(tauri::generate_context!())
         .expect("error while running HomeLedger");
 }

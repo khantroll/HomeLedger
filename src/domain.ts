@@ -90,6 +90,9 @@ export interface FinanceRepository {
   renamePayee(from: string, to: string): Promise<LabelRewriteResult>;
   mergePayees(from: string, into: string): Promise<LabelRewriteResult>;
   removeUnusedPayee(name: string): Promise<void>;
+  bulkUpdateTransactionStatus(input: BulkUpdateTransactionStatusInput): Promise<BulkMutationResult>;
+  bulkSetTransactionCategory(input: BulkSetTransactionCategoryInput): Promise<BulkMutationResult>;
+  bulkDeleteTransactions(input: BulkTransactionIdsInput): Promise<BulkMutationResult>;
   listTransactions(accountId?: string): Promise<Transaction[]>;
   listTransactionsPage(query?: TransactionQuery): Promise<TransactionPage>;
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]>;
@@ -154,6 +157,25 @@ export interface LabelRewriteResult {
   budgetCategories: number;
   merchantRules: number;
   catalogRemoved: boolean;
+}
+
+export interface BulkTransactionIdsInput {
+  transactionIds: string[];
+}
+
+export interface BulkUpdateTransactionStatusInput {
+  transactionIds: string[];
+  status: Exclude<TransactionStatus, "reconciled">;
+}
+
+export interface BulkSetTransactionCategoryInput {
+  transactionIds: string[];
+  category: string;
+}
+
+export interface BulkMutationResult {
+  updatedCount: number;
+  deletedCount: number;
 }
 
 export interface ScheduledTransaction {

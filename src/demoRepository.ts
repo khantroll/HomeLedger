@@ -1,4 +1,5 @@
-import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
+import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type BulkMutationResult, type BulkSetTransactionCategoryInput, type BulkTransactionIdsInput, type BulkUpdateTransactionStatusInput, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
+import { isRememberedCategoryLabel } from "./labelVocabulary";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
@@ -92,6 +93,81 @@ export class DemoFinanceRepository implements FinanceRepository {
     let removed=false;
     for(const item of [...this.payeeMemory])if(item.toLocaleLowerCase()===key){this.payeeMemory.delete(item);removed=true;}
     if(!removed)throw new Error("Payee does not exist in autocomplete memory");
+  }
+  async bulkUpdateTransactionStatus(input:BulkUpdateTransactionStatusInput):Promise<BulkMutationResult>{
+    const ids=validateBulkIds(input.transactionIds);
+    if(!["pending","cleared","review"].includes(input.status))throw new Error("Unsupported transaction status");
+    return this.withAtomicBulk(()=>{
+      for(const id of ids){
+        const transaction=this.requireBulkEditable(id);
+        transaction.status=input.status;
+      }
+      return{updatedCount:ids.length,deletedCount:0};
+    });
+  }
+  async bulkSetTransactionCategory(input:BulkSetTransactionCategoryInput):Promise<BulkMutationResult>{
+    const ids=validateBulkIds(input.transactionIds);
+    const category=input.category.trim();
+    if(!category)throw new Error("Category is required");
+    if(category.length>120)throw new Error("Category is too long");
+    if(!isRememberedCategoryLabel(category))throw new Error("Split and transfer categories cannot be assigned through bulk edit");
+    return this.withAtomicBulk(()=>{
+      for(const id of ids){
+        const transaction=this.requireBulkEditable(id);
+        if(transaction.splits?.length||transaction.category==="Split transaction"){
+          throw new Error("Split transactions cannot receive a bulk category change; edit their split lines individually");
+        }
+        if(!isRememberedCategoryLabel(transaction.category)){
+          throw new Error("Transfer and split parent categories cannot be rewritten through bulk category edit");
+        }
+        transaction.category=category;
+        this.categoryMemory.add(category);
+      }
+      return{updatedCount:ids.length,deletedCount:0};
+    });
+  }
+  async bulkDeleteTransactions(input:BulkTransactionIdsInput):Promise<BulkMutationResult>{
+    const ids=validateBulkIds(input.transactionIds);
+    return this.withAtomicBulk(()=>{
+      for(const id of ids)this.deleteTransactionSync(id);
+      return{updatedCount:0,deletedCount:ids.length};
+    });
+  }
+  private withAtomicBulk<T>(run:()=>T):T{
+    const snapshot={
+      accounts:structuredClone(this.accounts),
+      transactions:structuredClone(this.transactions),
+      categoryMemory:new Set(this.categoryMemory),
+      payeeMemory:new Set(this.payeeMemory),
+    };
+    try{return run();}
+    catch(error){
+      this.accounts=snapshot.accounts;
+      this.transactions=snapshot.transactions;
+      this.categoryMemory=snapshot.categoryMemory;
+      this.payeeMemory=snapshot.payeeMemory;
+      throw error;
+    }
+  }
+  private requireBulkEditable(id:string):Transaction{
+    const transaction=this.transactions.find(item=>item.id===id);
+    if(!transaction)throw new Error(`Transaction ${id} does not exist`);
+    if(this.reconciledTransactionIds.has(id)||transaction.status==="reconciled")throw new Error("Reconciled transactions cannot be edited");
+    if(this.scheduledOccurrences.some(item=>item.transactionId===id))throw new Error("Transactions linked to scheduled occurrences cannot be edited");
+    if(transaction.transferLinkId||transaction.source==="transfer")throw new Error("Linked transfers must be edited through the transfer editor");
+    return transaction;
+  }
+  private deleteTransactionSync(id:string):void{
+    const index=this.transactions.findIndex(item=>item.id===id);
+    if(index<0)throw new Error("Transaction does not exist");
+    const transaction=this.transactions[index];
+    if(this.reconciledTransactionIds.has(id)||transaction.status==="reconciled")throw new Error("Reconciled transactions cannot be deleted");
+    if(this.scheduledOccurrences.some(item=>item.transactionId===id))throw new Error("Transactions linked to scheduled occurrences cannot be deleted");
+    if(transaction.importBatchId)throw new Error("Imported transactions must be removed by undoing their complete import batch");
+    if(transaction.transferLinkId)throw new Error("Linked transfers must be removed through the transfer editor");
+    this.transactions.splice(index,1);
+    const account=this.accounts.find(item=>item.id===transaction.accountId);
+    if(account)account.balanceMinor-=transaction.amountMinor;
   }
   private withAtomicLabelRewrite(run:()=>LabelRewriteResult):LabelRewriteResult{
     const snapshot={
@@ -680,6 +756,21 @@ function validateTransactionInput(input:CreateTransactionInput){
   if(input.splits.length<2)throw new Error("A split transaction requires at least two splits");
   if(input.splits.some(split=>!split.category.trim()||split.amountMinor===0))throw new Error("Every split needs a category and non-zero amount");
   if(sumMoney(input.splits.map(split=>split.amountMinor))!==input.amountMinor)throw new Error("Split total does not equal the transaction amount");
+}
+
+function validateBulkIds(ids:string[]):string[]{
+  if(!ids.length)throw new Error("Select at least one transaction");
+  if(ids.length>1000)throw new Error("Bulk actions are limited to 1,000 transactions");
+  const seen=new Set<string>();
+  const cleaned:string[]=[];
+  for(const id of ids){
+    const value=id.trim();
+    if(!value)throw new Error("Transaction is required");
+    if(seen.has(value))throw new Error("A transaction was selected more than once");
+    seen.add(value);
+    cleaned.push(value);
+  }
+  return cleaned;
 }
 
 function validateTransferInput(input:CreateTransferInput,accounts:Account[]){
