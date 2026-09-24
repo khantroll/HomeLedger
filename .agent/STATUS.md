@@ -4,13 +4,12 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T01:06:00Z
+- **Updated:** 2026-09-24T01:55:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `9e8c590dd0b082df3c4774b878d0c93c20dca3be` — #56/#57/#58 merged
 - **Open PRs (verified):** PR #59 — Financial Find (`feat/financial-find`), draft, intentionally unmerged
-- **Validated head:** `e678957eff9c5e619c7bd93703297484a6ca396f` — GitHub CI green (web + native/Windows)
-- **Scope delivered:** local deterministic Find (transactions, accounts, schedules, securities); Ctrl/Cmd+K/F; focused register/Bills/Portfolio navigation; merchant-normalized matching; no AI/cloud/index
-- **Next action:** Architecture/integrity review of PR #59. Do not merge automatically. Do not start the next Everyday Money slice.
+- **Integrity review:** Fixed Find landings — posted-date focus (pagination-safe), archived txn → global register (not bare Reports), archived account → Accounts list, security-only Portfolio holdings (no invented account), Ctrl+F skips textarea/contentEditable
+- **Next action:** Confirm exact-head CI after integrity push; leave #59 open for merge review. Do not start next Everyday Money slice.
 
 ## Handoff protocol
 
