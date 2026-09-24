@@ -172,6 +172,34 @@ describe("AccountRegister", () => {
     expect((await screen.findByRole("status")).textContent).toContain("Exported 3 matching transactions");
   });
 
+  it("loads a focused Find landing by posted-date window and highlights that transaction row", async () => {
+    const list = vi.mocked(repositoryModule.financeRepository.listTransactionsPage);
+    list.mockResolvedValue({
+      transactions: [tx({ id: "historic-lowes", postedDate: "2022-03-01", payee: "LOWES #42", category: "Repairs", amountMinor: -12000, status: "reconciled" })],
+      totalCount: 1,
+      offset: 0,
+      limit: REGISTER_PAGE_SIZE,
+      priorBalanceMinor: 0,
+    });
+    render(
+      <AccountRegister
+        accounts={accounts}
+        initialAccountId="checking"
+        focusPostedDate="2022-03-01"
+        focusTransactionId="historic-lowes"
+        onRequestDialog={vi.fn()}
+      />,
+    );
+    const payee = await screen.findByText("LOWES #42");
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: "checking",
+      fromDate: "2022-03-01",
+      toDate: "2022-03-01",
+      newest: true,
+    }));
+    expect(payee.closest("tr")?.className).toContain("register-focus");
+  });
+
   it("routes eligible reuse actions into prepared editor drafts", async () => {
     const user = userEvent.setup();
     const onRequestDialog = vi.fn();

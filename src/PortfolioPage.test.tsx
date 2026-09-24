@@ -151,6 +151,22 @@ describe("Investment account workspace",()=>{
   expect(await screen.findByText("Security detail")).toBeTruthy();expect(screen.getByText("Market value")).toBeTruthy();expect(screen.getByText("Bought 1 EXM")).toBeTruthy();
   fireEvent.click(screen.getByRole("button",{name:/Lots/}));expect(screen.getByText(/Acquired Jan 2, 2026/)).toBeTruthy();
  });
+ it("keeps security-only Find focus on holdings instead of inventing one account detail",async()=>{
+  const multi:PortfolioSnapshot={
+    asOfDate:"2026-09-21",
+    accounts:[
+      {...snapshot.accounts[0]},
+      {accountId:"dest",cashMinor:0,holdingsValueMinor:12500,totalValueMinor:12500,holdings:[{...snapshot.accounts[0].holdings[0],accountId:"dest"}]},
+    ],
+  };
+  vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(multi);
+  vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);
+  vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);
+  render(<PortfolioPage accounts={accounts} focus={{securityId:"sec"}} onShowAll={()=>{}} onOpenSecurity={()=>{}}/>);
+  expect(await screen.findByText(/Held in 2 investment accounts/)).toBeTruthy();
+  expect(screen.queryByText("Security detail")).toBeNull();
+  expect(screen.getAllByRole("button",{name:/EXM/})).toHaveLength(2);
+ });
  it("preserves unknown and partial security states",async()=>{
   const unknown=structuredClone(snapshot);const h=unknown.accounts[0].holdings[0];h.priceE8=undefined;h.priceObservedAt=undefined;h.marketValueMinor=undefined;h.unrealizedGainMinor=undefined;h.unknownBasisQuantityE8=50_000_000;h.incompleteUnknownBasis=true;h.lots=[{acquisitionEventId:"open",acquisitionDate:undefined,quantityE8:50_000_000,basisMinor:undefined}];unknown.accounts[0].holdingsValueMinor=undefined;unknown.accounts[0].totalValueMinor=undefined;
   vi.mocked(investmentRepository.calculatePortfolioSnapshot).mockResolvedValue(unknown);vi.mocked(investmentRepository.listSecurities).mockResolvedValue([security]);vi.mocked(investmentRepository.listInvestmentEvents).mockResolvedValue([]);

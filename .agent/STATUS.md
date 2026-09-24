@@ -4,14 +4,12 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-23T16:12:00Z
-- **Updated by:** Cursor cloud agent (PR #57/#58 reconcile review)
-- **Canonical main (verified):** `9902227bd783b71ef3ae4927c6c7a28071bd020d` — includes merged #56 transaction reuse
-- **Open PRs (verified):**
-  - **PR #57** — Agent handoff memory (`chore/agent-project-memory`); coordination-only; mergeable; protocol reconciled
-  - **PR #58** — Home / Today + Planning Bridge (`cursor/home-today-planning-bridge-1f15` @ `f67936f`); draft; integrity fixes pushed (forecast highlight + due-soon dedupe); local validation green; CI re-checking
-- **State:** Both PRs open and intentionally unmerged. Do not renumber/recreate either. Do not start #59 / next Everyday Money feature until merge review decides.
-- **Next action:** Human/architect merge review of #57 and #58. Prefer GitHub over this file if anything disagrees.
+- **Updated:** 2026-09-24T01:55:00Z
+- **Updated by:** Cursor cloud agent
+- **Canonical main (verified):** `9e8c590dd0b082df3c4774b878d0c93c20dca3be` — #56/#57/#58 merged
+- **Open PRs (verified):** PR #59 — Financial Find (`feat/financial-find`), draft, intentionally unmerged
+- **Integrity review:** Fixed Find landings — posted-date focus (pagination-safe), archived txn → global register (not bare Reports), archived account → Accounts list, security-only Portfolio holdings (no invented account), Ctrl+F skips textarea/contentEditable
+- **Next action:** Confirm exact-head CI after integrity push; leave #59 open for merge review. Do not start next Everyday Money slice.
 
 ## Handoff protocol
 
