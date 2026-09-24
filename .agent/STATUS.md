@@ -4,12 +4,13 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T02:29:00Z
+- **Updated:** 2026-09-24T02:36:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `0fdcaa77168b5bf77873386823ccf0e9d9751f31` — #59 Financial Find merged
-- **Open PRs (verified):** none at task start; creating PR for Budget From History on `cursor/budget-from-history-1f15`
-- **Current work:** PR Budget From History — deterministic Plan from history (3/6-month avg, same month last year, previous plan, scheduled obligations)
-- **Next action:** Open/leave PR unmerged after exact-head CI; do not start v0.53 / PR #61.
+- **Open PRs (verified):** PR #60 — Budget From History (`cursor/budget-from-history-1f15`), draft, intentionally unmerged
+- **Validated code head:** `e4652838153ff2e2e6d610e2a220d888959de5fb` — GitHub CI green (web + native/Windows)
+- **Scope delivered:** Plan from history (3/6-mo avg, same month last year, previous plan, scheduled obligations); selective apply; budgetMath spending semantics
+- **Next action:** Architecture/integrity review of PR #60. Do not merge automatically. Do not start PR #61 / v0.53.
 
 ## Handoff protocol
 
