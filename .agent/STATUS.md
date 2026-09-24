@@ -4,13 +4,13 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T13:48:00Z
+- **Updated:** 2026-09-24T13:54:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `73f93e7ef007d9c6e1f02c4d37c49c3ca7173803` — #60 Budget From History merged
 - **Open PRs (verified):** PR #61 — Category & Payee Management (`cursor/category-payee-management-1f15`), draft, intentionally unmerged
-- **Branch head:** pending push of Category & Payee Management implementation
-- **Scope delivered:** Atomic category/payee rename+merge across ledger surfaces; Categories sidebar workspace; unused memory cleanup; no schema/AI
-- **Next action:** Exact-head GitHub CI, then architecture/integrity review of PR #61. Do not merge automatically. Do not start PR #62.
+- **Validated head:** `fd7e1442c6a6f492b1cd8a3022806524742ee80c` — GitHub CI green (web + native/Windows)
+- **Scope delivered:** Atomic category/payee rename+merge; Categories workspace; unused memory cleanup; no schema/AI
+- **Next action:** Architecture/integrity review of PR #61. Do not merge automatically. Do not start PR #62.
 
 ## Handoff protocol
 
