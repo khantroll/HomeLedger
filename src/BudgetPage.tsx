@@ -1,30 +1,40 @@
 import {useEffect,useState,type FormEvent} from "react";
-import {ChevronLeft,ChevronRight,PiggyBank,Plus,Trash2} from "lucide-react";
+import {ChevronLeft,ChevronRight,History,PiggyBank,Plus,Trash2} from "lucide-react";
 import {financeRepository as repository} from "./repository";
-import {formatMoney,parseMoney,type Account,type BudgetMonth,type Transaction} from "./domain";
+import {formatMoney,parseMoney,type Account,type BudgetMonth,type ScheduledOccurrence,type ScheduledTransaction,type Transaction} from "./domain";
 import {SavingsGoals} from "./SavingsGoals";
 import {useLedgerSuggestions} from "./useLedgerSuggestions";
 import type { BudgetNavigationFocus, NavigationIntent } from "./navigationIntent";
+import {BudgetFromHistoryDialog} from "./BudgetFromHistoryDialog";
+import {nextMonth} from "./budgetMath";
 import "./budget.css";
+import "./budgetPlanning.css";
 
 export type { BudgetNavigationFocus };
 
 export function BudgetPage({
   transactions,
   accounts=[],
+  schedules=[],
+  occurrences=[],
+  onMonthChange,
   navigationFocus,
   onNavigate,
 }:{
   transactions:Transaction[];
   accounts?:Account[];
+  schedules?:ScheduledTransaction[];
+  occurrences?:ScheduledOccurrence[];
+  onMonthChange?:(fromDate:string,toDate:string)=>Promise<void>;
   navigationFocus?:BudgetNavigationFocus;
   onNavigate?:(intent:NavigationIntent)=>void;
 }){
   const [month,setMonth]=useState(navigationFocus?.month??currentMonth()),[budget,setBudget]=useState<BudgetMonth>(),[drafts,setDrafts]=useState<Map<string,string>>(new Map());
-  const [adding,setAdding]=useState(false),[pendingDelete,setPendingDelete]=useState(""),[busy,setBusy]=useState(false),[error,setError]=useState("");
+  const [adding,setAdding]=useState(false),[planning,setPlanning]=useState(false),[pendingDelete,setPendingDelete]=useState(""),[busy,setBusy]=useState(false),[error,setError]=useState("");
   const suggestions=useLedgerSuggestions();
   useEffect(()=>{if(navigationFocus?.month)setMonth(navigationFocus.month);},[navigationFocus]);
   useEffect(()=>{void load();},[month]);
+  useEffect(()=>{if(onMonthChange)void onMonthChange(`${month}-01`,`${nextMonth(month)}-01`);},[month,onMonthChange]);
   async function load(){try{const next=await repository.getBudgetMonth(month);setBudget(next);setDrafts(new Map(next.lines.map(item=>[item.id,(item.plannedMinor/100).toFixed(2)])));setError("");}catch(reason){show(reason);}}
   function show(reason:unknown){setError(reason instanceof Error?reason.message:String(reason));}
   async function add(event:FormEvent<HTMLFormElement>){event.preventDefault();setBusy(true);setError("");const data=new FormData(event.currentTarget);try{const plannedMinor=parseMoney(String(data.get("planned")));if(plannedMinor<0)throw new Error("Planned amount cannot be negative");const category=await repository.createBudgetCategory({category:String(data.get("category")||"").trim(),rolloverEnabled:data.get("rollover")==="on"});await repository.setBudgetAllocation({budgetCategoryId:category.id,month,plannedMinor});setAdding(false);await load();}catch(reason){show(reason);}finally{setBusy(false);}}
@@ -32,8 +42,9 @@ export function BudgetPage({
   async function rollover(id:string,category:string,rolloverEnabled:boolean){setBusy(true);try{await repository.updateBudgetCategory(id,{category,rolloverEnabled});await load();}catch(reason){show(reason);}finally{setBusy(false);}}
   async function remove(id:string){setBusy(true);try{await repository.deleteBudgetCategory(id);setPendingDelete("");await load();}catch(reason){show(reason);}finally{setBusy(false);}}
   const capacity=(budget?.plannedMinor??0)+(budget?.carryInMinor??0);
+  const monthOccurrences=occurrences.filter(item=>item.dueDate.startsWith(`${month}-`));
   return <div className="budget-page">
-    <section className="panel budget-header"><div><h2>Monthly budget</h2><p>Plan spending by category. Rollover categories accumulate like sinking funds.</p></div><div className="month-switcher"><button aria-label="Previous month" onClick={()=>setMonth(shiftMonth(month,-1))}><ChevronLeft size={16}/></button><strong>{monthLabel(month)}</strong><button aria-label="Next month" onClick={()=>setMonth(shiftMonth(month,1))}><ChevronRight size={16}/></button></div></section>
+    <section className="panel budget-header"><div><h2>Monthly budget</h2><p>Plan spending by category. Rollover categories accumulate like sinking funds.</p></div><div className="budget-header-actions"><button type="button" className="budget-plan-history" onClick={()=>setPlanning(true)}><History size={14}/> Plan from history</button><div className="month-switcher"><button aria-label="Previous month" onClick={()=>setMonth(shiftMonth(month,-1))}><ChevronLeft size={16}/></button><strong>{monthLabel(month)}</strong><button aria-label="Next month" onClick={()=>setMonth(shiftMonth(month,1))}><ChevronRight size={16}/></button></div></div></section>
     {onNavigate&&<section className="panel planning-bridge" aria-label="Related planning"><p>Budget plans affect the cash forecast. Scheduled bills still live on the Bills calendar.</p><div className="planning-bridge-actions"><button type="button" onClick={()=>onNavigate({page:"Forecast",focus:{horizonDays:30}})}>See cash forecast</button><button type="button" onClick={()=>onNavigate({page:"Bills",focus:{kind:"day",dueDate:`${month}-01`}})}>Open bills for this month</button></div></section>}
     {error&&<div className="error-banner" role="alert">{error}</div>}
     <div className="summary-grid budget-summary"><Summary label="Planned" value={formatMoney(budget?.plannedMinor??0)}/><Summary label="Spent" value={formatMoney(budget?.spentMinor??0)} tone="negative"/><Summary label="Carried in" value={formatMoney(budget?.carryInMinor??0)} tone="positive"/><Summary label="Available" value={formatMoney(budget?.availableMinor??0)} tone={(budget?.availableMinor??0)<0?"negative":"positive"}/></div>
@@ -42,6 +53,7 @@ export function BudgetPage({
     </section>
     <SavingsGoals accounts={accounts}/>
     {adding&&<div className="dialog-backdrop"><section className="dialog budget-dialog" role="dialog" aria-modal="true" aria-labelledby="budget-dialog-title"><div className="dialog-header"><h2 id="budget-dialog-title">Add budget category</h2><button onClick={()=>setAdding(false)} aria-label="Close">×</button></div><form className="entry-form" onSubmit={add}><label>Category<input name="category" list={suggestions.categoryListId} maxLength={120} required autoFocus/><datalist id={suggestions.categoryListId}>{suggestions.categories.map(item=><option key={item} value={item}/>)}</datalist></label><label>Planned for {monthLabel(month)}<input name="planned" inputMode="decimal" defaultValue="0.00" required/></label><label className="rollover-choice"><input name="rollover" type="checkbox"/><span><strong>Carry unused funds forward</strong><small>Use this for irregular expenses and sinking funds.</small></span></label><div className="form-actions"><button type="button" onClick={()=>setAdding(false)}>Cancel</button><button className="primary" disabled={busy}>{busy?"Saving…":"Add category"}</button></div></form></section></div>}
+    {planning&&<BudgetFromHistoryDialog month={month} currentBudget={budget} transactions={transactions} accounts={accounts} schedules={schedules} occurrences={monthOccurrences} onClose={()=>setPlanning(false)} onApplied={load}/>}
   </div>;
 }
 
