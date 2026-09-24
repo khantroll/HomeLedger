@@ -84,6 +84,12 @@ export interface FinanceRepository {
   listAccounts(includeArchived?: boolean): Promise<Account[]>;
   listCategories(): Promise<string[]>;
   listPayees(): Promise<string[]>;
+  renameCategory(from: string, to: string): Promise<LabelRewriteResult>;
+  mergeCategories(from: string, into: string): Promise<LabelRewriteResult>;
+  removeUnusedCategory(name: string): Promise<void>;
+  renamePayee(from: string, to: string): Promise<LabelRewriteResult>;
+  mergePayees(from: string, into: string): Promise<LabelRewriteResult>;
+  removeUnusedPayee(name: string): Promise<void>;
   listTransactions(accountId?: string): Promise<Transaction[]>;
   listTransactionsPage(query?: TransactionQuery): Promise<TransactionPage>;
   listReconciliationTransactions(accountId: string, statementEndDate: string): Promise<Transaction[]>;
@@ -135,6 +141,19 @@ export interface FinanceRepository {
   importTransactions(input: ImportTransactionsInput): Promise<ImportResult>;
   listImportBatches(): Promise<ImportBatch[]>;
   undoImportBatch(batchId: string): Promise<UndoImportResult>;
+}
+
+/** Result of an atomic category/payee rename or merge across ledger surfaces. */
+export interface LabelRewriteResult {
+  from: string;
+  to: string;
+  operation: "rename" | "merge" | string;
+  transactions: number;
+  splits: number;
+  schedules: number;
+  budgetCategories: number;
+  merchantRules: number;
+  catalogRemoved: boolean;
 }
 
 export interface ScheduledTransaction {

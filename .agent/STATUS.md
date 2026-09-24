@@ -4,13 +4,13 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T05:19:00Z
-- **Updated by:** ChatGPT
-- **Canonical main (verified):** `0fdcaa77168b5bf77873386823ccf0e9d9751f31` — #59 Financial Find merged
-- **Open PRs (verified):** PR #60 — Budget From History (`cursor/budget-from-history-1f15`), draft, intentionally unmerged
-- **Correctness correction:** Average proposals now use one shared `monthsUsed` denominator; category absence in a valid history month contributes zero while unavailable household-history months remain excluded.
-- **Validation:** Regression test added for $300 Car Repair in one of three valid months => $100 suggestion. Exact-head GitHub CI is required after handoff commits.
-- **Next action:** Verify exact-head CI, inspect final diff, leave #60 open/unmerged. Do not start #61 / v0.53.
+- **Updated:** 2026-09-24T13:54:00Z
+- **Updated by:** Cursor cloud agent
+- **Canonical main (verified):** `73f93e7ef007d9c6e1f02c4d37c49c3ca7173803` — #60 Budget From History merged
+- **Open PRs (verified):** PR #61 — Category & Payee Management (`cursor/category-payee-management-1f15`), draft, intentionally unmerged
+- **Validated head:** `fd7e1442c6a6f492b1cd8a3022806524742ee80c` — GitHub CI green (web + native/Windows)
+- **Scope delivered:** Atomic category/payee rename+merge; Categories workspace; unused memory cleanup; no schema/AI
+- **Next action:** Architecture/integrity review of PR #61. Do not merge automatically. Do not start PR #62.
 
 ## Handoff protocol
 

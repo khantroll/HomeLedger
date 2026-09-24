@@ -1,4 +1,4 @@
-import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
+import { reconciliationDifference, sumMoney, normalizeTransactionQuery, type Account, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type Reconciliation, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
 import { applyMerchantRules } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
@@ -61,6 +61,177 @@ export class DemoFinanceRepository implements FinanceRepository {
     this.scheduledTransactions.forEach(item=>this.payeeMemory.add(item.payee.trim()));
     this.merchantRules.forEach(item=>{if(item.renameTo?.trim())this.payeeMemory.add(item.renameTo.trim());});
     return [...this.payeeMemory].filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  }
+  async renameCategory(from:string,to:string):Promise<LabelRewriteResult>{
+    return this.withAtomicLabelRewrite(()=>this.rewriteCategory(from,to,"rename"));
+  }
+  async mergeCategories(from:string,into:string):Promise<LabelRewriteResult>{
+    return this.withAtomicLabelRewrite(()=>this.rewriteCategory(from,into,"merge"));
+  }
+  async removeUnusedCategory(name:string):Promise<void>{
+    const label=name.trim();
+    if(!label)throw new Error("Category is required");
+    if(!isRememberedCategory(label))throw new Error("Split and transfer categories cannot be removed");
+    if(this.categoryReferenceCount(label)>0)throw new Error("Category is still referenced by ledger or planning data");
+    const key=label.toLocaleLowerCase();
+    let removed=false;
+    for(const item of [...this.categoryMemory])if(item.toLocaleLowerCase()===key){this.categoryMemory.delete(item);removed=true;}
+    if(!removed)throw new Error("Category does not exist in autocomplete memory");
+  }
+  async renamePayee(from:string,to:string):Promise<LabelRewriteResult>{
+    return this.withAtomicLabelRewrite(()=>this.rewritePayee(from,to,"rename"));
+  }
+  async mergePayees(from:string,into:string):Promise<LabelRewriteResult>{
+    return this.withAtomicLabelRewrite(()=>this.rewritePayee(from,into,"merge"));
+  }
+  async removeUnusedPayee(name:string):Promise<void>{
+    const label=name.trim();
+    if(!label)throw new Error("Payee is required");
+    if(this.payeeReferenceCount(label)>0)throw new Error("Payee is still referenced by ledger or planning data");
+    const key=label.toLocaleLowerCase();
+    let removed=false;
+    for(const item of [...this.payeeMemory])if(item.toLocaleLowerCase()===key){this.payeeMemory.delete(item);removed=true;}
+    if(!removed)throw new Error("Payee does not exist in autocomplete memory");
+  }
+  private withAtomicLabelRewrite(run:()=>LabelRewriteResult):LabelRewriteResult{
+    const snapshot={
+      transactions:structuredClone(this.transactions),
+      scheduledTransactions:structuredClone(this.scheduledTransactions),
+      budgetCategories:structuredClone(this.budgetCategories),
+      budgetAllocations:structuredClone(this.budgetAllocations),
+      merchantRules:structuredClone(this.merchantRules),
+      categoryMemory:new Set(this.categoryMemory),
+      payeeMemory:new Set(this.payeeMemory),
+    };
+    try{return run();}
+    catch(error){
+      this.transactions=snapshot.transactions;
+      this.scheduledTransactions=snapshot.scheduledTransactions;
+      this.budgetCategories=snapshot.budgetCategories;
+      this.budgetAllocations=snapshot.budgetAllocations;
+      this.merchantRules=snapshot.merchantRules;
+      this.categoryMemory=snapshot.categoryMemory;
+      this.payeeMemory=snapshot.payeeMemory;
+      throw error;
+    }
+  }
+  private categoryExists(label:string):boolean{
+    const key=label.trim().toLocaleLowerCase();
+    if([...this.categoryMemory].some(item=>item.toLocaleLowerCase()===key))return true;
+    if(this.budgetCategories.some(item=>item.category.toLocaleLowerCase()===key))return true;
+    if(this.merchantRules.some(item=>item.category?.toLocaleLowerCase()===key))return true;
+    return this.transactions.some(item=>item.category.toLocaleLowerCase()===key||item.splits?.some(split=>split.category.toLocaleLowerCase()===key))
+      ||this.scheduledTransactions.some(item=>item.kind==="transaction"&&item.category.toLocaleLowerCase()===key);
+  }
+  private payeeExists(label:string):boolean{
+    const key=label.trim().toLocaleLowerCase();
+    if([...this.payeeMemory].some(item=>item.toLocaleLowerCase()===key))return true;
+    if(this.merchantRules.some(item=>item.renameTo?.toLocaleLowerCase()===key))return true;
+    return this.transactions.some(item=>item.payee.toLocaleLowerCase()===key)
+      ||this.scheduledTransactions.some(item=>item.payee.toLocaleLowerCase()===key);
+  }
+  private categoryReferenceCount(label:string):number{
+    const key=label.trim().toLocaleLowerCase();
+    let count=0;
+    for(const item of this.transactions){
+      if(item.category.toLocaleLowerCase()===key)count+=1;
+      for(const split of item.splits??[])if(split.category.toLocaleLowerCase()===key)count+=1;
+    }
+    count+=this.scheduledTransactions.filter(item=>item.kind==="transaction"&&item.category.toLocaleLowerCase()===key).length;
+    count+=this.budgetCategories.filter(item=>item.category.toLocaleLowerCase()===key).length;
+    count+=this.merchantRules.filter(item=>item.category?.toLocaleLowerCase()===key).length;
+    return count;
+  }
+  private payeeReferenceCount(label:string):number{
+    const key=label.trim().toLocaleLowerCase();
+    return this.transactions.filter(item=>item.payee.toLocaleLowerCase()===key).length
+      +this.scheduledTransactions.filter(item=>item.payee.toLocaleLowerCase()===key).length
+      +this.merchantRules.filter(item=>item.renameTo?.toLocaleLowerCase()===key).length;
+  }
+  private rewriteCategory(fromRaw:string,toRaw:string,operation:"rename"|"merge"):LabelRewriteResult{
+    const from=fromRaw.trim(),to=toRaw.trim();
+    if(!from||!to)throw new Error("Category is required");
+    if(from.length>120||to.length>120)throw new Error("Category is too long");
+    if(!isRememberedCategory(from)||!isRememberedCategory(to))throw new Error("Split and transfer categories cannot be renamed through category management");
+    if(!this.categoryExists(from))throw new Error(operation==="merge"?"Source category does not exist":"Category does not exist");
+    const same=from.toLocaleLowerCase()===to.toLocaleLowerCase();
+    if(operation==="rename"){
+      if(same&&from===to)throw new Error("Category is already named that way");
+      if(!same&&this.categoryExists(to))throw new Error("Category already exists; use merge instead");
+    }else{
+      if(same)throw new Error("Choose two different categories to merge");
+      if(!this.categoryExists(to))throw new Error("Target category does not exist");
+    }
+    const target=operation==="merge"
+      ?([...this.categoryMemory].find(item=>item.toLocaleLowerCase()===to.toLocaleLowerCase())
+        ??this.budgetCategories.find(item=>item.category.toLocaleLowerCase()===to.toLocaleLowerCase())?.category
+        ??this.transactions.find(item=>item.category.toLocaleLowerCase()===to.toLocaleLowerCase())?.category
+        ??to)
+      :to;
+    let transactions=0,splits=0,schedules=0,merchantRules=0;
+    for(const item of this.transactions){
+      if(isRememberedCategory(item.category)&&item.category.toLocaleLowerCase()===from.toLocaleLowerCase()){item.category=target;transactions+=1;}
+      for(const split of item.splits??[])if(split.category.toLocaleLowerCase()===from.toLocaleLowerCase()){split.category=target;splits+=1;}
+    }
+    for(const item of this.scheduledTransactions){
+      if(item.kind==="transaction"&&item.category.toLocaleLowerCase()===from.toLocaleLowerCase()){item.category=target;schedules+=1;}
+    }
+    for(const rule of this.merchantRules){
+      if(rule.category?.toLocaleLowerCase()===from.toLocaleLowerCase()){rule.category=target;merchantRules+=1;}
+    }
+    const budgetCategories=this.mergeBudgetCategoryLabels(from,target);
+    for(const item of [...this.categoryMemory])if(item.toLocaleLowerCase()===from.toLocaleLowerCase())this.categoryMemory.delete(item);
+    this.categoryMemory.add(target);
+    return{from,to:target,operation,transactions,splits,schedules,budgetCategories,merchantRules,catalogRemoved:!same};
+  }
+  private mergeBudgetCategoryLabels(from:string,to:string):number{
+    const source=this.budgetCategories.find(item=>item.category.toLocaleLowerCase()===from.toLocaleLowerCase());
+    if(!source)return 0;
+    const target=this.budgetCategories.find(item=>item.category.toLocaleLowerCase()===to.toLocaleLowerCase());
+    if(!target||target.id===source.id){
+      source.category=to;
+      return 1;
+    }
+    for(const allocation of this.budgetAllocations.filter(item=>item.budgetCategoryId===source.id)){
+      const existing=this.budgetAllocations.find(item=>item.budgetCategoryId===target.id&&item.month===allocation.month);
+      if(existing)existing.plannedMinor=sumMoney([existing.plannedMinor,allocation.plannedMinor]);
+      else this.budgetAllocations.push({budgetCategoryId:target.id,month:allocation.month,plannedMinor:allocation.plannedMinor});
+    }
+    this.budgetAllocations=this.budgetAllocations.filter(item=>item.budgetCategoryId!==source.id);
+    this.budgetCategories=this.budgetCategories.filter(item=>item.id!==source.id);
+    return 1;
+  }
+  private rewritePayee(fromRaw:string,toRaw:string,operation:"rename"|"merge"):LabelRewriteResult{
+    const from=fromRaw.trim(),to=toRaw.trim();
+    if(!from||!to)throw new Error("Payee is required");
+    if(from.length>160||to.length>160)throw new Error("Payee is too long");
+    if(!this.payeeExists(from))throw new Error(operation==="merge"?"Source payee does not exist":"Payee does not exist");
+    const same=from.toLocaleLowerCase()===to.toLocaleLowerCase();
+    if(operation==="rename"){
+      if(same&&from===to)throw new Error("Payee is already named that way");
+      if(!same&&this.payeeExists(to))throw new Error("Payee already exists; use merge instead");
+    }else{
+      if(same)throw new Error("Choose two different payees to merge");
+      if(!this.payeeExists(to))throw new Error("Target payee does not exist");
+    }
+    const target=operation==="merge"
+      ?([...this.payeeMemory].find(item=>item.toLocaleLowerCase()===to.toLocaleLowerCase())
+        ??this.transactions.find(item=>item.payee.toLocaleLowerCase()===to.toLocaleLowerCase())?.payee
+        ??to)
+      :to;
+    let transactions=0,schedules=0,merchantRules=0;
+    for(const item of this.transactions){
+      if(item.payee.toLocaleLowerCase()===from.toLocaleLowerCase()){item.payee=target;transactions+=1;}
+    }
+    for(const item of this.scheduledTransactions){
+      if(item.payee.toLocaleLowerCase()===from.toLocaleLowerCase()){item.payee=target;schedules+=1;}
+    }
+    for(const rule of this.merchantRules){
+      if(rule.renameTo?.toLocaleLowerCase()===from.toLocaleLowerCase()){rule.renameTo=target;merchantRules+=1;}
+    }
+    for(const item of [...this.payeeMemory])if(item.toLocaleLowerCase()===from.toLocaleLowerCase())this.payeeMemory.delete(item);
+    this.payeeMemory.add(target);
+    return{from,to:target,operation,transactions,splits:0,schedules,budgetCategories:0,merchantRules,catalogRemoved:!same};
   }
   async listTransactions(accountId?: string): Promise<Transaction[]> {
     const rows = accountId ? this.transactions.filter((item) => item.accountId === accountId) : this.transactions;
