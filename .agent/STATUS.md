@@ -4,12 +4,13 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T21:47:00Z
+- **Updated:** 2026-09-25T13:20:00Z
 - **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `5fc8077fe18f25d296c9f1ea04d0e0f90b3e2835` — #63 Transaction Notes & Flags squash-merged
-- **Open PRs (in progress):** PR #64 — Transaction Attachments & Receipt Retention (`cursor/transaction-attachments-1f15`), draft, intentionally unmerged
-- **Scope delivered:** Attachments + atomic import source retention (all-or-none); shared-byte safe rollback; attachment-aware `.hlb`; recovery DB-only + live store validation
-- **Next action:** Exact-head GitHub CI on retention all-or-none tip. Do not merge automatically. Do not start PR #65. Do not make a STATUS-only tip commit after CI passes.
+- **Canonical main (verified):** `5fbb664c529258084a6ce1187055163f52a26e2a` — #64 Transaction Attachments & Receipt Retention squash-merged
+- **Open PRs (in progress):** PR #65 — v0.52 Everyday Money Milestone Audit & Closure (`cursor/v052-everyday-money-closure-1f15`), draft, intentionally unmerged
+- **Audit result:** Everyday Money coherent as v0.52 after fixing Find landing sticky-filter miss and Categories “Planned” mislabel; versions bumped to 0.52.0
+- **CI note:** Push-event Native flake fixed — import retention force-fail hook is now thread-local so parallel tests cannot leak it
+- **Next action:** Exact-head GitHub CI on PR #65 tip. Do not merge automatically. Do not start the next milestone. Do not make a STATUS-only tip commit after CI passes.
 
 ## Handoff protocol
 

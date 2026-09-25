@@ -205,17 +205,14 @@ A feature is not done until:
 Implement Milestone 1. Begin by creating the architecture and tests, then build the runnable application shell and demo repository. Do not jump ahead to cloud AI, OCR, investments, or direct bank connectivity. Make the resulting repository a trustworthy foundation for subsequent slices.
 
 
-## Implemented milestone status — v0.51
+## Implemented milestone status — v0.52
 
-The original phased plan above remains the architectural guide, but the repository has progressed beyond the initial milestones. As of v0.51, the first investment milestone is implemented and validated:
+The original phased plan above remains the architectural guide. As of v0.52, Everyday Money is implemented and validated on top of the v0.51 investment foundation:
 
-- Portfolio Foundation with dedicated investment accounts, securities, immutable event/revision history, lots/basis, intrinsic cash, and deterministic as-of projection.
-- Portfolio Manager with household Portfolio, investment-account and security drill-down.
-- Manual investment account/security setup and manual investment activity entry, including guarded historical corrections.
-- Manual/historical security prices plus explicit provider-neutral price refresh; opening and navigating Portfolio remains offline-capable.
-- Investment-aware household/net-worth valuation and dedicated investment reporting, while ordinary spending/income reports remain domain-separated.
-- Atomic ordinary ↔ investment cash transfers with durable linkage and guarded generic mutation paths.
+- Ordinary household-finance daily driver: registers, transfers, splits, bills/recurring, budgeting (including Budget From History), savings goals, debt plans, cash-flow forecast, reports, import/OCR, reconciliation, Financial Find, category/payee management, transaction reuse, register bulk actions, notes/flags, and managed transaction attachments with optional import source retention.
+- Attachment-aware portable `.hlb` backup/restore; automatic recovery snapshots remain database-only with live attachment-store validation.
+- Portfolio Foundation / Portfolio Manager, investment-aware household valuation/reporting, and atomic ordinary ↔ investment cash transfers remain in force from v0.51.
 
-Still intentionally not implemented by this milestone: brokerage/bank connectivity, investment import, trading, Watchlist, FX conversion, tax calculations, device/cloud sync, or portfolio-performance algorithms.
+Still intentionally not implemented by this milestone: brokerage/bank connectivity, investment import, trading, Watchlist, FX conversion, tax calculations, device/cloud sync, portfolio-performance algorithms, OCR-driven receipt→transaction automation, attachment content search, or a general document manager.
 
 The next roadmap work should begin only after this milestone-closure PR is reviewed; it should not be inferred from the obsolete “First task” wording above.
