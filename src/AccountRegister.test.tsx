@@ -211,6 +211,41 @@ describe("AccountRegister", () => {
     expect(payee.closest("tr")?.className).toContain("register-focus");
   });
 
+  it("clears sticky account and flagged-only filters when Find lands a transaction globally", async () => {
+    const user = userEvent.setup();
+    const list = vi.mocked(repositoryModule.financeRepository.listTransactionsPage);
+    list.mockResolvedValue({
+      transactions: [tx({ id: "historic-lowes", postedDate: "2022-03-01", payee: "LOWES #42", category: "Repairs", amountMinor: -12000, status: "reconciled", accountId: "checking" })],
+      totalCount: 1,
+      offset: 0,
+      limit: REGISTER_PAGE_SIZE,
+      priorBalanceMinor: 0,
+    });
+    const { rerender } = render(<AccountRegister accounts={accounts} initialAccountId="savings" onRequestDialog={vi.fn()} />);
+    await screen.findByRole("heading", { name: "Emergency Savings" });
+    await user.click(screen.getByLabelText("Show only flagged transactions"));
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ accountId: "savings", flaggedOnly: true }));
+
+    rerender(
+      <AccountRegister
+        accounts={accounts}
+        focusPostedDate="2022-03-01"
+        focusTransactionId="historic-lowes"
+        onRequestDialog={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("LOWES #42")).toBeTruthy();
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({
+      fromDate: "2022-03-01",
+      toDate: "2022-03-01",
+      newest: true,
+    }));
+    const last = list.mock.calls.at(-1)?.[0] as { accountId?: string; flaggedOnly?: boolean };
+    expect(last.accountId).toBeUndefined();
+    expect(last.flaggedOnly).toBeUndefined();
+    expect((screen.getByLabelText("Show only flagged transactions") as HTMLInputElement).checked).toBe(false);
+  });
+
   it("routes eligible reuse actions into prepared editor drafts", async () => {
     const user = userEvent.setup();
     const onRequestDialog = vi.fn();
