@@ -329,14 +329,35 @@ pub struct AttachmentWriteOutcome {
     pub path: Option<PathBuf>,
 }
 
+// Test-only force-fail hook. Thread-local so parallel cargo tests cannot leak the flag across threads.
 #[cfg(test)]
-pub static FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+struct ForceImportRetentionFailGuard;
+
+#[cfg(test)]
+impl ForceImportRetentionFailGuard {
+    fn enable() -> Self {
+        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.with(|flag| flag.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ForceImportRetentionFailGuard {
+    fn drop(&mut self) {
+        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.with(|flag| flag.set(false));
+    }
+}
 
 fn maybe_fail_after_attachment_before_links() -> Result<(), String> {
     #[cfg(test)]
     {
-        if FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.load(std::sync::atomic::Ordering::SeqCst) {
+        if FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.with(|flag| flag.get()) {
             return Err("forced post-attachment linking failure".into());
         }
     }
@@ -1120,7 +1141,6 @@ mod tests {
 
     #[test]
     fn import_retention_link_failure_is_all_or_none_and_preserves_shared_bytes() {
-        use std::sync::atomic::Ordering;
         let (_dir, mut connection, store, _) = setup();
         let content = B64.encode(pdf_bytes());
 
@@ -1157,7 +1177,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM transaction_attachments", [], |row| row.get(0))
             .unwrap();
 
-        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(true, Ordering::SeqCst);
+        let _force_fail = ForceImportRetentionFailGuard::enable();
         let err = crate::import_transactions_inner(
             &mut connection,
             Some(&store),
@@ -1196,7 +1216,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(false, Ordering::SeqCst);
+        drop(_force_fail);
         assert!(err.to_lowercase().contains("forced post-attachment"));
 
         // All-or-none: no imported rows/batch/partial links; shared file untouched.
@@ -1234,12 +1254,11 @@ mod tests {
 
     #[test]
     fn import_retention_new_file_link_failure_leaves_no_orphan_bytes() {
-        use std::sync::atomic::Ordering;
         let (_dir, mut connection, store, _) = setup();
         let content = B64.encode(b"%PDF-1.4\n% unique-orphan-fixture\n");
         assert_eq!(std::fs::read_dir(store.root()).unwrap().count(), 0);
 
-        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(true, Ordering::SeqCst);
+        let _force_fail = ForceImportRetentionFailGuard::enable();
         let err = crate::import_transactions_inner(
             &mut connection,
             Some(&store),
@@ -1265,7 +1284,7 @@ mod tests {
             },
         )
         .unwrap_err();
-        FAIL_IMPORT_RETENTION_AFTER_ATTACHMENT.store(false, Ordering::SeqCst);
+        drop(_force_fail);
         assert!(err.to_lowercase().contains("forced post-attachment"));
 
         let txn: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE source='import'", [], |r| r.get(0)).unwrap();
