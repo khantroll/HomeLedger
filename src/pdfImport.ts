@@ -10,13 +10,22 @@ export type PdfLayout=
   |"expenses-last"
   |"expenses-before-balance";
 export type PdfFieldRole="date"|"payee"|"amount"|"debit"|"credit"|"balance"|"ignore";
+export type PdfLineClassification="transaction"|"continuation"|"unresolved";
 export interface PdfExampleField { text:string; role:PdfFieldRole; }
-export interface PdfCandidateLine { lineNumber:number; text:string; matched:boolean; teachable:boolean; }
+export interface PdfCandidateLine {
+  lineNumber:number;
+  text:string;
+  matched:boolean;
+  teachable:boolean;
+  classification:PdfLineClassification;
+}
 export interface PdfParseResult {
   table:ParsedTable;
   extractedLineCount:number;
+  irrelevantLineCount:number;
   candidateRowCount:number;
   matchedRowCount:number;
+  continuationLineNumbers:number[];
   unmatchedLineNumbers:number[];
   balanceMismatchLineNumbers:number[];
   candidateLines:PdfCandidateLine[];
@@ -35,15 +44,13 @@ export const PDF_LAYOUT_OPTIONS:{value:PdfLayout;label:string;description:string
 const DATE=String.raw`\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/](?:\d{2}|\d{4})`;
 const DATED_LINE=new RegExp(String.raw`^\s*(?:${DATE})(?:\s|$)`,"i");
 const EXAMPLE_DATE=new RegExp(String.raw`^\s*(${DATE})(?:\s+|$)`,"i");
-// Deliberately does not allow ordinary spaces inside the numeric body. That keeps
-// adjacent statement columns such as "150.00- 15,929.95" as two independent tokens.
-const MONEY_BODY=String.raw`(?:\d{1,3}(?:[,.'’]\d{3})+|\d+|)\.\d{2}`;
-const MONEY_TOKEN=new RegExp(String.raw`(?:\(\s*[$€£]?\s*${MONEY_BODY}\s*\)|(?:[+−-]\s*[$€£]?\s*)?[$€£]?\s*${MONEY_BODY}\s*(?:[+−-]|CR|DR)?)`,"ig");
+const RAW_MONEY_NUMBER=/(?:\d{1,3}(?:[,.'’]\d{3})+|\d+)[.,]\d{2}/g;
 const EXPLICIT_SIGN=/(?:^\s*[+−-]|[+−-]\s*$|\b(?:CR|DR)\s*$|^\s*\()/i;
 const NUMBER=String.raw`\d[\d,.'’]*[.,]\d{2}`;
 const UNSIGNED_AMOUNT=String.raw`[$€£]?\s*${NUMBER}`;
 const BALANCE_AMOUNT=String.raw`(?:\(?\s*[+−-]?\s*[$€£]?\s*${NUMBER}\s*[+−-]?\s*\)?)`;
 
+interface MoneyToken { text:string; start:number; end:number; }
 interface TokenizedPdfLine { date:string; description:string; money:string[]; }
 interface ParsedPdfLine extends TokenizedPdfLine {
   amount?:string;
@@ -51,19 +58,47 @@ interface ParsedPdfLine extends TokenizedPdfLine {
   credit?:string;
   balance?:string;
 }
+interface CandidateWork {
+  lineNumber:number;
+  text:string;
+  parsed:ParsedPdfLine|null;
+  tokenized:TokenizedPdfLine|null;
+  teachable:boolean;
+  classification:PdfLineClassification;
+}
+
+function amountTokens(rest:string):MoneyToken[]{
+  const matches=[...rest.matchAll(RAW_MONEY_NUMBER)];
+  return matches.map((match,index)=>{
+    const start=match.index??0,end=start+match[0].length;
+    const previousEnd=index===0?0:(matches[index-1].index??0)+matches[index-1][0].length;
+    const nextStart=index+1<matches.length?(matches[index+1].index??rest.length):rest.length;
+    const before=rest.slice(previousEnd,start);
+    const after=rest.slice(end,nextStart);
+    let text=match[0];
+
+    // OCR commonly separates a printed trailing minus from the amount:
+    // "150.00 - 15,929.95". The sign belongs to the first number, not the balance.
+    const trailing=after.match(/^\s*([+−-]|CR|DR)\s*$/i);
+    if(trailing)text+=trailing[1];
+
+    if(index===0&&!trailing){
+      const prefix=before.match(/([+−-])\s*$/);
+      if(prefix)text=prefix[1]+text;
+      const openParen=/\(\s*$/.test(before),closeParen=/^\s*\)/.test(after);
+      if(openParen&&closeParen)text=`(${text})`;
+    }
+    return{text:text.replaceAll("−","-"),start,end};
+  });
+}
 
 function tokenizePdfLine(line:string):TokenizedPdfLine|null{
   const dateMatch=line.match(EXAMPLE_DATE);
   if(!dateMatch)return null;
-  const date=dateMatch[1],rest=line.slice(dateMatch[0].length);
-  const matches=[...rest.matchAll(MONEY_TOKEN)];
-  if(!matches.length)return{date,description:rest.trim(),money:[]};
-  const firstIndex=matches[0].index??0;
-  return{
-    date,
-    description:rest.slice(0,firstIndex).replace(/\s+/g," ").trim(),
-    money:matches.map(match=>match[0].replaceAll("−","-").replace(/\s+/g," ").trim())
-  };
+  const date=dateMatch[1],rest=line.slice(dateMatch[0].length),tokens=amountTokens(rest);
+  if(!tokens.length)return{date,description:rest.trim(),money:[]};
+  let description=rest.slice(0,tokens[0].start).replace(/[($€£+−-]\s*$/,"").replace(/\s+/g," ").trim();
+  return{date,description,money:tokens.map(token=>token.text)};
 }
 
 function debitCreditPattern(withBalance:boolean):RegExp{
@@ -83,14 +118,11 @@ function parseLine(line:string,layout:PdfLayout):ParsedPdfLine|null{
 
   const tokenized=tokenizePdfLine(line);
   if(!tokenized||!tokenized.description)return null;
-  const {money}=tokenized;
-  const withBalance=layout.endsWith("before-balance");
-  const expected=withBalance?2:1;
-  if(money.length!==expected)return null;
-  const transaction=money[0],balance=withBalance?money[1]:undefined;
+  const withBalance=layout.endsWith("before-balance"),expected=withBalance?2:1;
+  if(tokenized.money.length!==expected)return null;
+  const transaction=tokenized.money[0],balance=withBalance?tokenized.money[1]:undefined;
   if(layout==="signed-last"&&!EXPLICIT_SIGN.test(transaction))return null;
-  if(layout==="expenses-last"||layout==="expenses-before-balance")
-    return{...tokenized,amount:`-${transaction}`,balance};
+  if(layout==="expenses-last"||layout==="expenses-before-balance")return{...tokenized,amount:`-${transaction}`,balance};
   return{...tokenized,amount:transaction,balance};
 }
 
@@ -98,49 +130,77 @@ function cleanAmount(value:string|undefined):string{
   return (value??"").replaceAll("−","-").replace(/\s+/g," ").trim();
 }
 
+function continuity(previous:ParsedPdfLine,next:ParsedPdfLine):boolean|null{
+  if(!previous.balance||!next.balance||!next.amount)return null;
+  try{
+    return parseStatementMoney(previous.balance)+parseStatementMoney(next.amount)===parseStatementMoney(next.balance);
+  }catch{return null;}
+}
+
 export function pdfTextToTable(text:string,layout:PdfLayout="signed-last"):PdfParseResult{
   const normalized=text.replaceAll("\u0000","").replaceAll("\r\n","\n").replaceAll("\r","\n");
   if(normalized.trim().length<20)throw new Error("This PDF has no searchable text. Scanned-statement OCR is not available yet.");
-  const lines=normalized.split("\n"),rows:string[][]=[],sourceRows:number[]=[],unmatchedLineNumbers:number[]=[],candidateLines:PdfCandidateLine[]=[];
-  const balanceMismatchLineNumbers:number[]=[];
-  const debitCredit=layout.startsWith("debit-credit-");
-  let previousMatched:{balanceMinor:number;candidateIndex:number}|null=null;
+  const lines=normalized.split("\n"),work:CandidateWork[]=[];
+  let irrelevantLineCount=0;
 
   lines.forEach((line,index)=>{
-    if(!DATED_LINE.test(line))return;
-    const lineNumber=index+1,parsed=parseLine(line,layout),teachable=pdfExampleFields(line,layout).length>=3;
-    if(!parsed){
-      unmatchedLineNumbers.push(lineNumber);
-      candidateLines.push({lineNumber,text:line.trim(),matched:false,teachable});
-      previousMatched=null;
-      return;
-    }
-    if(debitCredit){
-      rows.push([parsed.date,parsed.description,cleanAmount(parsed.debit),cleanAmount(parsed.credit)]);
-    }else{
-      rows.push([parsed.date,parsed.description,cleanAmount(parsed.amount)]);
-    }
-    sourceRows.push(lineNumber);
-    const candidateIndex=candidateLines.length;
-    candidateLines.push({lineNumber,text:line.trim(),matched:true,teachable});
-
-    // Running-balance validation is deterministic only when two adjacent dated
-    // candidates both parsed successfully. Any unmatched dated row breaks the chain.
-    if(parsed.balance&&parsed.amount){
-      try{
-        const amountMinor=parseStatementMoney(parsed.amount);
-        const balanceMinor=parseStatementMoney(parsed.balance);
-        if(previousMatched&&previousMatched.candidateIndex===candidateIndex-1&&previousMatched.balanceMinor+amountMinor!==balanceMinor)
-          balanceMismatchLineNumbers.push(lineNumber);
-        previousMatched={balanceMinor,candidateIndex};
-      }catch{previousMatched=null;}
-    }else previousMatched=null;
+    if(!line.trim())return;
+    if(!DATED_LINE.test(line)){irrelevantLineCount++;return;}
+    const parsed=parseLine(line,layout),tokenized=tokenizePdfLine(line);
+    work.push({
+      lineNumber:index+1,
+      text:line.trim(),
+      parsed,
+      tokenized,
+      teachable:Boolean(tokenized&&tokenized.money.length>0),
+      classification:parsed?"transaction":"unresolved"
+    });
   });
+
+  const transactionIndexes=work.map((item,index)=>item.parsed?index:-1).filter(index=>index>=0);
+  const balanceMismatchLineNumbers:number[]=[];
+  for(let i=1;i<transactionIndexes.length;i++){
+    const previousIndex=transactionIndexes[i-1],nextIndex=transactionIndexes[i];
+    const previous=work[previousIndex].parsed!,next=work[nextIndex].parsed!;
+    const check=continuity(previous,next);
+    const between=work.slice(previousIndex+1,nextIndex);
+    const unresolvedWithMoney=between.some(item=>item.classification==="unresolved"&&(item.tokenized?.money.length??0)>0);
+    if(check===true&&!unresolvedWithMoney){
+      for(let index=previousIndex+1;index<nextIndex;index++){
+        if(work[index].classification==="unresolved"&&(work[index].tokenized?.money.length??0)===0)
+          work[index].classification="continuation";
+      }
+    }else if(check===false&&between.length===0){
+      balanceMismatchLineNumbers.push(work[nextIndex].lineNumber);
+    }
+  }
+
+  const rows:string[][]=[],sourceRows:number[]=[];
+  for(const item of work){
+    if(!item.parsed)continue;
+    const parsed=item.parsed;
+    if(layout.startsWith("debit-credit-"))rows.push([parsed.date,parsed.description,cleanAmount(parsed.debit),cleanAmount(parsed.credit)]);
+    else rows.push([parsed.date,parsed.description,cleanAmount(parsed.amount)]);
+    sourceRows.push(item.lineNumber);
+  }
+
+  const candidateLines:PdfCandidateLine[]=work.map(item=>({
+    lineNumber:item.lineNumber,
+    text:item.text,
+    matched:item.classification==="transaction",
+    teachable:item.teachable,
+    classification:item.classification
+  }));
+  const unmatchedLineNumbers=work.filter(item=>item.classification==="unresolved").map(item=>item.lineNumber);
+  const continuationLineNumbers=work.filter(item=>item.classification==="continuation").map(item=>item.lineNumber);
+
   return{
-    table:{headers:debitCredit?["Date","Description","Debit","Credit"]:["Date","Description","Amount"],rows,delimiter:",",sourceRows},
+    table:{headers:layout.startsWith("debit-credit-")?["Date","Description","Debit","Credit"]:["Date","Description","Amount"],rows,delimiter:",",sourceRows},
     extractedLineCount:lines.length,
-    candidateRowCount:candidateLines.length,
+    irrelevantLineCount,
+    candidateRowCount:work.length,
     matchedRowCount:rows.length,
+    continuationLineNumbers,
     unmatchedLineNumbers,
     balanceMismatchLineNumbers,
     candidateLines,
@@ -161,9 +221,10 @@ export function isPdfComplete(result:PdfParseResult):boolean{
 }
 
 export function representativePdfLines(result:PdfParseResult,limit=6):PdfCandidateLine[]{
-  const rejected=result.candidateLines.filter(line=>!line.matched);
-  const matched=result.candidateLines.filter(line=>line.matched);
-  return [...rejected,...matched].slice(0,Math.max(0,limit));
+  const unresolved=result.candidateLines.filter(line=>line.classification==="unresolved");
+  const transactions=result.candidateLines.filter(line=>line.classification==="transaction");
+  const continuations=result.candidateLines.filter(line=>line.classification==="continuation");
+  return [...unresolved,...transactions,...continuations].slice(0,Math.max(0,limit));
 }
 
 export function pdfExampleFields(line:string,layout:PdfLayout):PdfExampleField[]{
@@ -181,10 +242,11 @@ export function pdfExampleFields(line:string,layout:PdfLayout):PdfExampleField[]
 
 export function pdfLayoutFromFieldRoles(roles:PdfFieldRole[]):PdfLayout|null{
   if(roles[0]!=="date"||roles[1]!=="payee")return null;
-  const tail=roles.slice(2),balanceIndex=tail.findIndex(role=>role==="balance");
-  if(balanceIndex>=0&&balanceIndex!==tail.length-1)return null;
+  const tail=roles.slice(2),balanceIndexes=tail.map((role,index)=>role==="balance"?index:-1).filter(index=>index>=0);
+  if(balanceIndexes.length>1)return null;
+  const hasBalance=balanceIndexes.length===1;
+  if(hasBalance&&tail.slice(balanceIndexes[0]+1).some(role=>role!=="ignore"))return null;
   const semantic=tail.filter(role=>role!=="ignore"&&role!=="balance");
-  const hasBalance=balanceIndex===tail.length-1;
   if(semantic.length===1&&semantic[0]==="amount")return hasBalance?"signed-before-balance":"signed-last";
   if(semantic.length===2&&semantic[0]==="debit"&&semantic[1]==="credit")return hasBalance?"debit-credit-before-balance":"debit-credit-last";
   return null;
