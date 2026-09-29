@@ -42,4 +42,13 @@
 .pdf-diagnostics[open] summary{margin-bottom:8px}
 .pdf-extracted-text{max-height:18rem;overflow:auto;margin:0;padding:10px;border:1px solid #dbe4e6;border-radius:5px;background:#fff;white-space:pre-wrap;font-size:10px;line-height:1.45}
 @media(max-width:760px){.pdf-example-line{grid-template-columns:1fr}.pdf-example-line span,.pdf-example-line em{white-space:normal}}
+.pdf-example-line[type="button"]{width:100%;text-align:left;font:inherit;cursor:pointer}
+.pdf-example-line.selected{outline:2px solid #5b7f8c;outline-offset:1px}
+.pdf-field-teacher{display:grid;gap:8px;padding:10px;border:1px solid #ccdadd;border-radius:6px;background:#fff}
+.pdf-field-teacher>strong{font-size:11px}
+.pdf-field-teacher>small{color:var(--muted);font-size:10px}
+.pdf-field-teacher>small.teacher-invalid{color:#9c4139;font-weight:700}
+.pdf-field-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.pdf-field-grid label{display:grid;gap:5px;font-size:10px;font-weight:700;color:#53636b}
+.pdf-field-grid code{min-height:30px;padding:7px;border:1px solid #e0e7e9;border-radius:4px;background:#f8fafb;overflow-wrap:anywhere;color:#263a43;font-weight:400}
 
