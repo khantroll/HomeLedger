@@ -52,4 +52,8 @@
 .pdf-field-grid label{display:grid;gap:5px;font-size:10px;font-weight:700;color:#53636b}
 .pdf-field-grid code{min-height:30px;padding:7px;border:1px solid #e0e7e9;border-radius:4px;background:#f8fafb;overflow-wrap:anywhere;color:#263a43;font-weight:400}
 .teach-row-button{display:block;margin-top:6px;padding:4px 7px;font-size:10px}
+.pdf-example-line.continuation{border-color:#c8d8df;background:#f7fbfd}
+.pdf-example-line.continuation em{color:#486c7d;font-weight:700}
+.import-block-reason{max-width:20rem;color:#8c302b;font-size:10px;line-height:1.35;text-align:right}
+.pdf-field-teacher .primary-action{justify-self:start}
 
