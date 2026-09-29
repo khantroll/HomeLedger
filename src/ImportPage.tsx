@@ -9,7 +9,7 @@ import { applyMerchantRules } from "./merchantRules";
 import type { MerchantRule } from "./domain";
 import { decodeStatement, encodingLabel, type StatementEncoding } from "./statementDecoding";
 import { bytesToBase64, suggestWorkbookHeaderRow, suggestWorkbookSelection, workbookHeaderChoices, workbookSheetToTable, type ParsedWorkbook } from "./workbookImport";
-import { PDF_LAYOUT_OPTIONS, isPdfComplete, pdfTextToTable, representativePdfLines, suggestPdfLayout, type PdfLayout, type PdfParseResult } from "./pdfImport";
+import { PDF_LAYOUT_OPTIONS, isPdfComplete, pdfExampleFields, pdfLayoutFromFieldRoles, pdfTextToTable, representativePdfLines, suggestPdfLayout, type PdfFieldRole, type PdfLayout, type PdfParseResult } from "./pdfImport";
 import {extractImageText,isSupportedOcrImage,type OcrProgress} from "./ocrImport";
 import {matchingStatementTemplate,statementSourceSignature,type StatementSourceKind} from "./statementTemplates";
 import {extractScannedPdfText,pdfNeedsOcr} from "./scannedPdfImport";
@@ -27,6 +27,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [workbookHeaderRow,setWorkbookHeaderRow]=useState(0);
   const [pdf,setPdf]=useState<PdfParseResult|null>(null);
   const [pdfText,setPdfText]=useState("");
+  const [pdfTeachLineNumber,setPdfTeachLineNumber]=useState<number|null>(null);
   const [ocrConfidence,setOcrConfidence]=useState<number|null>(null);
   const [ocrProgress,setOcrProgress]=useState<OcrProgress|null>(null);
   const [ocrSource,setOcrSource]=useState<"image"|"pdf"|null>(null);
@@ -65,6 +66,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const preview=useMemo(()=>applications.map(item=>item.row),[applications]);
   const matchedRules=useMemo(()=>new Map(applications.filter(item=>item.rule).map(item=>[item.row.sourceRow,item.rule!])),[applications]);
   const pdfIncomplete=Boolean(pdf&&!isPdfComplete(pdf));
+  const pdfTeachLine=pdf?.candidateLines.find(line=>line.lineNumber===pdfTeachLineNumber)??(pdf?representativePdfLines(pdf,1)[0]:undefined);
   const valid=pdfIncomplete?[]:preview.filter(row=>!row.error&&(!row.duplicate||(row.duplicate.confidence!=="exact"&&includedDuplicates.has(row.sourceRow))));
   const duplicates=preview.filter(row=>row.duplicate).length;
   const duplicateCounts=useMemo(()=>({exact:preview.filter(row=>row.duplicate?.confidence==="exact").length,probable:preview.filter(row=>row.duplicate?.confidence==="probable").length,possible:preview.filter(row=>row.duplicate?.confidence==="possible").length}),[preview]);
@@ -98,7 +100,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
 
   function configurePdf(text:string,layout:PdfLayout,confidence:number|null=ocrConfidence,preferredProfile?:ImportProfile,source:"image"|"pdf"|null=ocrSource,pageCount:number|null=ocrPageCount){
     const parsed=pdfTextToTable(text,layout),suggested=suggestMapping(parsed.table.headers);
-    setPdf(parsed);setPdfText(text);setTable(parsed.table);setOfx(null);setQif(null);setWorkbook(null);setOcrConfidence(confidence);setOcrSource(source);setOcrPageCount(pageCount);
+    setPdf(parsed);setPdfText(text);setPdfTeachLineNumber(current=>parsed.candidateLines.some(line=>line.lineNumber===current)?current:(representativePdfLines(parsed,1)[0]?.lineNumber??null));setTable(parsed.table);setOfx(null);setQif(null);setWorkbook(null);setOcrConfidence(confidence);setOcrSource(source);setOcrPageCount(pageCount);
     if(preferredProfile?.headerSignature===headerSignature(parsed.table.headers)){applyProfile(preferredProfile);setProfileName(preferredProfile.name);}else{setMapping(suggested);setParsingOptions(suggestParsingOptions(parsed.table,suggested));setSelectedProfileId("");setProfileName("");}
     setIncludedDuplicates(new Set());
   }
@@ -201,7 +203,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
           {pdf&&<><div className="ofx-summary"><div><span>Document type</span><strong>{ocrSource==="pdf"?"Scanned PDF (local OCR)":ocrSource==="image"?"OCR statement image":"Searchable PDF"}</strong></div>{ocrPageCount!==null&&<div><span>Pages processed</span><strong>{ocrPageCount}</strong></div>}{ocrConfidence!==null&&<div><span>OCR confidence</span><strong>{Math.round(ocrConfidence)}%</strong></div>}<div><span>Dated rows</span><strong>{pdf.candidateRowCount}</strong></div><div><span>Recognized rows</span><strong>{pdf.matchedRowCount}</strong></div><div><span>Unrecognized rows</span><strong>{pdf.unmatchedLineNumbers.length}</strong></div></div>
             <div className="pdf-recovery">
               <div className="pdf-recovery-heading"><div><strong>Teach this statement from an example</strong><small>Compare a representative extracted row with the structure below. Changing the structure reruns deterministic parsing immediately.</small></div></div>
-              {pdf.candidateLines.length>0?<div className="pdf-example-lines">{representativePdfLines(pdf).map(line=><div key={line.lineNumber} className={line.matched?"pdf-example-line matched":"pdf-example-line rejected"}><span>Line {line.lineNumber}</span><code>{line.text}</code><em>{line.matched?"recognized":"not recognized"}</em></div>)}</div>:<p className="mapping-help">No dated transaction rows were detected in the extracted text.</p>}
+              {pdf.candidateLines.length>0?<><div className="pdf-example-lines">{representativePdfLines(pdf).map(line=><button type="button" key={line.lineNumber} className={`${line.matched?"pdf-example-line matched":"pdf-example-line rejected"}${pdfTeachLine?.lineNumber===line.lineNumber?" selected":""}`} onClick={()=>setPdfTeachLineNumber(line.lineNumber)}><span>Line {line.lineNumber}</span><code>{line.text}</code><em>{line.matched?"recognized":"not recognized"}</em></button>)}</div>{pdfTeachLine&&<PdfExampleTeacher key={`${pdfTeachLine.lineNumber}-${pdf.layout}`} line={pdfTeachLine.text} layout={pdf.layout} onLayout={layout=>{setError("");configurePdf(pdfText,layout);}}/>}</>:<p className="mapping-help">No dated transaction rows were detected in the extracted text.</p>}
               <div className="profile-controls workbook-controls"><label>Statement structure<select value={pdf.layout} onChange={event=>{setError("");configurePdf(pdfText,event.target.value as PdfLayout);}}>{PDF_LAYOUT_OPTIONS.map(option=><option key={option.value} value={option.value}>{option.label} — {option.description}</option>)}</select></label></div>
               <details className="pdf-diagnostics"><summary>Inspect more extracted dated rows ({pdf.candidateLines.length})</summary><div className="pdf-example-lines">{pdf.candidateLines.slice(0,100).map(line=><div key={line.lineNumber} className={line.matched?"pdf-example-line matched":"pdf-example-line rejected"}><span>Line {line.lineNumber}</span><code>{line.text}</code><em>{line.matched?"recognized":"not recognized"}</em></div>)}</div>{pdf.candidateLines.length>100&&<p className="mapping-help">Showing the first 100 dated rows.</p>}</details>
               <details className="pdf-diagnostics"><summary>Inspect extracted OCR / PDF text</summary><pre className="pdf-extracted-text">{pdfText}</pre></details>
@@ -237,6 +239,19 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     <section className="panel import-history"><div className="panel-heading"><div><h2>Import history</h2><p>Every committed batch remains in the audit history.</p></div><History size={18}/></div>{batches.length===0?<div className="empty-state">No statements have been imported yet.</div>:<div className="table-wrap"><table><thead><tr><th>Imported</th><th>Source</th><th>Account</th><th>Transactions</th><th>Net amount</th><th>Status</th><th></th></tr></thead><tbody>{batches.map(batch=><tr key={batch.id}><td>{formatTimestamp(batch.importedAt)}</td><td><strong>{batch.sourceName}</strong></td><td>{batch.accountName}</td><td>{batch.transactionCount}</td><td className={batch.totalMinor<0?"amount negative":"amount positive"}>{formatMoney(batch.totalMinor)}</td><td>{batch.undoneAt?<span className="import-status duplicate">Undone</span>:<span className="import-status ready">Active</span>}</td><td>{!batch.undoneAt&&<button className="undo-button" onClick={()=>setPendingUndo(batch)}><Undo2 size={13}/> Undo</button>}</td></tr>)}</tbody></table></div>}</section>
     {pendingUndo&&<UndoDialog batch={pendingUndo} busy={undoing} onCancel={()=>setPendingUndo(null)} onConfirm={undo}/>}
   </div>;
+}
+
+function PdfExampleTeacher({line,layout,onLayout}:{line:string;layout:PdfLayout;onLayout:(layout:PdfLayout)=>void}){
+  const fields=pdfExampleFields(line,layout);
+  const [roles,setRoles]=useState<PdfFieldRole[]>(fields.map(field=>field.role));
+  function assign(index:number,role:PdfFieldRole){
+    const next=roles.map((current,i)=>i===index?role:current);
+    setRoles(next);
+    const taught=pdfLayoutFromFieldRoles(next);
+    if(taught)onLayout(taught);
+  }
+  if(fields.length<3)return <p className="mapping-help">This row could not be split into teachable fields. Choose another representative row.</p>;
+  return <div className="pdf-field-teacher"><strong>Assign what each field means</strong><div className="pdf-field-grid">{fields.map((field,index)=><label key={index}><code>{field.text}</code><select value={roles[index]} onChange={event=>assign(index,event.target.value as PdfFieldRole)}><option value="date">Date</option><option value="payee">Description / Payee</option><option value="amount">Signed amount</option><option value="debit">Debit</option><option value="credit">Credit</option><option value="ignore">Ignore / running balance</option></select></label>)}</div>{pdfLayoutFromFieldRoles(roles)?<small>Structure is valid. Recognition counts above update immediately.</small>:<small className="teacher-invalid">Assign one Date, one Description, and either one Signed amount or Debit + Credit. Extra fields must be ignored.</small>}</div>;
 }
 
 function MappingSelect({label,value,headers,onChange}:{label:string;value:number;headers:string[];onChange:(value:number)=>void}){return <label>{label}<select value={value} onChange={event=>onChange(Number(event.target.value))}><option value={-1}>Not mapped</option>{headers.map((header,index)=><option key={`${header}-${index}`} value={index}>{header}</option>)}</select></label>;}
