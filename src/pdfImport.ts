@@ -9,6 +9,8 @@ export type PdfLayout=
   |"debit-credit-before-balance"
   |"expenses-last"
   |"expenses-before-balance";
+export type PdfFieldRole="date"|"payee"|"amount"|"debit"|"credit"|"ignore";
+export interface PdfExampleField { text:string; role:PdfFieldRole; }
 export interface PdfCandidateLine { lineNumber:number; text:string; matched:boolean; }
 export interface PdfParseResult {
   table:ParsedTable;
@@ -32,13 +34,13 @@ export const PDF_LAYOUT_OPTIONS:{value:PdfLayout;label:string;description:string
 const DATE=String.raw`\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/](?:\d{2}|\d{4})`;
 const NUMBER=String.raw`\d[\d\s,.'’]*[.,]\d{2}`;
 const UNSIGNED_AMOUNT=String.raw`[$€£]?\s*${NUMBER}`;
-const SIGNED_AMOUNT=String.raw`(?:\(\s*[$€£]?\s*${NUMBER}\s*\)|(?:[+−-]\s*[$€£]?|[$€£]\s*[+−-])\s*${NUMBER}|[$€£]?\s*${NUMBER}\s*(?:CR|DR))`;
-const BALANCE_AMOUNT=String.raw`(?:\(?\s*[+−-]?\s*[$€£]?\s*${NUMBER}\s*\)?)`;
+const SIGNED_AMOUNT=String.raw`(?:\(\s*[$€£]?\s*${NUMBER}\s*\)|(?:[+−-]\s*[$€£]?|[$€£]\s*[+−-])\s*${NUMBER}|[$€£]?\s*${NUMBER}\s*(?:[+−-]|CR|DR)?)`;
+const BALANCE_AMOUNT=String.raw`(?:\(?\s*[+−-]?\s*[$€£]?\s*${NUMBER}\s*[+−-]?\s*\)?)`;
 const DATED_LINE=new RegExp(String.raw`^\s*(?:${DATE})(?:\s|$)`,"i");
+const EXAMPLE_DATE=new RegExp(String.raw`^\s*(${DATE})(?:\s+|$)`,"i");
+const EXAMPLE_NUMBER=new RegExp(String.raw`(?:\(\s*[$€£]?\s*${NUMBER}\s*\)|[$€£]?\s*${NUMBER}\s*(?:[+−-]|CR|DR)?)`,"ig");
 
 function debitCreditPattern(withBalance:boolean):RegExp{
-  // Separate debit/credit layouts rely on visible column spacing from PDF/OCR text.
-  // Blank debit or credit cells are allowed only when the column gap remains visible.
   const tail=withBalance?String.raw`\s{2,}(${BALANCE_AMOUNT})`:"";
   return new RegExp(String.raw`^\s*(${DATE})\s+(.+?)\s{2,}(${UNSIGNED_AMOUNT})?\s{2,}(${UNSIGNED_AMOUNT})?${tail}\s*$`,"i");
 }
@@ -69,7 +71,6 @@ export function pdfTextToTable(text:string,layout:PdfLayout="signed-last"):PdfPa
     if(!payee.trim()){unmatchedLineNumbers.push(lineNumber);candidateLines.push({lineNumber,text:line.trim(),matched:false});return;}
     if(debitCredit){
       const debit=cleanAmount(match[3]),credit=cleanAmount(match[4]);
-      // A row must identify exactly one side. Ambiguous or empty rows stay rejected.
       if((debit&&credit)||(!debit&&!credit)){
         unmatchedLineNumbers.push(lineNumber);candidateLines.push({lineNumber,text:line.trim(),matched:false});return;
       }
@@ -95,7 +96,9 @@ export function pdfTextToTable(text:string,layout:PdfLayout="signed-last"):PdfPa
 }
 
 export function suggestPdfLayout(text:string):PdfLayout{
-  for(const layout of ["signed-last","signed-before-balance","debit-credit-last","debit-credit-before-balance"] as const){
+  // Prefer layouts that explicitly account for a trailing balance before simpler
+  // layouts that could otherwise swallow the transaction amount into description.
+  for(const layout of ["signed-before-balance","debit-credit-before-balance","signed-last","debit-credit-last"] as const){
     const parsed=pdfTextToTable(text,layout);
     if(parsed.matchedRowCount>0&&!parsed.unmatchedLineNumbers.length)return layout;
   }
@@ -108,4 +111,31 @@ export function representativePdfLines(result:PdfParseResult,limit=6):PdfCandida
   const rejected=result.candidateLines.filter(line=>!line.matched);
   const matched=result.candidateLines.filter(line=>line.matched);
   return [...rejected,...matched].slice(0,Math.max(0,limit));
+}
+
+export function pdfExampleFields(line:string,layout:PdfLayout):PdfExampleField[]{
+  const dateMatch=line.match(EXAMPLE_DATE);
+  if(!dateMatch)return[];
+  const date=dateMatch[1],rest=line.slice(dateMatch[0].length);
+  const numeric=[...rest.matchAll(EXAMPLE_NUMBER)];
+  if(!numeric.length)return[{text:date,role:"date"},{text:rest.trim(),role:"payee"}];
+  const first=numeric[0],description=rest.slice(0,first.index??0).trim();
+  const values=numeric.map(match=>match[0].trim());
+  const roles:PdfFieldRole[]=layout.startsWith("debit-credit-")
+    ?["debit","credit",...(layout.endsWith("before-balance")?["ignore" as const]:[])]
+    :["amount",...(layout.endsWith("before-balance")?["ignore" as const]:[])];
+  return[
+    {text:date,role:"date"},
+    {text:description,role:"payee"},
+    ...values.map((text,index)=>({text,role:roles[index]??"ignore"}))
+  ];
+}
+
+export function pdfLayoutFromFieldRoles(roles:PdfFieldRole[]):PdfLayout|null{
+  if(roles[0]!=="date"||roles[1]!=="payee")return null;
+  const semantic=roles.slice(2).filter(role=>role!=="ignore");
+  const ignoredTail=roles.length>3&&roles[roles.length-1]==="ignore";
+  if(semantic.length===1&&semantic[0]==="amount")return ignoredTail?"signed-before-balance":"signed-last";
+  if(semantic.length===2&&semantic[0]==="debit"&&semantic[1]==="credit")return ignoredTail?"debit-credit-before-balance":"debit-credit-last";
+  return null;
 }
