@@ -8,10 +8,10 @@
 - **Updated by:** ChatGPT
 - **Canonical main (verified):** `5fbb664c529258084a6ce1187055163f52a26e2a` — #64 Transaction Attachments & Receipt Retention squash-merged
 - **Open PRs (in progress):** PR #65 — v0.52 Everyday Money Milestone Audit & Closure (`cursor/v052-everyday-money-closure-1f15`), draft, intentionally unmerged
-- **Closure status:** NOT CLOSED. Native Windows/Tauri dogfooding found a third v0.52 closure blocker: Tesseract.js 7 selected a Relaxed SIMD LSTM core loader that the old four-file OCR packaging list omitted.
-- **Correction:** `prepare:ocr` now packages every browser WASM loader shipped by installed `tesseract.js-core` 7.0.0 and fails closed on installed/packaged drift; `npm test` prepares assets first; regression asserts exact runtime-loader parity including Relaxed SIMD variants. Existing local `corePath`/`workerPath`/`langPath` architecture and CSP remain unchanged.
-- **Verification:** Previous exact-head CI #405 was green on `165afc836501f556a3610d1e36f8a339ad163835`, but that run predates this truthful handoff update and human Windows dogfood retest is still required. Do not treat v0.52 as closed until corrected #65 tip is green and the real Windows scanned-PDF/image OCR path is retested.
-- **Next action:** Run exact-head CI on the complete PR #65 correction/handoff tip; then human dogfood scanned-PDF OCR and standalone image OCR on Windows/Tauri. Leave #65 open/unmerged. Do not start the next milestone. Do not make a post-CI STATUS-only tip commit.
+- **Closure status:** NOT CLOSED. Native Windows/Tauri dogfooding confirmed the local Tesseract runtime fix works on the previously failing 2-page scanned statement (84% OCR confidence), then exposed a fourth closure usability blocker: all 52 dated rows were safely rejected but the UI did not show enough extracted structure to teach the statement layout.
+- **Corrections:** The validated local OCR runtime fix is preserved. PDF/OCR recovery now exposes representative rejected/recognized dated lines plus expandable raw extracted text, adds deterministic separate debit/credit layout support, immediately reruns recognition counts on structure changes, preserves all-or-none fail-closed import semantics, and saves the selected PDF layout through the existing statement-template profile path.
+- **Verification:** Windows/Tauri dogfood confirmed Tesseract initialization and scanned-PDF OCR now work on the previously failing statement. Exact-head CI is required for the new teachability correction. Human dogfood retest of the same scanned PDF and a standalone image remains required before merge.
+- **Next action:** Exact-head GitHub CI on the complete #65 teachability correction tip; then human Windows/Tauri retest of the same scanned PDF mapping/recovery workflow and standalone image OCR. Leave #65 open/unmerged. Do not start the next milestone. Do not make a post-CI STATUS-only tip commit.
 
 ## Handoff protocol
 
