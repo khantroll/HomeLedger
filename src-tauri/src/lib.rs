@@ -1670,6 +1670,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(21, 'transaction attachments and receipt retention')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
+    if version < 22 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/022_pdf_template_layouts.sql")).map_err(|e| e.to_string())?;
+        let fk_errors: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if fk_errors != 0 { return Err(format!("PDF template layout migration failed foreign-key validation with {fk_errors} violation(s)")); }
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(22, 'PDF template debit-credit layouts')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -2648,7 +2656,7 @@ fn clean_import_profile(request:ImportProfileRequest,id:String)->Result<ImportPr
     if !["delimited","workbook","pdf","ocr"].contains(&request.source_kind.as_str()){return Err("Import profile source kind is invalid".into());}
     let source_signature=clean_optional(request.source_signature,200)?;
     let pdf_layout=clean_optional(request.pdf_layout,40)?;
-    if pdf_layout.as_ref().is_some_and(|layout|!["signed-last","signed-before-balance","expenses-last","expenses-before-balance"].contains(&layout.as_str())){return Err("Import profile PDF layout is invalid".into());}
+    if pdf_layout.as_ref().is_some_and(|layout|!["signed-last","signed-before-balance","debit-credit-last","debit-credit-before-balance","expenses-last","expenses-before-balance"].contains(&layout.as_str())){return Err("Import profile PDF layout is invalid".into());}
     if (request.source_kind=="pdf"||request.source_kind=="ocr")&&(source_signature.is_none()||pdf_layout.is_none()){return Err("PDF and OCR templates require a source signature and statement layout".into());}
     let workbook_sheet_name=clean_optional(request.workbook_sheet_name,200)?;
     if request.workbook_header_row.is_some_and(|row|!(0..=10000).contains(&row)){return Err("Workbook header row is out of range".into());}
