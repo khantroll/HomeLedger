@@ -68,7 +68,7 @@ describe("PDF statement recognition",()=>{
   });
 
   it("reruns recognition under an applied taught balance-aware layout",()=>{
-    const text="Activity\n09/01/2026 Corner Market 12.34 987.66\n09/02/2026 Fuel 40.00 947.66";
+    const text="Activity\n09/01/2026 Corner Market 12.34 987.66\n09/02/2026 Fuel 40.00- 947.66";
     const wrong=pdfTextToTable(text,"signed-last");
     expect(wrong).toMatchObject({candidateRowCount:2,matchedRowCount:0,unmatchedLineNumbers:[2,3]});
     expect(representativePdfLines(wrong,1)[0]).toMatchObject({lineNumber:2,classification:"unresolved",teachable:true});
