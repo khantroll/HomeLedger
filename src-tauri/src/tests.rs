@@ -33,7 +33,7 @@ fn migration_creates_local_ledger_tables() {
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
     let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
     let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (21, 2, 1, 1, 2, 2,1,2,1,2,5,1));
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (22, 2, 1, 1, 2, 2,1,2,1,2,5,1));
     let oict: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'", [], |row| row.get(0)).unwrap();
     assert_eq!(oict, 1);
     let attachment_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('attachments','transaction_attachments','import_batch_attachments')", [], |row| row.get(0)).unwrap();
@@ -63,7 +63,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, 22);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -118,6 +118,25 @@ fn migration_upgrades_populated_v17_without_breaking_account_foreign_keys() {
     assert_eq!(version, 21);
     assert_eq!(fk_count,0);
     assert_eq!(related,(1,1,1,1,1,1));
+}
+
+
+#[test]
+fn taught_pdf_layout_variants_survive_profile_cleaning_and_storage_constraint() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',0,'Household')",[]).unwrap();
+    let request=ImportProfileRequest{
+        name:"Taught statement".into(),account_id:Some("a".into()),header_signature:"Date|Description|Debit|Credit".into(),
+        source_kind:"pdf".into(),source_signature:Some("example.pdf".into()),pdf_layout:Some("debit-credit-before-balance".into()),
+        workbook_sheet_name:None,workbook_header_row:None,date_column:0,payee_column:1,amount_column:-1,debit_column:2,credit_column:3,
+        date_order:"mdy".into(),number_format:"dot".into()
+    };
+    let profile=clean_import_profile(request,"p".into()).unwrap();
+    connection.execute("INSERT INTO import_profiles(id,name,account_id,header_signature,source_kind,source_signature,pdf_layout,date_column,payee_column,amount_column,debit_column,credit_column,date_order,number_format) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+      rusqlite::params![profile.id,profile.name,profile.account_id,profile.header_signature,profile.source_kind,profile.source_signature,profile.pdf_layout,profile.date_column,profile.payee_column,profile.amount_column,profile.debit_column,profile.credit_column,profile.date_order,profile.number_format]).unwrap();
+    let saved:String=connection.query_row("SELECT pdf_layout FROM import_profiles WHERE id='p'",[],|row|row.get(0)).unwrap();
+    assert_eq!(saved,"debit-credit-before-balance");
 }
 
 #[test]
