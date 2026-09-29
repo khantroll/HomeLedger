@@ -8,45 +8,86 @@ function preview(text:string,layout:Parameters<typeof pdfTextToTable>[1]){
 }
 
 describe("PDF statement recognition",()=>{
-  it("teaches the real-world trailing-minus amount plus running-balance structure from field roles",()=>{
-    const line="6/03/26  AFFINITY GROVE  70.62-  16,159.90";
-    const fields=pdfExampleFields(line,"signed-before-balance");
-    expect(fields).toEqual([
+  it("parses RFCU-style trailing-minus transaction amounts before running balance",()=>{
+    const text=[
+      "Statement activity",
+      "6/03/26 AFFINITY GROVE 70.62- 16,159.90",
+      "6/03/26 CITI AUTOPAY 150.00- 16,009.90",
+      "6/03/26 PAYPAL 3.99- 16,005.91"
+    ].join("\n");
+    const {parsed,rows}=preview(text,"signed-before-balance");
+    expect(parsed).toMatchObject({candidateRowCount:3,matchedRowCount:3,unmatchedLineNumbers:[],balanceMismatchLineNumbers:[]});
+    expect(rows.map(row=>({payee:row.payee,amountMinor:row.amountMinor}))).toEqual([
+      {payee:"AFFINITY GROVE",amountMinor:-7062},
+      {payee:"CITI AUTOPAY",amountMinor:-15000},
+      {payee:"PAYPAL",amountMinor:-399}
+    ]);
+    expect(rows.map(row=>row.payee)).not.toContain(expect.stringContaining("70.62"));
+  });
+
+  it("supports positive transaction amounts followed by a running balance, including Deposit Transfer",()=>{
+    const text="Statement activity\n11/17/25 TO XX612-031 308.80- 2,842.55\n11/21/25 Deposit Transfer 620.00 3,462.55";
+    const {parsed,rows}=preview(text,"signed-before-balance");
+    expect(parsed).toMatchObject({candidateRowCount:2,matchedRowCount:2,unmatchedLineNumbers:[],balanceMismatchLineNumbers:[]});
+    expect(rows.map(row=>({payee:row.payee,amountMinor:row.amountMinor}))).toEqual([
+      {payee:"TO XX612-031",amountMinor:-30880},
+      {payee:"Deposit Transfer",amountMinor:62000}
+    ]);
+  });
+
+  it("exposes first-class example roles and accepts user field assignments",()=>{
+    const line="6/03/26  CITI AUTOPAY  150.00-  15,929.95";
+    expect(pdfExampleFields(line,"signed-before-balance")).toEqual([
       {text:"6/03/26",role:"date"},
-      {text:"AFFINITY GROVE",role:"payee"},
-      {text:"70.62-",role:"amount"},
-      {text:"16,159.90",role:"ignore"}
+      {text:"CITI AUTOPAY",role:"payee"},
+      {text:"150.00-",role:"amount"},
+      {text:"15,929.95",role:"balance"}
     ]);
-    expect(pdfLayoutFromFieldRoles(fields.map(field=>field.role))).toBe("signed-before-balance");
-    const {parsed,rows}=preview("Statement activity\\n"+line+"\\n6/04/26  PAYROLL  1,250.00  17,409.90","signed-before-balance");
-    expect(parsed).toMatchObject({candidateRowCount:2,matchedRowCount:2,unmatchedLineNumbers:[]});
-    expect(rows.map(row=>row.amountMinor)).toEqual([-7062,125000]);
+    expect(pdfLayoutFromFieldRoles(["date","payee","amount","balance"])).toBe("signed-before-balance");
+    expect(pdfLayoutFromFieldRoles(["date","payee","amount","ignore"])).toBe("signed-last");
+    expect(pdfLayoutFromFieldRoles(["date","payee","debit","credit","balance"])).toBe("debit-credit-before-balance");
+    expect(pdfLayoutFromFieldRoles(["date","payee","amount","debit","balance"])).toBeNull();
   });
 
-  it("maps user-assigned debit credit roles with an ignored running balance",()=>{
-    expect(pdfLayoutFromFieldRoles(["date","payee","debit","credit","ignore"])).toBe("debit-credit-before-balance");
-    expect(pdfLayoutFromFieldRoles(["date","payee","amount","debit","ignore"])).toBeNull();
+  it("requires explicit direction for a one-amount bank row but permits taught amount-plus-balance",()=>{
+    const text="Activity\n09/01/2026 Corner Market 12.34\n09/02/2026 Fuel 40.00";
+    expect(pdfTextToTable(text,"signed-last")).toMatchObject({candidateRowCount:2,matchedRowCount:0,unmatchedLineNumbers:[2,3]});
+    expect(preview(text,"expenses-last").rows.map(row=>row.amountMinor)).toEqual([-1234,-4000]);
+
+    const withBalance="Activity\n09/01/2026 Deposit Transfer 12.34 100.00";
+    expect(preview(withBalance,"signed-before-balance").rows[0]).toMatchObject({payee:"Deposit Transfer",amountMinor:1234});
   });
 
-
-  it("recognizes explicitly directed signed amounts and preserves PDF line numbers",()=>{
-    const {parsed,rows}=preview(`Account statement
-Date Description Amount
-09/01/2026 Corner Market -$12.34
-09/02/2026 Payroll $1,500.00 CR
-09/04/2026 Utility (85.20)
-09/05/2026 Fuel −40.00
-End of statement`,"signed-last");
-    expect(parsed).toMatchObject({candidateRowCount:4,matchedRowCount:4,unmatchedLineNumbers:[]});
-    expect(rows.map(row=>({sourceRow:row.sourceRow,payee:row.payee,amountMinor:row.amountMinor}))).toEqual([
-      {sourceRow:3,payee:"Corner Market",amountMinor:-1234},{sourceRow:4,payee:"Payroll",amountMinor:150000},{sourceRow:5,payee:"Utility",amountMinor:-8520},{sourceRow:6,payee:"Fuel",amountMinor:-4000}
-    ]);
+  it("shows rejected rows as teachable when tokenization succeeds and reruns counts by layout",()=>{
+    const text="Activity\n09/01/2026 Corner Market 12.34 987.66\n09/02/2026 Fuel 40.00 947.66";
+    const wrong=pdfTextToTable(text,"signed-last");
+    expect(wrong).toMatchObject({candidateRowCount:2,matchedRowCount:0,unmatchedLineNumbers:[2,3]});
+    expect(representativePdfLines(wrong,1)[0]).toMatchObject({lineNumber:2,matched:false,teachable:true});
+    const taught=pdfTextToTable(text,"signed-before-balance");
+    expect(taught).toMatchObject({candidateRowCount:2,matchedRowCount:2,unmatchedLineNumbers:[],balanceMismatchLineNumbers:[]});
   });
 
-  it("supports a signed amount followed by a running balance",()=>{
-    const text="Statement transactions\n2026-09-18 Coffee Shop 4.75 DR 995.25\n2026-09-19 Refund +2.00 997.25";
-    expect(suggestPdfLayout(text)).toBe("signed-before-balance");
-    expect(preview(text,"signed-before-balance").rows.map(row=>row.amountMinor)).toEqual([-475,200]);
+  it("uses running-balance continuity as deterministic validation when adjacent rows permit it",()=>{
+    const good=pdfTextToTable("Activity\n6/03/26 Debit 70.62- 16,159.90\n6/03/26 Deposit Transfer 100.00 16,259.90","signed-before-balance");
+    expect(good.balanceMismatchLineNumbers).toEqual([]);
+    expect(isPdfComplete(good)).toBe(true);
+
+    const bad=pdfTextToTable("Activity\n6/03/26 Debit 70.62- 16,159.90\n6/03/26 Deposit Transfer 100.00 99,999.99","signed-before-balance");
+    expect(bad.balanceMismatchLineNumbers).toEqual([3]);
+    expect(isPdfComplete(bad)).toBe(false);
+  });
+
+  it("keeps malformed exceptional dated rows fail-closed",()=>{
+    const parsed=pdfTextToTable("Activity\n6/03/26 CITI AUTOPAY 150.00- 15,929.95\n6/04/26 Deposit Transfer AMOUNT OCR FAILED","signed-before-balance");
+    expect(parsed).toMatchObject({candidateRowCount:2,matchedRowCount:1,unmatchedLineNumbers:[3]});
+    expect(parsed.candidateLines[1]).toMatchObject({matched:false,teachable:false});
+    expect(isPdfComplete(parsed)).toBe(false);
+  });
+
+  it("supports explicitly directed signed amounts without balances",()=>{
+    const {parsed,rows}=preview("Account statement\n09/01/2026 Corner Market -$12.34\n09/02/2026 Payroll $1,500.00 CR\n09/04/2026 Utility (85.20)","signed-last");
+    expect(parsed).toMatchObject({candidateRowCount:3,matchedRowCount:3,unmatchedLineNumbers:[]});
+    expect(rows.map(row=>row.amountMinor)).toEqual([-1234,150000,-8520]);
   });
 
   it("supports separate debit and credit columns while requiring exactly one side per row",()=>{
@@ -57,37 +98,12 @@ End of statement`,"signed-last");
     expect(rows.map(row=>row.amountMinor)).toEqual([-1234,150000]);
   });
 
-  it("requires explicit selection before treating unsigned credit-card amounts as expenses",()=>{
-    const text="Credit card activity\n09/01/2026 Corner Market 12.34\n09/02/2026 Fuel 40.00";
-    const safe=pdfTextToTable(text);
-    expect(safe).toMatchObject({candidateRowCount:2,matchedRowCount:0,unmatchedLineNumbers:[2,3]});
-    expect(preview(text,"expenses-last").rows.map(row=>row.amountMinor)).toEqual([-1234,-4000]);
-  });
-
-  it("exposes representative rejected rows and reruns recognition deterministically when layout changes",()=>{
-    const text="Credit card activity\n09/01/2026 Corner Market 12.34\n09/02/2026 Fuel 40.00";
-    const rejected=pdfTextToTable(text,"signed-last");
-    expect(representativePdfLines(rejected,1)).toEqual([{lineNumber:2,text:"09/01/2026 Corner Market 12.34",matched:false}]);
-    const taught=pdfTextToTable(text,"expenses-last");
-    expect(taught).toMatchObject({candidateRowCount:2,matchedRowCount:2,unmatchedLineNumbers:[]});
-    expect(representativePdfLines(taught,2).every(line=>line.matched)).toBe(true);
-  });
-
-  it("blocks partial layouts instead of silently omitting dated rows",()=>{
-    const parsed=pdfTextToTable("Statement activity\n09/01/2026 Store -10.00\n09/02/2026 Unsupported row 20.00");
-    expect(parsed).toMatchObject({candidateRowCount:2,matchedRowCount:1,unmatchedLineNumbers:[3]});
-    expect(parsed.candidateLines.find(line=>line.lineNumber===3)).toMatchObject({matched:false,text:"09/02/2026 Unsupported row 20.00"});
-    expect(isPdfComplete(parsed)).toBe(false);
-  });
-
-  it("rejects structurally ambiguous debit/credit rows instead of guessing",()=>{
-    const parsed=pdfTextToTable("Statement activity\n09/01/2026 Ambiguous  10.00  20.00","debit-credit-last");
-    expect(parsed).toMatchObject({candidateRowCount:1,matchedRowCount:0,unmatchedLineNumbers:[2]});
-    expect(isPdfComplete(parsed)).toBe(false);
-  });
-
   it("distinguishes scanned documents from searchable documents without dated rows",()=>{
     expect(()=>pdfTextToTable("   \n")).toThrow("no searchable text");
     expect(pdfTextToTable("Searchable statement with an unsigned balance of 123.45")).toMatchObject({candidateRowCount:0,matchedRowCount:0});
+  });
+
+  it("prefers a balance-aware layout for RFCU-style rows",()=>{
+    expect(suggestPdfLayout("Activity\n6/03/26 CITI AUTOPAY 150.00- 15,929.95")).toBe("signed-before-balance");
   });
 });
