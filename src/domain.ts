@@ -561,7 +561,7 @@ export interface ImportProfile {
   headerSignature: string;
   sourceKind: "delimited"|"workbook"|"pdf"|"ocr";
   sourceSignature?: string;
-  pdfLayout?: "signed-last"|"signed-before-balance"|"expenses-last"|"expenses-before-balance";
+  pdfLayout?: "signed-last"|"signed-before-balance"|"debit-credit-last"|"debit-credit-before-balance"|"expenses-last"|"expenses-before-balance";
   workbookSheetName?: string;
   workbookHeaderRow?: number;
   dateColumn: number;
