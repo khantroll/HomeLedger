@@ -17,3 +17,11 @@ describe("statement templates",()=>{
     expect(matchingStatementTemplate([profile],"ocr","river credit union statement")).toBeUndefined();
   });
 });
+
+
+describe("taught RFCU-style template reuse",()=>{
+  it("reuses a saved amount-plus-running-balance interpretation",()=>{
+    const taught:ImportProfile={...profile,id:"rfcu",name:"RFCU Checking",pdfLayout:"signed-before-balance",amountColumn:2,debitColumn:-1,creditColumn:-1};
+    expect(matchingStatementTemplate([taught],"pdf","river credit union statement")).toMatchObject({id:"rfcu",pdfLayout:"signed-before-balance",amountColumn:2});
+  });
+});
