@@ -67,6 +67,10 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const matchedRules=useMemo(()=>new Map(applications.filter(item=>item.rule).map(item=>[item.row.sourceRow,item.rule!])),[applications]);
   const pdfIncomplete=Boolean(pdf&&!isPdfComplete(pdf));
   const pdfTeachLine=pdf?.candidateLines.find(line=>line.lineNumber===pdfTeachLineNumber)??(pdf?representativePdfLines(pdf,1)[0]:undefined);
+  const valid=pdfIncomplete?[]:preview.filter(row=>!row.error&&(!row.duplicate||(row.duplicate.confidence!=="exact"&&includedDuplicates.has(row.sourceRow))));
+  const duplicates=preview.filter(row=>row.duplicate).length;
+  const duplicateCounts=useMemo(()=>({exact:preview.filter(row=>row.duplicate?.confidence==="exact").length,probable:preview.filter(row=>row.duplicate?.confidence==="probable").length,possible:preview.filter(row=>row.duplicate?.confidence==="possible").length}),[preview]);
+  const errors=preview.filter(row=>row.error).length;
   const pdfBlockingReason=pdfIncomplete&&pdf
     ?pdf.unmatchedLineNumbers.length
       ?`Import is disabled because ${pdf.unmatchedLineNumbers.length} transaction candidate${pdf.unmatchedLineNumbers.length===1?"":"s"} still need review.`
@@ -74,10 +78,6 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
         ?`Import is disabled because ${pdf.balanceMismatchLineNumbers.length} running-balance continuity check${pdf.balanceMismatchLineNumbers.length===1?"":"s"} failed.`
         :"Import is disabled until the statement structure is fully recognized."
     :errors>0?`Import is disabled because ${errors} parsed row${errors===1?" has":"s have"} errors.`:"";
-  const valid=pdfIncomplete?[]:preview.filter(row=>!row.error&&(!row.duplicate||(row.duplicate.confidence!=="exact"&&includedDuplicates.has(row.sourceRow))));
-  const duplicates=preview.filter(row=>row.duplicate).length;
-  const duplicateCounts=useMemo(()=>({exact:preview.filter(row=>row.duplicate?.confidence==="exact").length,probable:preview.filter(row=>row.duplicate?.confidence==="probable").length,possible:preview.filter(row=>row.duplicate?.confidence==="possible").length}),[preview]);
-  const errors=preview.filter(row=>row.error).length;
   const selectedAccount=accounts.find(account=>account.id===accountId);
   const currencyMismatch=Boolean(ofx&&selectedAccount&&ofx.currency!==selectedAccount.currency);
 
