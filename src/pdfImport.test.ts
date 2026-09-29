@@ -1,6 +1,6 @@
 import {describe,expect,it} from "vitest";
 import {buildPreview,suggestMapping,suggestParsingOptions} from "./csvImport";
-import {isPdfComplete,pdfTextToTable,representativePdfLines,suggestPdfLayout} from "./pdfImport";
+import {isPdfComplete,pdfExampleFields,pdfLayoutFromFieldRoles,pdfTextToTable,representativePdfLines,suggestPdfLayout} from "./pdfImport";
 
 function preview(text:string,layout:Parameters<typeof pdfTextToTable>[1]){
   const parsed=pdfTextToTable(text,layout),mapping=suggestMapping(parsed.table.headers);
@@ -8,6 +8,27 @@ function preview(text:string,layout:Parameters<typeof pdfTextToTable>[1]){
 }
 
 describe("PDF statement recognition",()=>{
+  it("teaches the real-world trailing-minus amount plus running-balance structure from field roles",()=>{
+    const line="6/03/26  AFFINITY GROVE  70.62-  16,159.90";
+    const fields=pdfExampleFields(line,"signed-before-balance");
+    expect(fields).toEqual([
+      {text:"6/03/26",role:"date"},
+      {text:"AFFINITY GROVE",role:"payee"},
+      {text:"70.62-",role:"amount"},
+      {text:"16,159.90",role:"ignore"}
+    ]);
+    expect(pdfLayoutFromFieldRoles(fields.map(field=>field.role))).toBe("signed-before-balance");
+    const {parsed,rows}=preview("Statement activity\\n"+line+"\\n6/04/26  PAYROLL  1,250.00  17,409.90","signed-before-balance");
+    expect(parsed).toMatchObject({candidateRowCount:2,matchedRowCount:2,unmatchedLineNumbers:[]});
+    expect(rows.map(row=>row.amountMinor)).toEqual([-7062,125000]);
+  });
+
+  it("maps user-assigned debit credit roles with an ignored running balance",()=>{
+    expect(pdfLayoutFromFieldRoles(["date","payee","debit","credit","ignore"])).toBe("debit-credit-before-balance");
+    expect(pdfLayoutFromFieldRoles(["date","payee","amount","debit","ignore"])).toBeNull();
+  });
+
+
   it("recognizes explicitly directed signed amounts and preserves PDF line numbers",()=>{
     const {parsed,rows}=preview(`Account statement
 Date Description Amount
