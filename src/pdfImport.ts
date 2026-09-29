@@ -83,7 +83,7 @@ function amountTokens(rest:string):MoneyToken[]{
     if(trailing)text+=trailing[1];
 
     if(index===0&&!trailing){
-      const prefix=before.match(/([+−-])\s*$/);
+      const prefix=before.match(/([+−-])\s*[$€£]?\s*$/);
       if(prefix)text=prefix[1]+text;
       const openParen=/\(\s*$/.test(before),closeParen=/^\s*\)/.test(after);
       if(openParen&&closeParen)text=`(${text})`;
@@ -97,7 +97,7 @@ function tokenizePdfLine(line:string):TokenizedPdfLine|null{
   if(!dateMatch)return null;
   const date=dateMatch[1],rest=line.slice(dateMatch[0].length),tokens=amountTokens(rest);
   if(!tokens.length)return{date,description:rest.trim(),money:[]};
-  let description=rest.slice(0,tokens[0].start).replace(/[($€£+−-]\s*$/,"").replace(/\s+/g," ").trim();
+  let description=rest.slice(0,tokens[0].start).replace(/[+−-]\s*[$€£]?\s*$/,"").replace(/[($€£]\s*$/,"").replace(/\s+/g," ").trim();
   return{date,description,money:tokens.map(token=>token.text)};
 }
 
