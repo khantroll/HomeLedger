@@ -26,3 +26,20 @@
 .schedule-match{display:grid;gap:4px;margin-top:8px;color:var(--muted);font-size:11px;font-weight:700}
 .schedule-match select{min-width:14rem;max-width:22rem}
 .schedule-match small{max-width:22rem;line-height:1.35;font-weight:400}
+.pdf-recovery{display:grid;gap:10px;margin:0 0 12px;padding:12px;border:1px solid #dbe4e6;border-radius:7px;background:#f8fafb}
+.pdf-recovery-heading div{display:grid;gap:3px}
+.pdf-recovery-heading strong{font-size:12px}
+.pdf-recovery-heading small{color:var(--muted);font-size:11px;line-height:1.4}
+.pdf-example-lines{display:grid;gap:6px}
+.pdf-example-line{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:8px;align-items:start;padding:7px 8px;border:1px solid #dde6e9;border-radius:5px;background:#fff;font-size:11px}
+.pdf-example-line span,.pdf-example-line em{color:var(--muted);font-style:normal;white-space:nowrap}
+.pdf-example-line code{white-space:pre-wrap;overflow-wrap:anywhere;color:#263a43}
+.pdf-example-line.rejected{border-color:#e6c6c1;background:#fff8f7}
+.pdf-example-line.rejected em{color:#9c4139;font-weight:700}
+.pdf-example-line.matched em{color:#237266;font-weight:700}
+.pdf-diagnostics{border-top:1px solid #e0e7e9;padding-top:8px}
+.pdf-diagnostics summary{cursor:pointer;color:#42575f;font-size:11px;font-weight:700}
+.pdf-diagnostics[open] summary{margin-bottom:8px}
+.pdf-extracted-text{max-height:18rem;overflow:auto;margin:0;padding:10px;border:1px solid #dbe4e6;border-radius:5px;background:#fff;white-space:pre-wrap;font-size:10px;line-height:1.45}
+@media(max-width:760px){.pdf-example-line{grid-template-columns:1fr}.pdf-example-line span,.pdf-example-line em{white-space:normal}}
+
