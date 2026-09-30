@@ -16,8 +16,11 @@ export function applyImportReviewEdits(rows:PreviewRow[],edits:ReadonlyMap<numbe
     const payee=edit.payee?.trim()||row.payee;
     const category=edit.transferAccountId
       ? row.category
-      : (edit.category?.trim()||undefined);
-    return{...row,originalPayee,payee,category,transferAccountId:edit.transferAccountId} as PreviewRow&{transferAccountId?:string};
+      : Object.prototype.hasOwnProperty.call(edit,"category")
+        ? (edit.category?.trim()||undefined)
+        : row.category;
+    const transferAccountId=Object.prototype.hasOwnProperty.call(edit,"transferAccountId")?edit.transferAccountId:row.transferAccountId;
+    return{...row,originalPayee,payee,category,transferAccountId};
   });
 }
 
