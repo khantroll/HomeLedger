@@ -1,7 +1,7 @@
 import {describe,expect,it} from "vitest";
 import type {Account} from "./domain";
 import type {PreviewRow} from "./csvImport";
-import {applyImportReviewEdits,importBlockingReason,matchingReviewSourceRows,suggestTransferAccount} from "./importReview";
+import {applyHistoricalImportSuggestion,applyImportReviewEdits,historicalImportSuggestion,importBlockingReason,matchingReviewSourceRows,suggestTransferAccount} from "./importReview";
 
 const accounts:Account[]=[
   {id:"checking",name:"RFCU Checking",institution:"Rivertown Federal Credit Union",type:"checking",currency:"USD",balanceMinor:0,ownerLabel:"Household"},
@@ -37,6 +37,27 @@ describe("import review model",()=>{
   it("finds repeated normalized descriptions only after an explicit user action",()=>{
     const rows=[row(1,"ARKANSAS VALLEY",-7995),row(2,"Arkansas-Valley",-8200),row(3,"PAYPAL",-399)];
     expect(matchingReviewSourceRows(rows,1)).toEqual([1,2]);
+  });
+
+
+  it("reuses only consistent historical payee/category behavior below explicit rules",()=>{
+    const history:any[]=[
+      {id:"h1",accountId:"checking",postedDate:"2026-05-01",payee:"Arkansas Valley Electric",originalPayee:"ARKANSAS VALLEY",category:"Utilities: Electric",amountMinor:-8000,status:"cleared"},
+      {id:"h2",accountId:"checking",postedDate:"2026-04-01",payee:"Arkansas Valley Electric",originalPayee:"ARKANSAS VALLEY",category:"Utilities: Electric",amountMinor:-7800,status:"cleared"}
+    ];
+    const source=row(8,"ARKANSAS VALLEY",-7995);
+    const suggestion=historicalImportSuggestion(source,history);
+    expect(suggestion).toMatchObject({source:"history",payee:"Arkansas Valley Electric",category:"Utilities: Electric"});
+    expect(applyHistoricalImportSuggestion(source,suggestion)).toMatchObject({originalPayee:"ARKANSAS VALLEY",payee:"Arkansas Valley Electric",category:"Utilities: Electric"});
+  });
+
+  it("does not invent a category from inconsistent PayPal history",()=>{
+    const history:any[]=[
+      {id:"h1",accountId:"checking",postedDate:"2026-05-01",payee:"PayPal",originalPayee:"PAYPAL",category:"Pets",amountMinor:-4799,status:"cleared"},
+      {id:"h2",accountId:"checking",postedDate:"2026-04-01",payee:"PayPal",originalPayee:"PAYPAL",category:"Shopping",amountMinor:-399,status:"cleared"}
+    ];
+    const suggestion=historicalImportSuggestion(row(9,"PAYPAL",-399),history);
+    expect(suggestion?.category).toBeUndefined();
   });
 
   it("reports the actual fail-closed reason in precedence order",()=>{
