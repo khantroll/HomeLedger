@@ -381,6 +381,8 @@ export interface ImportTransactionRow {
   category?: string;
   splits?: ImportTransactionSplit[];
   scheduledOccurrenceId?: string;
+  /** Explicitly confirmed counter-account for a statement row that should import as a linked transfer. */
+  transferAccountId?: string;
 }
 
 export type ScheduledMatchConfidence = "exact" | "probable" | "possible";
