@@ -3574,9 +3574,11 @@ fn import_transactions_inner(
     tx.execute("INSERT INTO import_batches(id, account_id, source_name, original_transaction_count, original_total_minor) VALUES(?1, ?2, ?3, ?4, ?5)", params![batch_id, account_id, source_name, imported_count as i64, original_total_minor]).map_err(|e| e.to_string())?;
     let mut transaction_ids = Vec::with_capacity(imported_count);
     for row in request.rows {
+        let reviewed=row.original_payee.is_some();
         let original_payee=clean_required(row.original_payee.clone().unwrap_or_else(||row.payee.clone()),"Description/payee",160)?;
-        let matched_rule=matching_merchant_rule(&merchant_rules,&original_payee,row.amount_minor);
-        let payee=matched_rule.and_then(|rule|rule.rename_to.clone()).unwrap_or_else(||row.payee.trim().to_string());
+        let submitted_payee=clean_required(row.payee.clone(),"Description/payee",160)?;
+        let matched_rule=if reviewed{None}else{matching_merchant_rule(&merchant_rules,&original_payee,row.amount_minor)};
+        let payee=matched_rule.and_then(|rule|rule.rename_to.clone()).unwrap_or(submitted_payee);
         let duplicate: Option<i64> = tx.query_row(
             "SELECT 1 FROM transactions WHERE account_id = ?1 AND ((?5 IS NOT NULL AND external_id = ?5) OR (posted_date = ?2 AND amount_minor = ?3 AND (lower(trim(COALESCE(original_payee,payee))) = lower(trim(?4)) OR lower(trim(payee)) = lower(trim(?4))))) LIMIT 1",
             params![account_id, row.posted_date, row.amount_minor, original_payee, row.external_id],
@@ -3614,7 +3616,7 @@ fn import_transactions_inner(
             if !eligible{return Err("The selected scheduled occurrence is no longer eligible for this transaction".into());}
         }
         let transaction_id = Uuid::new_v4().to_string();
-        let source_category=row.category.as_deref().map(str::trim).filter(|value|!value.is_empty()&&*value!="Uncategorized");
+        let source_category=row.category.as_deref().map(str::trim).filter(|value|!value.is_empty());
         let category=source_category.or_else(||matched_rule.and_then(|rule|rule.category.as_deref())).unwrap_or("Uncategorized");
         tx.execute(
             "INSERT INTO transactions(id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, source, import_batch_id, external_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'review', ?8, 'import', ?9, ?10)",
