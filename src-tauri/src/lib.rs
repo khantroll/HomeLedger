@@ -1089,6 +1089,7 @@ pub(crate) struct ImportTransactionRow {
     category: Option<String>,
     splits: Option<Vec<ImportTransactionSplit>>,
     scheduled_occurrence_id: Option<String>,
+    transfer_account_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -3539,6 +3540,12 @@ fn import_transactions_inner(
         clean_optional(row.memo.clone(), 500)?;
         clean_optional(row.external_id.clone(), 255)?;
         clean_optional(row.category.clone(), 120)?;
+        if let Some(transfer_account_id)=&row.transfer_account_id {
+            clean_required(transfer_account_id.clone(),"Transfer account",80)?;
+            if row.scheduled_occurrence_id.is_some(){return Err("A statement row cannot be both a linked transfer and a scheduled-item link".into());}
+            if row.splits.as_ref().is_some_and(|items|!items.is_empty()){return Err("A linked transfer import cannot contain category splits".into());}
+            if row.amount_minor==0{return Err("A linked transfer amount cannot be zero".into());}
+        }
         if let Some(occurrence_id)=&row.scheduled_occurrence_id{
             let occurrence_id=clean_required(occurrence_id.clone(),"Scheduled occurrence",80)?;
             if !selected_occurrences.insert(occurrence_id){return Err("A scheduled occurrence was selected more than once".into());}
@@ -3576,6 +3583,32 @@ fn import_transactions_inner(
             |result| result.get(0)
         ).optional().map_err(|e| e.to_string())?;
         if duplicate.is_some() { return Err(format!("A matching transaction already exists for {}. Nothing was imported.", row.posted_date)); }
+
+        if let Some(other_account_id)=row.transfer_account_id.clone(){
+            let other_account_id=clean_required(other_account_id,"Transfer account",80)?;
+            if other_account_id==account_id{return Err("A transfer must use two different accounts".into());}
+            let (from_id,to_id,current_is_from)=if row.amount_minor<0{(account_id.clone(),other_account_id.clone(),true)}else{(other_account_id.clone(),account_id.clone(),false)};
+            let (from_name,to_name)=transfer_accounts(&tx,&from_id,&to_id)?;
+            let link_id=Uuid::new_v4().to_string();
+            let source_transaction_id=Uuid::new_v4().to_string();
+            let counterpart_transaction_id=Uuid::new_v4().to_string();
+            let absolute=row.amount_minor.checked_abs().ok_or("Transfer amount is too large")?;
+            let source_category=if current_is_from{format!("Transfer: {to_name}")}else{format!("Transfer: {from_name}")};
+            let counterpart_category=if current_is_from{format!("Transfer: {from_name}")}else{format!("Transfer: {to_name}")};
+            tx.execute(
+                "INSERT INTO transactions(id,account_id,posted_date,payee,original_payee,category,amount_minor,status,memo,source,import_batch_id,external_id) VALUES(?1,?2,?3,?4,?5,?6,?7,'review',?8,'transfer',?9,?10)",
+                params![source_transaction_id,account_id,row.posted_date,payee,original_payee,source_category,row.amount_minor,row.memo,batch_id,row.external_id]
+            ).map_err(|e|e.to_string())?;
+            tx.execute(
+                "INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,'review',?7,'transfer')",
+                params![counterpart_transaction_id,other_account_id,row.posted_date,payee,counterpart_category,if current_is_from{absolute}else{-absolute},row.memo]
+            ).map_err(|e|e.to_string())?;
+            let (from_transaction_id,to_transaction_id)=if current_is_from{(&source_transaction_id,&counterpart_transaction_id)}else{(&counterpart_transaction_id,&source_transaction_id)};
+            tx.execute("INSERT INTO transfer_links(id,from_transaction_id,to_transaction_id) VALUES(?1,?2,?3)",params![link_id,from_transaction_id,to_transaction_id]).map_err(|e|e.to_string())?;
+            transaction_ids.push(source_transaction_id);
+            continue;
+        }
+
         if let Some(occurrence_id)=&row.scheduled_occurrence_id{
             let eligible=scheduled_candidates(&tx,&account_id,&row,&payee)?.into_iter().any(|candidate|candidate.occurrence_id==*occurrence_id);
             if !eligible{return Err("The selected scheduled occurrence is no longer eligible for this transaction".into());}
@@ -3645,10 +3678,30 @@ fn undo_import_batch_inner(connection: &mut Connection, batch_id: &str) -> Resul
     let batch: Option<(Option<String>, i64)> = tx.query_row("SELECT undone_at, original_transaction_count FROM import_batches WHERE id = ?1", params![batch_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|e| e.to_string())?;
     let (undone_at, expected_count) = batch.ok_or("Import batch does not exist")?;
     if undone_at.is_some() { return Err("This import has already been undone".into()); }
-    let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items item JOIN transactions txn ON txn.id = item.transaction_id WHERE txn.import_batch_id = ?1 LIMIT 1", params![batch_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let reconciled: Option<i64> = tx.query_row(
+        "SELECT 1 FROM reconciliation_items item JOIN transactions txn ON txn.id=item.transaction_id
+         WHERE txn.import_batch_id=?1 OR txn.id IN (
+           SELECT CASE WHEN source.id=link.from_transaction_id THEN link.to_transaction_id ELSE link.from_transaction_id END
+           FROM transactions source JOIN transfer_links link ON source.id IN (link.from_transaction_id,link.to_transaction_id)
+           WHERE source.import_batch_id=?1
+         ) LIMIT 1",
+        params![batch_id], |row| row.get(0)
+    ).optional().map_err(|e| e.to_string())?;
     if reconciled.is_some() { return Err("This import contains reconciled transactions and cannot be undone".into()); }
     let scheduled: Option<i64> = tx.query_row("SELECT 1 FROM scheduled_occurrences occurrence JOIN transactions txn ON txn.id=occurrence.transaction_id WHERE txn.import_batch_id=?1 LIMIT 1",params![batch_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
     if scheduled.is_some(){return Err("This import contains transactions linked to scheduled occurrences and cannot be undone".into());}
+    let counterpart_ids:Vec<String>={
+        let mut statement=tx.prepare(
+          "SELECT CASE WHEN source.id=link.from_transaction_id THEN link.to_transaction_id ELSE link.from_transaction_id END
+           FROM transactions source JOIN transfer_links link ON source.id IN (link.from_transaction_id,link.to_transaction_id)
+           WHERE source.import_batch_id=?1"
+        ).map_err(|e|e.to_string())?;
+        statement.query_map(params![batch_id],|row|row.get(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<String>,_>>().map_err(|e|e.to_string())?
+    };
+    tx.execute("DELETE FROM transfer_links WHERE from_transaction_id IN (SELECT id FROM transactions WHERE import_batch_id=?1) OR to_transaction_id IN (SELECT id FROM transactions WHERE import_batch_id=?1)",params![batch_id]).map_err(|e|e.to_string())?;
+    for counterpart_id in counterpart_ids {
+        tx.execute("DELETE FROM transactions WHERE id=?1 AND source='transfer' AND import_batch_id IS NULL",params![counterpart_id]).map_err(|e|e.to_string())?;
+    }
     let removed_count = tx.execute("DELETE FROM transactions WHERE import_batch_id = ?1", params![batch_id]).map_err(|e| e.to_string())?;
     if removed_count as i64 != expected_count { return Err("Import batch no longer matches its original transaction count; nothing was removed".into()); }
     tx.execute("UPDATE import_batches SET undone_at = CURRENT_TIMESTAMP WHERE id = ?1 AND undone_at IS NULL", params![batch_id]).map_err(|e| e.to_string())?;
