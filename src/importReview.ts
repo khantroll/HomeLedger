@@ -17,7 +17,7 @@ export function applyImportReviewEdits(rows:PreviewRow[],edits:ReadonlyMap<numbe
     const category=edit.transferAccountId
       ? row.category
       : Object.prototype.hasOwnProperty.call(edit,"category")
-        ? (edit.category?.trim()||undefined)
+        ? (edit.category?.trim()||"Uncategorized")
         : row.category;
     const transferAccountId=Object.prototype.hasOwnProperty.call(edit,"transferAccountId")?edit.transferAccountId:row.transferAccountId;
     return{...row,originalPayee,payee,category,transferAccountId};
