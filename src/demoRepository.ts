@@ -840,7 +840,7 @@ export class DemoFinanceRepository implements FinanceRepository {
         }else{
           imported.push({
             id,accountId:input.accountId,postedDate:row.postedDate,payee:row.payee,
-            category:row.category ?? "Uncategorized",amountMinor:row.amountMinor,status:"review",memo:row.memo,flagged:false,
+            category:row.category?.trim()||"Uncategorized",amountMinor:row.amountMinor,status:"review",memo:row.memo,flagged:false,
             externalId:row.externalId,originalPayee,
             splits:row.splits?.map(split=>({id:crypto.randomUUID(),category:split.category,amountMinor:split.amountMinor,memo:split.memo})),
             source:"import",importBatchId:batchId
