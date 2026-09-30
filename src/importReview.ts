@@ -13,14 +13,16 @@ export function applyImportReviewEdits(rows:PreviewRow[],edits:ReadonlyMap<numbe
     const edit=edits.get(row.sourceRow);
     if(!edit)return row;
     const originalPayee=row.originalPayee??row.payee;
-    const payee=edit.payee?.trim()||row.payee;
+    const hasPayee=Object.prototype.hasOwnProperty.call(edit,"payee");
+    const payee=hasPayee?(edit.payee??""):row.payee;
     const category=edit.transferAccountId
       ? row.category
       : Object.prototype.hasOwnProperty.call(edit,"category")
-        ? (edit.category?.trim()||"Uncategorized")
+        ? (edit.category??"")
         : row.category;
     const transferAccountId=Object.prototype.hasOwnProperty.call(edit,"transferAccountId")?edit.transferAccountId:row.transferAccountId;
-    return{...row,originalPayee,payee,category,transferAccountId};
+    const error=hasPayee&&!payee.trim()?"Payee is required":row.error;
+    return{...row,originalPayee,payee,category,transferAccountId,error};
   });
 }
 
