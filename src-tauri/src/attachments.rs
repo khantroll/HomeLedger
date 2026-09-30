@@ -1102,6 +1102,7 @@ mod tests {
                         category: None,
                         splits: None,
                         scheduled_occurrence_id: None,
+            transfer_account_id: None,
                     },
                     crate::ImportTransactionRow {
                         posted_date: "2026-09-11".into(),
@@ -1113,6 +1114,7 @@ mod tests {
                         category: None,
                         splits: None,
                         scheduled_occurrence_id: None,
+            transfer_account_id: None,
                     },
                 ],
                 retain_source: Some(crate::ImportSourceRetention {
@@ -1195,6 +1197,7 @@ mod tests {
                         category: None,
                         splits: None,
                         scheduled_occurrence_id: None,
+            transfer_account_id: None,
                     },
                     crate::ImportTransactionRow {
                         posted_date: "2026-09-13".into(),
@@ -1206,6 +1209,7 @@ mod tests {
                         category: None,
                         splits: None,
                         scheduled_occurrence_id: None,
+            transfer_account_id: None,
                     },
                 ],
                 retain_source: Some(crate::ImportSourceRetention {
@@ -1275,6 +1279,7 @@ mod tests {
                     category: None,
                     splits: None,
                     scheduled_occurrence_id: None,
+            transfer_account_id: None,
                 }],
                 retain_source: Some(crate::ImportSourceRetention {
                     original_filename: "orphan.pdf".into(),
