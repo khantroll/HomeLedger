@@ -57,3 +57,13 @@
 .import-block-reason{max-width:20rem;color:#8c302b;font-size:10px;line-height:1.35;text-align:right}
 .pdf-field-teacher .primary-action{justify-self:start}
 
+.import-review-editor{display:grid;gap:7px;min-width:260px}
+.import-review-editor label{display:grid;gap:3px;font-size:10px;font-weight:700;color:#53636b}
+.import-review-editor input,.import-review-editor select{min-width:0}
+.import-review-editor>small{color:var(--muted);font-size:10px;line-height:1.35}
+.review-memory-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding-top:3px}
+.review-memory-actions button,.transfer-suggestion button{padding:4px 7px;font-size:10px}
+.review-memory-actions small{flex-basis:100%;color:var(--muted);font-size:9px}
+.transfer-suggestion{display:grid;gap:5px;padding:6px;border:1px solid #d8e2e5;border-radius:5px;background:#f7fafb}
+.transfer-suggestion small,.transfer-confirmed{color:#486c7d;font-size:10px;line-height:1.35}
+.transfer-confirmed{font-weight:700}
