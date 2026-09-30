@@ -12,7 +12,7 @@ describe("deterministic merchant rules",()=>{
     expect(ruleMatches(rule(),"SQ * NEIGHBORHOOD MARKET 042",-1250)).toBe(true);
     expect(ruleMatches(rule(),"SQ * NEIGHBORHOOD MARKET 042",1250)).toBe(false);
   });
-  it("uses highest priority and preserves explicit source categories",()=>{
+  it("preserves explicit reviewed corrections instead of reapplying a weaker rule",()=>{\n    const reviewed={postedDate:"2026-09-18",payee:"Arkansas Valley Electric",originalPayee:"ARKANSAS VALLEY",amountMinor:-7995,category:"Utilities: Electric"};\n    const result=applyMerchantRules([reviewed],[rule({pattern:"ARKANSAS VALLEY",renameTo:"Wrong Payee",category:"Wrong Category"})])[0];\n    expect(result.rule).toBeUndefined();\n    expect(result.row).toEqual(reviewed);\n  });\n  it("uses highest priority and preserves explicit source categories",()=>{
     const rows=[{postedDate:"2026-09-18",payee:"SQ *Neighborhood Market",amountMinor:-1250},{postedDate:"2026-09-19",payee:"Neighborhood Market",amountMinor:-500,category:"QIF Category"}];
     const applications=applyMerchantRules(rows,[rule({id:"low",priority:10,category:"Low"}),rule({id:"high",priority:200})]);
     expect(applications[0].row).toMatchObject({originalPayee:"SQ *Neighborhood Market",payee:"Neighborhood Market",category:"Food: Groceries"});
