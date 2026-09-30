@@ -510,6 +510,23 @@ fn statement_import_applies_deterministic_merchant_rules() {
 }
 
 #[test]
+fn reviewed_statement_corrections_outrank_existing_merchant_rules() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',0,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,match_type,direction,rename_to,category,priority,enabled) VALUES('r','Old rule','ARKANSAS VALLEY','exact','expense','Old Payee','Old Category',100,1)",[]).unwrap();
+    import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
+      account_id:"a".into(),source_name:"statement.pdf".into(),
+      rows:vec![ImportTransactionRow{
+        posted_date:"2026-06-03".into(),payee:"Arkansas Valley Electric".into(),original_payee:Some("ARKANSAS VALLEY".into()),
+        amount_minor:-7995,memo:None,external_id:None,category:Some("Utilities: Electric".into()),splits:None,scheduled_occurrence_id:None,transfer_account_id:None
+      }],retain_source:None
+    }).unwrap();
+    let row:(String,String,String)=connection.query_row("SELECT payee,original_payee,category FROM transactions",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(row,("Arkansas Valley Electric".into(),"ARKANSAS VALLEY".into(),"Utilities: Electric".into()));
+}
+
+#[test]
 fn manual_transaction_crud_preserves_balanced_splits() {
     let mut connection = Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
