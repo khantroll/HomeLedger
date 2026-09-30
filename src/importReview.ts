@@ -21,8 +21,7 @@ export function applyImportReviewEdits(rows:PreviewRow[],edits:ReadonlyMap<numbe
         ? (edit.category??"")
         : row.category;
     const transferAccountId=Object.prototype.hasOwnProperty.call(edit,"transferAccountId")?edit.transferAccountId:row.transferAccountId;
-    const error=hasPayee&&!payee.trim()?"Payee is required":row.error;
-    return{...row,originalPayee,payee,category,transferAccountId,error};
+    return{...row,originalPayee,payee,category,transferAccountId};
   });
 }
 
