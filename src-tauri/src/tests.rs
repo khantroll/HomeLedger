@@ -1398,3 +1398,38 @@ fn cross_domain_ordinary_leg_rejects_generic_edit_delete_and_reconciliation() {
     let remaining: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE id=?1", [&created.ordinary_transaction_id], |r| r.get(0)).unwrap();
     assert_eq!(remaining, 0);
 }
+
+#[test]
+fn statement_import_can_create_confirmed_linked_transfer_and_undo_both_legs() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('checking','RFCU Checking','checking','USD',0,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('citi','Citi Card','credit','USD',0,'Household')",[]).unwrap();
+    let imported=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
+        account_id:"checking".into(),source_name:"STATEMENT-2026-08-31.pdf".into(),
+        rows:vec![ImportTransactionRow{
+            posted_date:"2026-06-03".into(),payee:"Citi".into(),original_payee:Some("CITI AUTOPAY".into()),
+            amount_minor:-15000,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:None,
+            transfer_account_id:Some("citi".into()),
+        }],retain_source:None
+    }).unwrap();
+    assert_eq!(imported.imported_count,1);
+    assert_eq!(imported.transaction_ids.len(),1);
+    let source_id=&imported.transaction_ids[0];
+    let source:(String,String,String,i64,String)=connection.query_row(
+        "SELECT payee,original_payee,category,amount_minor,source FROM transactions WHERE id=?1",[source_id],
+        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))
+    ).unwrap();
+    assert_eq!(source,("Citi".into(),"CITI AUTOPAY".into(),"Transfer: Citi Card".into(),-15000,"transfer".into()));
+    let counterpart:(String,i64,String)=connection.query_row(
+        "SELECT txn.account_id,txn.amount_minor,txn.category FROM transfer_links link JOIN transactions txn ON txn.id=link.to_transaction_id WHERE link.from_transaction_id=?1",
+        [source_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))
+    ).unwrap();
+    assert_eq!(counterpart,("citi".into(),15000,"Transfer: RFCU Checking".into()));
+    let undone=undo_import_batch_inner(&mut connection,&imported.batch_id).unwrap();
+    assert_eq!(undone.removed_count,1);
+    let remaining:i64=connection.query_row("SELECT COUNT(*) FROM transactions",[],|row|row.get(0)).unwrap();
+    assert_eq!(remaining,0);
+    let links:i64=connection.query_row("SELECT COUNT(*) FROM transfer_links",[],|row|row.get(0)).unwrap();
+    assert_eq!(links,0);
+}
