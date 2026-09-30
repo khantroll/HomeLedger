@@ -88,7 +88,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
 
   useEffect(()=>{
     let current=true;
-    const rows=preview.filter(row=>!row.error&&!row.duplicate);
+    const rows=preview.filter(row=>!row.error&&!row.duplicate&&!row.transferAccountId);
     if(!accountId||!rows.length){setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());return()=>{current=false;};}
     void financeRepository.findScheduledOccurrenceMatches({accountId,rows}).then(matches=>{
       if(!current)return;
