@@ -3698,7 +3698,8 @@ fn undo_import_batch_inner(connection: &mut Connection, batch_id: &str) -> Resul
            FROM transactions source JOIN transfer_links link ON source.id IN (link.from_transaction_id,link.to_transaction_id)
            WHERE source.import_batch_id=?1"
         ).map_err(|e|e.to_string())?;
-        statement.query_map(params![batch_id],|row|row.get(0)).map_err(|e|e.to_string())?.collect::<Result<Vec<String>,_>>().map_err(|e|e.to_string())?
+        let rows=statement.query_map(params![batch_id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        rows.collect::<Result<Vec<String>,_>>().map_err(|e|e.to_string())?
     };
     tx.execute("DELETE FROM transfer_links WHERE from_transaction_id IN (SELECT id FROM transactions WHERE import_batch_id=?1) OR to_transaction_id IN (SELECT id FROM transactions WHERE import_batch_id=?1)",params![batch_id]).map_err(|e|e.to_string())?;
     for counterpart_id in counterpart_ids {

@@ -670,7 +670,7 @@ fn statement_import_links_an_eligible_occurrence_in_the_same_transaction() {
     let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
     let imported=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
         account_id:"a".into(),source_name:"statement.csv".into(),rows:vec![ImportTransactionRow{
-            posted_date:"2026-01-30".into(),payee:"UTILITY PAYMENT".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id.clone()),
+            posted_date:"2026-01-30".into(),payee:"UTILITY PAYMENT".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id.clone()),transfer_account_id:None,
         }],
         retain_source:None,
     }).unwrap();
@@ -692,7 +692,7 @@ fn statement_import_rolls_back_when_selected_occurrence_is_ineligible() {
     let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
     let result=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
         account_id:"a".into(),source_name:"statement.csv".into(),rows:vec![ImportTransactionRow{
-            posted_date:"2026-01-30".into(),payee:"Unrelated merchant".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id),
+            posted_date:"2026-01-30".into(),payee:"Unrelated merchant".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id),transfer_account_id:None,
         }],
         retain_source:None,
     });
