@@ -1,4 +1,4 @@
-import type {Account} from "./domain";
+import type {Account,Transaction} from "./domain";
 import type {PreviewRow} from "./csvImport";
 import {normalizeMerchant} from "./merchantRules";
 
@@ -54,4 +54,35 @@ export function importBlockingReason(input:{unresolved:number;balanceMismatches:
   if(input.currencyMismatch)return "Import is disabled because the statement currency does not match the selected account.";
   if(input.ready===0)return "There are no new approved transactions ready to import.";
   return "";
+}
+
+
+export interface HistoricalImportSuggestion {
+  payee?: string;
+  category?: string;
+  source: "history";
+}
+
+export function historicalImportSuggestion(row:Pick<PreviewRow,"payee"|"originalPayee"|"category">,history:Transaction[]):HistoricalImportSuggestion|undefined{
+  const key=normalizeMerchant(row.originalPayee??row.payee);
+  if(!key)return undefined;
+  const matches=history.filter(item=>normalizeMerchant(item.originalPayee??item.payee)===key);
+  if(!matches.length)return undefined;
+  const payees=[...new Set(matches.map(item=>item.payee.trim()).filter(Boolean))];
+  const categories=[...new Set(matches.map(item=>item.category.trim()).filter(value=>value&&value!=="Uncategorized"&&!value.startsWith("Transfer:")))];
+  const suggestion:HistoricalImportSuggestion={source:"history"};
+  if(payees.length===1&&normalizeMerchant(payees[0])!==normalizeMerchant(row.payee))suggestion.payee=payees[0];
+  if((!row.category||row.category==="Uncategorized")&&categories.length===1)suggestion.category=categories[0];
+  return suggestion.payee||suggestion.category?suggestion:undefined;
+}
+
+export function applyHistoricalImportSuggestion(row:PreviewRow,suggestion:HistoricalImportSuggestion|undefined):PreviewRow{
+  if(!suggestion)return row;
+  const originalPayee=row.originalPayee??row.payee;
+  return{
+    ...row,
+    originalPayee,
+    payee:suggestion.payee??row.payee,
+    category:suggestion.category??row.category
+  };
 }
