@@ -19,7 +19,7 @@ describe("import review model",()=>{
   it("lets a recognized payee remain uncategorized",()=>{
     const edited=applyImportReviewEdits([row(2,"PAYPAL",-399)],new Map([[2,{payee:"PayPal",category:""}]]))[0];
     expect(edited).toMatchObject({payee:"PayPal",originalPayee:"PAYPAL"});
-    expect(edited.category).toBe("Uncategorized");
+    expect(edited.category).toBe("");
   });
 
   it("suggests but does not select a matching credit-card account",()=>{
