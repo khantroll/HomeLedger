@@ -304,6 +304,7 @@ fn transaction_notes_and_flags_are_metadata_only_and_survive_edits() {
         account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
             posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
             amount_minor: -5500, memo: Some("imported statement memo".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
+            transfer_account_id: None,
         }],
         retain_source: None,
     }).unwrap();
@@ -316,6 +317,7 @@ fn transaction_notes_and_flags_are_metadata_only_and_survive_edits() {
         account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
             posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
             amount_minor: -5500, memo: Some("should not overwrite".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
+            transfer_account_id: None,
         }],
         retain_source: None,
     }) {
@@ -440,6 +442,7 @@ fn statement_import_is_atomic_and_rejects_duplicates() {
             posted_date: "2026-09-18".into(), payee: "Store".into(), original_payee: None, amount_minor: -1250, memo: None,
             external_id: Some("bank-1".into()), category: Some("Split transaction".into()),
             scheduled_occurrence_id: None,
+            transfer_account_id: None,
             splits: Some(vec![
                 ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None },
                 ImportTransactionSplit { category: "Household".into(), amount_minor: -250, memo: Some("Supplies".into()) },
@@ -476,6 +479,7 @@ fn statement_import_rejects_unbalanced_splits_before_writing() {
             posted_date: "2026-09-18".into(), payee: "Store".into(), original_payee: None, amount_minor: -1250, memo: None,
             external_id: None, category: Some("Split transaction".into()),
             scheduled_occurrence_id: None,
+            transfer_account_id: None,
             splits: Some(vec![ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None }])
         }],
         retain_source: None,
@@ -497,6 +501,7 @@ fn statement_import_applies_deterministic_merchant_rules() {
             posted_date: "2026-09-18".into(), payee: "SQ *NEIGHBORHOOD MARKET #42".into(), original_payee: None,
             amount_minor: -1250, memo: None, external_id: None, category: None, splits: None,
             scheduled_occurrence_id: None,
+            transfer_account_id: None,
         }],
         retain_source: None,
     }).unwrap();
