@@ -24,6 +24,9 @@ export function applyMerchantRules<T extends ImportTransactionRow>(rows:T[],rule
   const ordered=[...rules].sort((a,b)=>b.priority-a.priority||a.id.localeCompare(b.id));
   return rows.map(source=>{
     const originalPayee=source.originalPayee??source.payee;
+    // originalPayee marks a row that has already entered the reviewed import pipeline.
+    // Do not re-apply a weaker rule over an explicit review correction.
+    if(source.originalPayee!==undefined)return{row:{...source,originalPayee} as T};
     const rule=ordered.find(item=>ruleMatches(item,originalPayee,source.amountMinor));
     if(!rule)return{row:{...source,originalPayee} as T};
     const hasSourceCategory=Boolean(source.splits?.length||(source.category&&source.category!=="Uncategorized"));
