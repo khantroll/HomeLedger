@@ -6,7 +6,7 @@ import { buildQifPreview, parseQif, type QifStatement } from "./qifImport";
 import { financeRepository, pdfRepository, workbookRepository } from "./repository";
 import { formatMoney, type Account, type ImportBatch, type ImportProfile, type ScheduledImportMatch, type Transaction } from "./domain";
 import { applyMerchantRules, normalizeMerchant } from "./merchantRules";
-import type { MerchantRule } from "./domain";
+import type { MerchantRule, MerchantRuleDirection, MerchantRuleInput } from "./domain";
 import { decodeStatement, encodingLabel, type StatementEncoding } from "./statementDecoding";
 import { bytesToBase64, suggestWorkbookHeaderRow, suggestWorkbookSelection, workbookHeaderChoices, workbookSheetToTable, type ParsedWorkbook } from "./workbookImport";
 import { PDF_LAYOUT_OPTIONS, isPdfComplete, pdfExampleFields, pdfLayoutFromFieldRoles, pdfTextToTable, representativePdfLines, suggestPdfLayout, type PdfFieldRole, type PdfLayout, type PdfParseResult } from "./pdfImport";
@@ -196,9 +196,9 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     const raw=(row.originalPayee??row.payee).trim(),category=row.category&&row.category!=="Uncategorized"?row.category:undefined;
     const renameTo=row.payee.trim()!==raw?row.payee.trim():undefined;
     if(!renameTo&&!category){setError("Change the payee or category before choosing Remember.");return;}
-    const direction=row.amountMinor<0?"expense":row.amountMinor>0?"income":"any";
+    const direction:MerchantRuleDirection=row.amountMinor<0?"expense":row.amountMinor>0?"income":"any";
     const existing=rules.find(rule=>rule.matchType==="exact"&&rule.direction===direction&&normalizeMerchant(rule.pattern)===normalizeMerchant(raw));
-    const input={name:`Remember ${raw}`,pattern:raw,matchType:"exact" as const,direction,renameTo,category,priority:existing?.priority??1000,enabled:true};
+    const input:MerchantRuleInput={name:`Remember ${raw}`,pattern:raw,matchType:"exact",direction,renameTo,category,priority:existing?.priority??1000,enabled:true};
     setError("");
     try{
       if(existing)await financeRepository.updateMerchantRule(existing.id,input);else await financeRepository.createMerchantRule(input);
