@@ -5,7 +5,7 @@ import { buildOfxPreview, parseOfx, type OfxStatement } from "./ofxImport";
 import { buildQifPreview, parseQif, type QifStatement } from "./qifImport";
 import { financeRepository, pdfRepository, workbookRepository } from "./repository";
 import { formatMoney, type Account, type ImportBatch, type ImportProfile, type ScheduledImportMatch, type Transaction } from "./domain";
-import { applyMerchantRules } from "./merchantRules";
+import { applyMerchantRules, normalizeMerchant } from "./merchantRules";
 import type { MerchantRule } from "./domain";
 import { decodeStatement, encodingLabel, type StatementEncoding } from "./statementDecoding";
 import { bytesToBase64, suggestWorkbookHeaderRow, suggestWorkbookSelection, workbookHeaderChoices, workbookSheetToTable, type ParsedWorkbook } from "./workbookImport";
@@ -15,6 +15,7 @@ import {matchingStatementTemplate,statementSourceSignature,type StatementSourceK
 import {extractScannedPdfText,pdfNeedsOcr} from "./scannedPdfImport";
 import {isMt940Statement,parseMt940} from "./mt940Import";
 import {isCamtStatement,parseCamt} from "./camtImport";
+import {applyImportReviewEdits,importBlockingReason,matchingReviewSourceRows,suggestTransferAccount,type ImportReviewEdit} from "./importReview";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -55,15 +56,18 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [includedDuplicates,setIncludedDuplicates]=useState<Set<number>>(new Set());
   const [scheduledMatches,setScheduledMatches]=useState<Map<number,ScheduledImportMatch>>(new Map());
   const [selectedScheduledMatches,setSelectedScheduledMatches]=useState<Map<number,string>>(new Map());
+  const [reviewEdits,setReviewEdits]=useState<Map<number,ImportReviewEdit>>(new Map());
+  const [categories,setCategories]=useState<string[]>([]);
   const showError=(reason:unknown)=>setError(reason instanceof Error?reason.message:String(reason));
 
   useEffect(()=>{if(!accountId&&accounts[0])setAccountId(accounts[0].id);},[accountId,accounts]);
-  useEffect(()=>{void loadHistory();void financeRepository.listMerchantRules().then(setRules).catch(showError);void financeRepository.listImportProfiles().then(setProfiles).catch(showError);},[]);
+  useEffect(()=>{void loadHistory();void financeRepository.listMerchantRules().then(setRules).catch(showError);void financeRepository.listImportProfiles().then(setProfiles).catch(showError);void financeRepository.listCategories().then(setCategories).catch(showError);},[]);
 
   const accountTransactions=useMemo(()=>transactions.filter(item=>item.accountId===accountId),[transactions,accountId]);
   const rawPreview=useMemo(()=>qif?buildQifPreview(qif,accountTransactions):ofx?buildOfxPreview(ofx,accountTransactions):table?buildPreview(table,mapping,accountTransactions,parsingOptions):[],[qif,ofx,table,mapping,parsingOptions,accountTransactions]);
   const applications=useMemo(()=>applyMerchantRules(rawPreview,rules),[rawPreview,rules]);
-  const preview=useMemo(()=>applications.map(item=>item.row),[applications]);
+  const rulePreview=useMemo(()=>applications.map(item=>item.row),[applications]);
+  const preview=useMemo(()=>applyImportReviewEdits(rulePreview,reviewEdits),[rulePreview,reviewEdits]);
   const matchedRules=useMemo(()=>new Map(applications.filter(item=>item.rule).map(item=>[item.row.sourceRow,item.rule!])),[applications]);
   const pdfIncomplete=Boolean(pdf&&!isPdfComplete(pdf));
   const pdfTeachLine=pdf?.candidateLines.find(line=>line.lineNumber===pdfTeachLineNumber)??(pdf?representativePdfLines(pdf,1)[0]:undefined);
@@ -71,15 +75,15 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const duplicates=preview.filter(row=>row.duplicate).length;
   const duplicateCounts=useMemo(()=>({exact:preview.filter(row=>row.duplicate?.confidence==="exact").length,probable:preview.filter(row=>row.duplicate?.confidence==="probable").length,possible:preview.filter(row=>row.duplicate?.confidence==="possible").length}),[preview]);
   const errors=preview.filter(row=>row.error).length;
-  const pdfBlockingReason=pdfIncomplete&&pdf
-    ?pdf.unmatchedLineNumbers.length
-      ?`Import is disabled because ${pdf.unmatchedLineNumbers.length} transaction candidate${pdf.unmatchedLineNumbers.length===1?"":"s"} still need review.`
-      :pdf.balanceMismatchLineNumbers.length
-        ?`Import is disabled because ${pdf.balanceMismatchLineNumbers.length} running-balance continuity check${pdf.balanceMismatchLineNumbers.length===1?"":"s"} failed.`
-        :"Import is disabled until the statement structure is fully recognized."
-    :errors>0?`Import is disabled because ${errors} parsed row${errors===1?" has":"s have"} errors.`:"";
   const selectedAccount=accounts.find(account=>account.id===accountId);
   const currencyMismatch=Boolean(ofx&&selectedAccount&&ofx.currency!==selectedAccount.currency);
+  const pdfBlockingReason=importBlockingReason({
+    unresolved:pdf?.unmatchedLineNumbers.length??0,
+    balanceMismatches:pdf?.balanceMismatchLineNumbers.length??0,
+    errors,
+    currencyMismatch,
+    ready:valid.length
+  });
 
   useEffect(()=>{
     let current=true;
@@ -92,6 +96,8 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     }).catch(showError);
     return()=>{current=false;};
   },[accountId,preview]);
+
+  useEffect(()=>{setReviewEdits(new Map());},[table,ofx,qif,mapping,parsingOptions]);
 
   function configureWorkbook(parsedWorkbook:ParsedWorkbook,sheetIndex:number,headerRow?:number,preferredProfile?:ImportProfile){
     const sheet=parsedWorkbook.sheets[sheetIndex];
@@ -174,6 +180,31 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     requestAnimationFrame(()=>document.getElementById("pdf-recovery")?.scrollIntoView({behavior:"smooth",block:"start"}));
   }
   function toggleDuplicate(sourceRow:number){setIncludedDuplicates(current=>{const next=new Set(current);if(next.has(sourceRow))next.delete(sourceRow);else next.add(sourceRow);return next;});}
+  function updateReviewEdit(sourceRow:number,patch:Partial<ImportReviewEdit>){
+    setReviewEdits(current=>{const next=new Map(current),existing=next.get(sourceRow)??{};next.set(sourceRow,{...existing,...patch});return next;});
+  }
+  function applyCorrectionToMatchingRows(sourceRow:number){
+    const source=preview.find(row=>row.sourceRow===sourceRow),edit=reviewEdits.get(sourceRow);
+    if(!source||!edit)return;
+    const matches=matchingReviewSourceRows(rulePreview,sourceRow);
+    setReviewEdits(current=>{const next=new Map(current);for(const row of matches)next.set(row,{...(next.get(row)??{}),...edit,transferAccountId:undefined});return next;});
+    setMessage(`Applied this payee/category correction to ${matches.length} matching candidate${matches.length===1?"":"s"} in the current review only.`);
+  }
+  async function rememberReviewCorrection(sourceRow:number){
+    const row=preview.find(item=>item.sourceRow===sourceRow);if(!row)return;
+    const raw=(row.originalPayee??row.payee).trim(),category=row.category&&row.category!=="Uncategorized"?row.category:undefined;
+    const renameTo=row.payee.trim()!==raw?row.payee.trim():undefined;
+    if(!renameTo&&!category){setError("Change the payee or category before choosing Remember.");return;}
+    const direction=row.amountMinor<0?"expense":row.amountMinor>0?"income":"any";
+    const existing=rules.find(rule=>rule.matchType==="exact"&&rule.direction===direction&&normalizeMerchant(rule.pattern)===normalizeMerchant(raw));
+    const input={name:`Remember ${raw}`,pattern:raw,matchType:"exact" as const,direction,renameTo,category,priority:existing?.priority??1000,enabled:true};
+    setError("");
+    try{
+      if(existing)await financeRepository.updateMerchantRule(existing.id,input);else await financeRepository.createMerchantRule(input);
+      setRules(await financeRepository.listMerchantRules());
+      setMessage(`Remembered the exact statement description “${raw}”. Future matching ${direction==="expense"?"expenses":direction==="income"?"income":"transactions"} will reuse${renameTo?` payee “${renameTo}”`:""}${category?`${renameTo?" and":""} category “${category}”`:""}.`);
+    }catch(reason){showError(reason);}
+  }
 
   async function commit(){
     if(!accountId){setError("Choose an account before importing.");return;}
@@ -186,7 +217,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
       const result=await financeRepository.importTransactions({
         accountId,
         sourceName:fileName,
-        rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,scheduledOccurrenceId:selectedScheduledMatches.get(sourceRow)})),
+        rows:valid.map(({sourceRow,postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,transferAccountId})=>({postedDate,payee,originalPayee,amountMinor,memo,externalId,category,splits,transferAccountId,scheduledOccurrenceId:transferAccountId?undefined:selectedScheduledMatches.get(sourceRow)})),
         retainSource:retainSourceDocument&&sourceContentBase64?{
           originalFilename:fileName,
           mediaType:sourceMediaType,
@@ -194,13 +225,13 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
         }:undefined,
       });
       setMessage(`Imported ${result.importedCount} transactions as one atomic batch.${retainSourceDocument&&sourceContentBase64?" Source document retained with the imported transactions.":""}`);
-      setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSelectedScheduledMatches(new Map());await onImported();await loadHistory();
+      setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSelectedScheduledMatches(new Map());setReviewEdits(new Map());await onImported();await loadHistory();
     }
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
     finally{setSaving(false);}
   }
 
-  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSourceKind("delimited");setSourceSignature("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setFileEncoding("utf-8");}
+  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSourceKind("delimited");setSourceSignature("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setReviewEdits(new Map());setFileEncoding("utf-8");}
   async function loadHistory(){try{setBatches(await financeRepository.listImportBatches());}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}}
   async function undo(){if(!pendingUndo)return;setUndoing(true);setError("");try{const result=await financeRepository.undoImportBatch(pendingUndo.id);setMessage(`Removed ${result.removedCount} transactions from ${pendingUndo.sourceName}.`);setPendingUndo(null);await onImported();await loadHistory();}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setUndoing(false);}}
   if(!accounts.length)return <section className="panel import-empty"><FileSpreadsheet/><h2>Create an account first</h2><p>Statement transactions must be assigned to a local account.</p></section>;
@@ -247,7 +278,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
         {qif&&<><div className="ofx-summary"><div><span>Statement type</span><strong>{qif.accountType==="credit-card"?"Credit card":qif.accountType==="cash"?"Cash":"Bank account"}</strong></div><div><span>Statement account</span><strong>{qif.accountName||"Not supplied"}</strong></div><div><span>Transactions</span><strong>{qif.rows.length}</strong></div><div><span>Split transactions</span><strong>{qif.rows.filter(row=>row.splits?.length).length}</strong></div></div><label className="ofx-account">Import to account<select value={accountId} onChange={e=>setAccountId(e.target.value)}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name} ({account.currency})</option>)}</select></label><p className="mapping-help">QIF does not specify currency. Amounts will use the selected account’s {selectedAccount?.currency} currency.</p></>}
       </div>
     </section>
-    {(table||ofx||qif)&&<section className="panel import-preview"><div className="panel-heading"><div><h2>Pre-import review</h2><p>{valid.length} ready · {duplicates} matches ({duplicateCounts.exact} exact, {duplicateCounts.probable} probable, {duplicateCounts.possible} possible) · {errors} errors</p></div><div className="import-commit-actions"><label className="flag-toggle retain-source-toggle"><input type="checkbox" checked={retainSourceDocument} onChange={event=>setRetainSourceDocument(event.target.checked)} disabled={!sourceContentBase64}/> Keep source document with imported transactions</label><button className="primary-action" disabled={saving||errors>0||valid.length===0||currencyMismatch} onClick={commit}>{saving?"Importing…":`Import ${valid.length}`}</button>{pdfBlockingReason&&<small className="import-block-reason" role="status">{pdfBlockingReason}</small>}</div></div><div className="table-wrap"><table><thead><tr><th>Source row</th><th>Date</th><th>Description</th><th>Category / result</th><th>Amount</th><th>Decision</th></tr></thead><tbody>{preview.slice(0,100).map(row=>{const rule=matchedRules.get(row.sourceRow),included=includedDuplicates.has(row.sourceRow),schedule=scheduledMatches.get(row.sourceRow),selected=selectedScheduledMatches.get(row.sourceRow);return <tr key={row.sourceRow} className={row.error?"row-error":row.duplicate?`row-duplicate duplicate-${row.duplicate.confidence}`:""}><td>{row.sourceRow}</td><td>{row.postedDate||"—"}</td><td>{row.payee||"—"}{row.originalPayee&&row.originalPayee!==row.payee?<small className="split-count">From: {row.originalPayee}</small>:null}{row.splits?.length?<small className="split-count">{row.splits.length} splits</small>:null}</td><td>{row.error?<><span className="import-status error">{row.error}</span>{pdf?.candidateLines.some(line=>line.lineNumber===row.sourceRow)&&<button type="button" className="teach-row-button" onClick={()=>teachFromSourceRow(row.sourceRow)}>Teach from source row</button>}</>:row.duplicate?<><span className={`import-status duplicate ${row.duplicate.confidence}`}>{row.duplicate.confidence} match</span><small className="duplicate-reason">{row.duplicate.reason}</small></>:<><span className="import-status ready">{row.category??"Uncategorized"}</span>{rule&&<small className="rule-match">Rule: {rule.name}</small>}{schedule?.candidates.length?<label className="schedule-match">Scheduled item<select aria-label={`Scheduled match for row ${row.sourceRow}`} value={selected??""} onChange={event=>setSelectedScheduledMatches(current=>{const next=new Map(current);if(event.target.value)next.set(row.sourceRow,event.target.value);else next.delete(row.sourceRow);return next;})}><option value="">Do not link</option>{schedule.candidates.map(candidate=><option key={candidate.occurrenceId} value={candidate.occurrenceId} disabled={[...selectedScheduledMatches].some(([otherRow,id])=>otherRow!==row.sourceRow&&id===candidate.occurrenceId)}>{candidate.payee} · {candidate.dueDate} · {candidate.confidence}</option>)}</select>{selected&&<small>{schedule.candidates.find(candidate=>candidate.occurrenceId===selected)?.reasons.join(" · ")}</small>}</label>:null}</>}</td><td className={row.amountMinor<0?"amount negative":"amount positive"}>{row.error?"—":formatMoney(row.amountMinor,ofx?.currency??selectedAccount?.currency)}</td><td>{row.duplicate?(row.duplicate.confidence==="exact"?<span className="exact-skip">Excluded</span>:<button className={included?"include-duplicate active":"include-duplicate"} onClick={()=>toggleDuplicate(row.sourceRow)}>{included?"Import anyway":"Skip"}</button>):selected?<span className="import-status ready">Import + link</span>:"Import"}</td></tr>;})}</tbody></table></div>{preview.length>100&&<p className="preview-limit">Showing the first 100 of {preview.length} rows.</p>}</section>}
+    {(table||ofx||qif)&&<section className="panel import-preview"><div className="panel-heading"><div><h2>Pre-import review</h2><p>{valid.length} ready · {duplicates} matches ({duplicateCounts.exact} exact, {duplicateCounts.probable} probable, {duplicateCounts.possible} possible) · {errors} errors</p></div><div className="import-commit-actions"><label className="flag-toggle retain-source-toggle"><input type="checkbox" checked={retainSourceDocument} onChange={event=>setRetainSourceDocument(event.target.checked)} disabled={!sourceContentBase64}/> Keep source document with imported transactions</label><button className="primary-action" disabled={saving||pdfIncomplete||errors>0||valid.length===0||currencyMismatch} onClick={commit}>{saving?"Importing…":`Import ${valid.length}`}</button>{pdfBlockingReason&&<small className="import-block-reason" role="status">{pdfBlockingReason}</small>}</div></div><datalist id="import-category-options">{categories.map(category=><option key={category} value={category}/>)}</datalist><div className="table-wrap"><table><thead><tr><th>Source row</th><th>Date</th><th>Review / correction</th><th>Recognition</th><th>Amount</th><th>Decision</th></tr></thead><tbody>{preview.slice(0,100).map(row=>{const rule=matchedRules.get(row.sourceRow),included=includedDuplicates.has(row.sourceRow),schedule=scheduledMatches.get(row.sourceRow),selected=selectedScheduledMatches.get(row.sourceRow),suggestedTransfer=suggestTransferAccount(row,accountId,accounts),transferAccount=row.transferAccountId?accounts.find(account=>account.id===row.transferAccountId):undefined;return <tr key={row.sourceRow} className={row.error?"row-error":row.duplicate?`row-duplicate duplicate-${row.duplicate.confidence}`:""}><td>{row.sourceRow}</td><td>{row.postedDate||"—"}</td><td>{row.error?<>{row.payee||"—"}<span className="import-status error">{row.error}</span>{pdf?.candidateLines.some(line=>line.lineNumber===row.sourceRow)&&<button type="button" className="teach-row-button" onClick={()=>teachFromSourceRow(row.sourceRow)}>Teach from source row</button>}</>:<div className="import-review-editor"><label>Payee<input value={row.payee} onChange={event=>updateReviewEdit(row.sourceRow,{payee:event.target.value})}/></label>{row.originalPayee&&<small>Original statement description: {row.originalPayee}</small>}<label>Category<input list="import-category-options" value={row.category??""} disabled={Boolean(row.transferAccountId)} placeholder="Uncategorized" onChange={event=>updateReviewEdit(row.sourceRow,{category:event.target.value})}/></label><label>Type<select value={row.transferAccountId??""} onChange={event=>{const transferAccountId=event.target.value||undefined;updateReviewEdit(row.sourceRow,{transferAccountId});if(transferAccountId)setSelectedScheduledMatches(current=>{const next=new Map(current);next.delete(row.sourceRow);return next;});}}><option value="">Ordinary transaction</option>{accounts.filter(account=>account.id!==accountId&&!account.archived&&account.type!=="investment"&&(!selectedAccount||account.currency===selectedAccount.currency)).map(account=><option key={account.id} value={account.id}>Transfer with {account.name}</option>)}</select></label>{transferAccount?<small className="transfer-confirmed">Confirmed linked transfer with {transferAccount.name}; HomeLedger will create both ledger legs atomically.</small>:suggestedTransfer?<div className="transfer-suggestion"><small>Possible transfer → {suggestedTransfer.name} · suggestion only; no link will be created unless you accept it.</small><button type="button" onClick={()=>updateReviewEdit(row.sourceRow,{transferAccountId:suggestedTransfer.id})}>Accept transfer suggestion</button></div>:null}<div className="review-memory-actions"><button type="button" onClick={()=>void rememberReviewCorrection(row.sourceRow)}>Remember exact description</button><button type="button" onClick={()=>applyCorrectionToMatchingRows(row.sourceRow)} disabled={!reviewEdits.has(row.sourceRow)}>Apply to matching rows</button><small>Editing affects this row only unless you explicitly choose one of these actions.</small></div></div>}</td><td>{row.error?"—":row.duplicate?<><span className={`import-status duplicate ${row.duplicate.confidence}`}>{row.duplicate.confidence} match</span><small className="duplicate-reason">{row.duplicate.reason}</small></>:<>{row.transferAccountId?<span className="import-status ready">Linked transfer</span>:<span className="import-status ready">{row.category??"Uncategorized"}</span>}{rule&&<small className="rule-match">Rule: {rule.name}</small>}{schedule?.candidates.length&&!row.transferAccountId?<label className="schedule-match">Scheduled item<select aria-label={`Scheduled match for row ${row.sourceRow}`} value={selected??""} onChange={event=>setSelectedScheduledMatches(current=>{const next=new Map(current);if(event.target.value)next.set(row.sourceRow,event.target.value);else next.delete(row.sourceRow);return next;})}><option value="">Do not link</option>{schedule.candidates.map(candidate=><option key={candidate.occurrenceId} value={candidate.occurrenceId} disabled={[...selectedScheduledMatches].some(([otherRow,id])=>otherRow!==row.sourceRow&&id===candidate.occurrenceId)}>{candidate.payee} · {candidate.dueDate} · {candidate.confidence}</option>)}</select>{selected&&<small>{schedule.candidates.find(candidate=>candidate.occurrenceId===selected)?.reasons.join(" · ")}</small>}</label>:null}</>}</td><td className={row.amountMinor<0?"amount negative":"amount positive"}>{row.error?"—":formatMoney(row.amountMinor,ofx?.currency??selectedAccount?.currency)}</td><td>{row.duplicate?(row.duplicate.confidence==="exact"?<span className="exact-skip">Excluded</span>:<button className={included?"include-duplicate active":"include-duplicate"} onClick={()=>toggleDuplicate(row.sourceRow)}>{included?"Import anyway":"Skip"}</button>):row.transferAccountId?<span className="import-status ready">Import linked transfer</span>:selected?<span className="import-status ready">Import + link schedule</span>:"Import"}</td></tr>;})}</tbody></table></div>{preview.length>100&&<p className="preview-limit">Showing the first 100 of {preview.length} rows.</p>}</section>}
     <section className="panel import-history"><div className="panel-heading"><div><h2>Import history</h2><p>Every committed batch remains in the audit history.</p></div><History size={18}/></div>{batches.length===0?<div className="empty-state">No statements have been imported yet.</div>:<div className="table-wrap"><table><thead><tr><th>Imported</th><th>Source</th><th>Account</th><th>Transactions</th><th>Net amount</th><th>Status</th><th></th></tr></thead><tbody>{batches.map(batch=><tr key={batch.id}><td>{formatTimestamp(batch.importedAt)}</td><td><strong>{batch.sourceName}</strong></td><td>{batch.accountName}</td><td>{batch.transactionCount}</td><td className={batch.totalMinor<0?"amount negative":"amount positive"}>{formatMoney(batch.totalMinor)}</td><td>{batch.undoneAt?<span className="import-status duplicate">Undone</span>:<span className="import-status ready">Active</span>}</td><td>{!batch.undoneAt&&<button className="undo-button" onClick={()=>setPendingUndo(batch)}><Undo2 size={13}/> Undo</button>}</td></tr>)}</tbody></table></div>}</section>
     {pendingUndo&&<UndoDialog batch={pendingUndo} busy={undoing} onCancel={()=>setPendingUndo(null)} onConfirm={undo}/>}
   </div>;
