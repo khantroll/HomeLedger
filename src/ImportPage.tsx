@@ -15,7 +15,8 @@ import {matchingStatementTemplate,statementSourceSignature,type StatementSourceK
 import {extractScannedPdfText,pdfNeedsOcr} from "./scannedPdfImport";
 import {isMt940Statement,parseMt940} from "./mt940Import";
 import {isCamtStatement,parseCamt} from "./camtImport";
-import {applyHistoricalImportSuggestion,applyImportReviewEdits,historicalImportSuggestion,importBlockingReason,matchingReviewSourceRows,suggestTransferAccount,type ImportReviewEdit} from "./importReview";
+import {RuleDialog} from "./RulesPage";
+import {applyCatalogPayeeSuggestion,applyHistoricalImportSuggestion,applyImportReviewEdits,catalogPayeeSuggestion,historicalImportSuggestion,importBlockingReason,matchingReviewSourceRows,suggestTransferAccountWithEvidence,type ImportReviewEdit} from "./importReview";
 import "./importHistory.css";
 import "./ofxImport.css";
 
@@ -58,16 +59,20 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   const [selectedScheduledMatches,setSelectedScheduledMatches]=useState<Map<number,string>>(new Map());
   const [reviewEdits,setReviewEdits]=useState<Map<number,ImportReviewEdit>>(new Map());
   const [categories,setCategories]=useState<string[]>([]);
+  const [knownPayees,setKnownPayees]=useState<string[]>([]);
+  const [dismissedRememberRows,setDismissedRememberRows]=useState<Set<number>>(new Set());
+  const [customRuleDraft,setCustomRuleDraft]=useState<MerchantRuleInput|null>(null);
   const showError=(reason:unknown)=>setError(reason instanceof Error?reason.message:String(reason));
 
   useEffect(()=>{if(!accountId&&accounts[0])setAccountId(accounts[0].id);},[accountId,accounts]);
-  useEffect(()=>{void loadHistory();void financeRepository.listMerchantRules().then(setRules).catch(showError);void financeRepository.listImportProfiles().then(setProfiles).catch(showError);void financeRepository.listCategories().then(setCategories).catch(showError);},[]);
+  useEffect(()=>{void loadHistory();void financeRepository.listMerchantRules().then(setRules).catch(showError);void financeRepository.listImportProfiles().then(setProfiles).catch(showError);void financeRepository.listCategories().then(setCategories).catch(showError);void financeRepository.listPayees().then(setKnownPayees).catch(showError);},[]);
 
   const accountTransactions=useMemo(()=>transactions.filter(item=>item.accountId===accountId),[transactions,accountId]);
   const rawPreview=useMemo(()=>qif?buildQifPreview(qif,accountTransactions):ofx?buildOfxPreview(ofx,accountTransactions):table?buildPreview(table,mapping,accountTransactions,parsingOptions):[],[qif,ofx,table,mapping,parsingOptions,accountTransactions]);
   const applications=useMemo(()=>applyMerchantRules(rawPreview,rules),[rawPreview,rules]);
   const historySuggestions=useMemo(()=>new Map(applications.filter(item=>!item.rule).map(item=>[item.row.sourceRow,historicalImportSuggestion(item.row,transactions)]).filter((entry):entry is [number,NonNullable<ReturnType<typeof historicalImportSuggestion>>]=>Boolean(entry[1]))),[applications,transactions]);
-  const rulePreview=useMemo(()=>applications.map(item=>item.rule?item.row:applyHistoricalImportSuggestion(item.row,historySuggestions.get(item.row.sourceRow))),[applications,historySuggestions]);
+  const catalogSuggestions=useMemo(()=>new Map(applications.filter(item=>!item.rule&&!historySuggestions.has(item.row.sourceRow)).map(item=>[item.row.sourceRow,catalogPayeeSuggestion(item.row,knownPayees)]).filter((entry):entry is [number,NonNullable<ReturnType<typeof catalogPayeeSuggestion>>]=>Boolean(entry[1]))),[applications,historySuggestions,knownPayees]);
+  const rulePreview=useMemo(()=>applications.map(item=>item.rule?item.row:historySuggestions.has(item.row.sourceRow)?applyHistoricalImportSuggestion(item.row,historySuggestions.get(item.row.sourceRow)):applyCatalogPayeeSuggestion(item.row,catalogSuggestions.get(item.row.sourceRow))),[applications,historySuggestions,catalogSuggestions]);
   const preview=useMemo(()=>applyImportReviewEdits(rulePreview,reviewEdits),[rulePreview,reviewEdits]);
   const matchedRules=useMemo(()=>new Map(applications.filter(item=>item.rule).map(item=>[item.row.sourceRow,item.rule!])),[applications]);
   const pdfIncomplete=Boolean(pdf&&!isPdfComplete(pdf));
@@ -183,6 +188,7 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
   function toggleDuplicate(sourceRow:number){setIncludedDuplicates(current=>{const next=new Set(current);if(next.has(sourceRow))next.delete(sourceRow);else next.add(sourceRow);return next;});}
   function updateReviewEdit(sourceRow:number,patch:Partial<ImportReviewEdit>){
     setReviewEdits(current=>{const next=new Map(current),existing=next.get(sourceRow)??{};next.set(sourceRow,{...existing,...patch});return next;});
+    setDismissedRememberRows(current=>{if(!current.has(sourceRow))return current;const next=new Set(current);next.delete(sourceRow);return next;});
   }
   function applyCorrectionToMatchingRows(sourceRow:number){
     const source=preview.find(row=>row.sourceRow===sourceRow),edit=reviewEdits.get(sourceRow);
@@ -197,14 +203,21 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     const renameTo=row.payee.trim()!==raw?row.payee.trim():undefined;
     if(!renameTo&&!category){setError("Change the payee or category before choosing Remember.");return;}
     const direction:MerchantRuleDirection=row.amountMinor<0?"expense":row.amountMinor>0?"income":"any";
-    const existing=rules.find(rule=>rule.matchType==="exact"&&rule.direction===direction&&normalizeMerchant(rule.pattern)===normalizeMerchant(raw));
-    const input:MerchantRuleInput={name:`Remember ${raw}`,pattern:raw,matchType:"exact",direction,renameTo,category,priority:existing?.priority??1000,enabled:true};
+    const existing=rules.find(rule=>(rule.origin??"manual")==="remembered"&&rule.matchType==="exact"&&rule.direction===direction&&normalizeMerchant(rule.pattern)===normalizeMerchant(raw));
+    const input:MerchantRuleInput={name:`Remember ${raw}`,pattern:raw,matchType:"exact",direction,renameTo,category,priority:existing?.priority??1000,enabled:true,origin:"remembered"};
     setError("");
     try{
       if(existing)await financeRepository.updateMerchantRule(existing.id,input);else await financeRepository.createMerchantRule(input);
       setRules(await financeRepository.listMerchantRules());
       setMessage(`Remembered the exact statement description “${raw}”. Future matching ${direction==="expense"?"expenses":direction==="income"?"income":"transactions"} will reuse${renameTo?` payee “${renameTo}”`:""}${category?`${renameTo?" and":""} category “${category}”`:""}.`);
     }catch(reason){showError(reason);}
+  }
+
+  function customizeReviewCorrection(sourceRow:number){
+    const row=preview.find(item=>item.sourceRow===sourceRow);if(!row)return;
+    const raw=(row.originalPayee??row.payee).trim();
+    const direction:MerchantRuleDirection=row.amountMinor<0?"expense":row.amountMinor>0?"income":"any";
+    setCustomRuleDraft({name:`Rule for ${raw}`,pattern:raw,matchType:"exact",direction,renameTo:row.payee.trim()!==raw?row.payee.trim():undefined,category:row.category&&row.category!=="Uncategorized"?row.category:undefined,priority:100,enabled:true,origin:"manual"});
   }
 
   async function commit(){
@@ -226,13 +239,13 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
         }:undefined,
       });
       setMessage(`Imported ${result.importedCount} transactions as one atomic batch.${retainSourceDocument&&sourceContentBase64?" Source document retained with the imported transactions.":""}`);
-      setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSelectedScheduledMatches(new Map());setReviewEdits(new Map());await onImported();await loadHistory();
+      setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSelectedScheduledMatches(new Map());setReviewEdits(new Map());setDismissedRememberRows(new Set());await onImported();await loadHistory();
     }
     catch(reason){setError(reason instanceof Error?reason.message:String(reason));}
     finally{setSaving(false);}
   }
 
-  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSourceKind("delimited");setSourceSignature("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setReviewEdits(new Map());setFileEncoding("utf-8");}
+  function reset(){setTable(null);setOfx(null);setQif(null);setWorkbook(null);setPdf(null);setPdfText("");setOcrConfidence(null);setOcrProgress(null);setOcrSource(null);setOcrPageCount(null);setFileName("");setSourceContentBase64(null);setSourceMediaType(undefined);setRetainSourceDocument(false);setSourceKind("delimited");setSourceSignature("");setError("");setMessage("");setSelectedProfileId("");setProfileName("");setIncludedDuplicates(new Set());setScheduledMatches(new Map());setSelectedScheduledMatches(new Map());setReviewEdits(new Map());setDismissedRememberRows(new Set());setFileEncoding("utf-8");}
   async function loadHistory(){try{setBatches(await financeRepository.listImportBatches());}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}}
   async function undo(){if(!pendingUndo)return;setUndoing(true);setError("");try{const result=await financeRepository.undoImportBatch(pendingUndo.id);setMessage(`Removed ${result.removedCount} transactions from ${pendingUndo.sourceName}.`);setPendingUndo(null);await onImported();await loadHistory();}catch(reason){setError(reason instanceof Error?reason.message:String(reason));}finally{setUndoing(false);}}
   if(!accounts.length)return <section className="panel import-empty"><FileSpreadsheet/><h2>Create an account first</h2><p>Statement transactions must be assigned to a local account.</p></section>;
