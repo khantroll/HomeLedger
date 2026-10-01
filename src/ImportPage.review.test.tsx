@@ -20,6 +20,7 @@ describe("statement import end-to-end review",()=>{
     vi.spyOn(repositoryModule.financeRepository,"listMerchantRules").mockResolvedValue([]);
     vi.spyOn(repositoryModule.financeRepository,"listImportProfiles").mockResolvedValue([]);
     vi.spyOn(repositoryModule.financeRepository,"listCategories").mockResolvedValue(["Utilities: Electric","Shopping"]);
+    vi.spyOn(repositoryModule.financeRepository,"listPayees").mockResolvedValue(["PayPal","Arkansas Valley Electric"]);
     vi.spyOn(repositoryModule.financeRepository,"findScheduledOccurrenceMatches").mockResolvedValue([]);
   });
 
@@ -56,6 +57,31 @@ describe("statement import end-to-end review",()=>{
       postedDate:"2026-06-03",payee:"Arkansas Valley Electric",originalPayee:"ARKANSAS VALLEY",category:"Utilities: Electric",amountMinor:-7995
     });
     expect(onImported).toHaveBeenCalled();
+  });
+
+  it("shows repeated-row scope before applying a correction",async()=>{
+    const user=userEvent.setup();
+    vi.spyOn(repositoryModule.financeRepository,"importTransactions").mockResolvedValue({batchId:"b",importedCount:2,transactionIds:["1","2"]});
+    render(<ImportPage accounts={accounts} transactions={[]} onImported={vi.fn().mockResolvedValue(undefined)}/>);
+    const file=new File(["Date,Description,Amount","6/03/26,ARKANSAS VALLEY,-79.95","6/04/26,Arkansas-Valley,-82.00"].join("\n"),"statement.csv",{type:"text/csv"});
+    await user.upload(screen.getByLabelText(/Choose a statement file/i),file);
+    const payees=await screen.findAllByLabelText("Payee");
+    await user.clear(payees[0]);await user.type(payees[0],"Arkansas Valley Electric");
+    const apply=screen.getByRole("button",{name:/Apply to 2 matching rows in this import/i});
+    expect(apply).toBeTruthy();
+    await user.click(apply);
+    await waitFor(()=>expect((payees[1] as HTMLInputElement).value).toBe("Arkansas Valley Electric"));
+  });
+
+  it("recognizes a known PayPal payee without inventing a category",async()=>{
+    const user=userEvent.setup();
+    render(<ImportPage accounts={accounts} transactions={[]} onImported={vi.fn().mockResolvedValue(undefined)}/>);
+    const file=new File(["Date,Description,Amount","6/03/26,PAYPAL *XYZ,-47.99"].join("\n"),"statement.csv",{type:"text/csv"});
+    await user.upload(screen.getByLabelText(/Choose a statement file/i),file);
+    expect(await screen.findByDisplayValue("PayPal")).toBeTruthy();
+    expect(screen.getByText(/Suggestion source: Recognized payee/i)).toBeTruthy();
+    const category=screen.getByLabelText("Category") as HTMLInputElement;
+    expect(category.value).toBe("");
   });
 
   it("suggests a credit-card transfer but only submits it after explicit acceptance",async()=>{
