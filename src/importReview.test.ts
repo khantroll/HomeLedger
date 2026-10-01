@@ -1,7 +1,7 @@
 import {describe,expect,it} from "vitest";
 import type {Account} from "./domain";
 import type {PreviewRow} from "./csvImport";
-import {applyHistoricalImportSuggestion,applyImportReviewEdits,historicalImportSuggestion,importBlockingReason,matchingReviewSourceRows,suggestTransferAccount} from "./importReview";
+import {applyCatalogPayeeSuggestion,applyHistoricalImportSuggestion,applyImportReviewEdits,catalogPayeeSuggestion,historicalImportSuggestion,importBlockingReason,matchingReviewSourceRows,suggestTransferAccount,suggestTransferAccountWithEvidence} from "./importReview";
 
 const accounts:Account[]=[
   {id:"checking",name:"RFCU Checking",institution:"Rivertown Federal Credit Union",type:"checking",currency:"USD",balanceMinor:0,ownerLabel:"Household"},
@@ -26,6 +26,23 @@ describe("import review model",()=>{
     const citi=row(3,"CITI AUTOPAY",-15000);
     expect(suggestTransferAccount(citi,"checking",accounts)?.id).toBe("citi");
     expect(applyImportReviewEdits([citi],new Map())[0]).not.toHaveProperty("transferAccountId");
+  });
+
+  it("uses a known payee catalog for conservative entity recognition without inventing category",()=>{
+    const source=row(20,"PAYPAL *XYZ",-4799);
+    const suggestion=catalogPayeeSuggestion(source,["PayPal","Arkansas Valley Electric"]);
+    expect(suggestion).toEqual({payee:"PayPal",source:"catalog"});
+    const applied=applyCatalogPayeeSuggestion(source,suggestion);
+    expect(applied).toMatchObject({payee:"PayPal",originalPayee:"PAYPAL *XYZ"});
+    expect(applied.category).toBeUndefined();
+  });
+
+  it("uses opposite amount and nearby date as transfer evidence when description is generic",()=>{
+    const source={...row(21,"Deposit Transfer",150000),postedDate:"2026-06-05"};
+    const history:any[]=[{id:"x",accountId:"citi",postedDate:"2026-06-03",payee:"Payment",category:"Transfer",amountMinor:-150000,status:"cleared"}];
+    const suggestion=suggestTransferAccountWithEvidence(source,"checking",accounts,history);
+    expect(suggestion?.account.id).toBe("citi");
+    expect(suggestion?.reasons.join(" ")).toContain("opposite amount");
   });
 
   it("supports explicit transfer confirmation in review state",()=>{
