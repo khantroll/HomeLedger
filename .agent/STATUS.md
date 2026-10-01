@@ -4,14 +4,14 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-10-01T19:00:00Z
+- **Updated:** 2026-10-01T19:05:00Z
 - **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `5fbb664c529258084a6ce1187055163f52a26e2a` — #64 Transaction Attachments & Receipt Retention squash-merged
 - **Open PRs (in progress):** PR #65 — v0.52 Everyday Money Milestone Audit & Closure (`cursor/v052-everyday-money-closure-1f15`), draft, intentionally unmerged
-- **CI fix (this tip):** Exact-head CI on `ba198be` failed Web + Native. Fixed: Portfolio As-of tests drive the `As of` select (Choose date was a no-op on day-1 of month); Import review tests match `Remember exact` + jsdom `File` bits; Rust tests import `load_merchant_rules` / `matching_merchant_rule`.
-- **OCR:** Still frozen by user direction. No OCR/PDF behavior changes in this tip.
+- **CI fix tip:** `3fe21cb` — Portfolio As-of / Import review / merchant-rule import fixes for exact-head CI (awaiting green on tip after this docs commit)
+- **OCR:** Still frozen. Reopen bar parked at [`.agent/OCR-REOPEN-CHECKLIST.md`](./OCR-REOPEN-CHECKLIST.md). No OCR/PDF behavior changes.
 - **Closure status:** NOT CLOSED / not merged. Structured-import work remains on this draft PR.
-- **Next action:** Exact-head GitHub CI green on new tip. Leave #65 draft/open/unmerged. Do not start #66. Do not make a STATUS-only tip after CI.
+- **Next action:** Exact-head GitHub CI green. Leave #65 draft/open/unmerged. Do not start #66. Do not unfreeze OCR. Do not make a STATUS-only tip after CI.
 
 ## Handoff protocol
 
