@@ -33,7 +33,7 @@ fn migration_creates_local_ledger_tables() {
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
     let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
     let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (22, 2, 1, 1, 2, 2,1,2,1,2,5,1));
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (23, 2, 1, 1, 2, 2,1,2,1,2,5,1));
     let oict: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'", [], |row| row.get(0)).unwrap();
     assert_eq!(oict, 1);
     let attachment_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('attachments','transaction_attachments','import_batch_attachments')", [], |row| row.get(0)).unwrap();
@@ -63,7 +63,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -115,7 +115,7 @@ fn migration_upgrades_populated_v17_without_breaking_account_foreign_keys() {
     let fk_count:i64=connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get(0)).unwrap();
     let related:(i64,i64,i64,i64,i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions WHERE account_id='a'),(SELECT COUNT(*) FROM import_batches WHERE account_id='a'),(SELECT COUNT(*) FROM reconciliations WHERE account_id='a'),(SELECT COUNT(*) FROM import_profiles WHERE account_id='a'),(SELECT COUNT(*) FROM debt_terms WHERE account_id='b'),(SELECT COUNT(*) FROM savings_goals WHERE account_id='a')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household')",[]).unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
     assert_eq!(fk_count,0);
     assert_eq!(related,(1,1,1,1,1,1));
 }
@@ -514,7 +514,7 @@ fn reviewed_statement_corrections_outrank_existing_merchant_rules() {
     let mut connection=Connection::open_in_memory().unwrap();
     apply_migrations(&mut connection).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',0,'Household')",[]).unwrap();
-    connection.execute("INSERT INTO merchant_rules(id,name,pattern,match_type,direction,rename_to,category,priority,enabled) VALUES('r','Old rule','ARKANSAS VALLEY','exact','expense','Old Payee','Old Category',100,1)",[]).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES('r','Old rule','ARKANSAS VALLEY','arkansas valley','exact','expense','Old Payee','Old Category',100,1,'manual')",[]).unwrap();
     import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
       account_id:"a".into(),source_name:"statement.pdf".into(),
       rows:vec![ImportTransactionRow{
@@ -524,6 +524,18 @@ fn reviewed_statement_corrections_outrank_existing_merchant_rules() {
     }).unwrap();
     let row:(String,String,String)=connection.query_row("SELECT payee,original_payee,category FROM transactions",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
     assert_eq!(row,("Arkansas Valley Electric".into(),"ARKANSAS VALLEY".into(),"Utilities: Electric".into()));
+}
+
+#[test]
+fn manual_merchant_rules_outrank_remembered_corrections() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES('remembered','Remembered','ARKANSAS VALLEY','arkansas valley','exact','expense','Remembered Payee','Remembered Category',9999,1,'remembered')",[]).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES('manual','Custom','ARKANSAS VALLEY','arkansas valley','exact','expense','Arkansas Valley Electric','Utilities: Electric',10,1,'manual')",[]).unwrap();
+    let rules=load_merchant_rules(&connection).unwrap();
+    let matched=matching_merchant_rule(&rules,"ARKANSAS VALLEY",-7995).unwrap();
+    assert_eq!(matched.id,"manual");
+    assert_eq!(matched.origin,"manual");
 }
 
 #[test]
