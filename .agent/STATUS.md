@@ -4,14 +4,14 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-30T18:47:00Z
-- **Updated by:** ChatGPT
+- **Updated:** 2026-10-01T19:00:00Z
+- **Updated by:** Cursor cloud agent
 - **Canonical main (verified):** `5fbb664c529258084a6ce1187055163f52a26e2a` — #64 Transaction Attachments & Receipt Retention squash-merged
 - **Open PRs (in progress):** PR #65 — v0.52 Everyday Money Milestone Audit & Closure (`cursor/v052-everyday-money-closure-1f15`), draft, intentionally unmerged
-- **Closure status:** NOT CLOSED. Latest Windows dogfood established that RFCU OCR/parser/teaching can produce plausible transactions, but the workflow still lacked an editable review-draft state between parser output and the atomic repository import. Valid teaching therefore did not provide a complete correction/remember/transfer-confirm/import path.
-- **Corrections:** Preserve all validated OCR/runtime, amount-vs-balance, continuation classification, source retention, and Vite watcher fixes. Import review now has an explicit local draft layer over deterministic parser/rule/history output: Payee and Category are editable without losing original statement description; explicit review edits outrank weaker persisted merchant rules; exact-description corrections can be remembered through the existing merchant-rule repository; repeated matching candidates can be deliberately updated in the current review; consistent ledger history can suggest payee/category only when unambiguous; PayPal-like ambiguous history stays Uncategorized. Account-name/institution matching can surface a possible transfer, but no transfer is created until the user explicitly selects/accepts the counter-account. Confirmed ordinary-account transfers are carried through the existing atomic import command, create both linked transfer legs, preserve the statement-side originalPayee/importBatch provenance, and undo both legs atomically. Scheduled-item linking is mutually exclusive with a confirmed transfer.
-- **Verification:** Added focused web tests for review edits/provenance, explicit Uncategorized, deterministic history suggestions, repeated-row application, transfer suggestion without auto-linking, and component-level correct/remember/import plus explicit transfer acceptance. Added native tests for reviewed fields outranking rules and confirmed linked-transfer import/undo. Full exact-head web/build/Rust/Clippy/Windows CI is still required on the final tip.
-- **Next action:** OCR/PDF work is frozen by user direction. Focus only on structured-import transaction recognition, categorization, review learning, rule precedence/management, and confirmed transfer workflow. Exact-head CI required; leave #65 open/unmerged; do not start #66.
+- **CI fix (this tip):** Exact-head CI on `ba198be` failed Web + Native. Fixed: Portfolio As-of tests drive the `As of` select (Choose date was a no-op on day-1 of month); Import review tests match `Remember exact` + jsdom `File` bits; Rust tests import `load_merchant_rules` / `matching_merchant_rule`.
+- **OCR:** Still frozen by user direction. No OCR/PDF behavior changes in this tip.
+- **Closure status:** NOT CLOSED / not merged. Structured-import work remains on this draft PR.
+- **Next action:** Exact-head GitHub CI green on new tip. Leave #65 draft/open/unmerged. Do not start #66. Do not make a STATUS-only tip after CI.
 
 ## Handoff protocol
 

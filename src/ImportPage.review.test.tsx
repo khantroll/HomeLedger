@@ -45,7 +45,7 @@ describe("statement import end-to-end review",()=>{
     await user.clear(payee);await user.type(payee,"Arkansas Valley Electric");
     const category=within(row).getByLabelText("Category");
     await user.type(category,"Utilities: Electric");
-    await user.click(within(row).getByRole("button",{name:/Remember exact description/i}));
+    await user.click(within(row).getByRole("button",{name:/^Remember exact$/i}));
     await waitFor(()=>expect(createRule).toHaveBeenCalled());
     expect(createRule.mock.calls[0][0]).toMatchObject({
       pattern:"ARKANSAS VALLEY",matchType:"exact",direction:"expense",renameTo:"Arkansas Valley Electric",category:"Utilities: Electric"
@@ -63,7 +63,7 @@ describe("statement import end-to-end review",()=>{
     const user=userEvent.setup();
     vi.spyOn(repositoryModule.financeRepository,"importTransactions").mockResolvedValue({batchId:"b",importedCount:2,transactionIds:["1","2"]});
     render(<ImportPage accounts={accounts} transactions={[]} onImported={vi.fn().mockResolvedValue(undefined)}/>);
-    const file=new File(["Date,Description,Amount","6/03/26,ARKANSAS VALLEY,-79.95","6/04/26,Arkansas-Valley,-82.00"].join("\n"),"statement.csv",{type:"text/csv"});
+    const file=new File([["Date,Description,Amount","6/03/26,ARKANSAS VALLEY,-79.95","6/04/26,Arkansas-Valley,-82.00"].join("\n")],"statement.csv",{type:"text/csv"});
     await user.upload(screen.getByLabelText(/Choose a statement file/i),file);
     const payees=await screen.findAllByLabelText("Payee");
     await user.clear(payees[0]);await user.type(payees[0],"Arkansas Valley Electric");
@@ -76,7 +76,7 @@ describe("statement import end-to-end review",()=>{
   it("recognizes a known PayPal payee without inventing a category",async()=>{
     const user=userEvent.setup();
     render(<ImportPage accounts={accounts} transactions={[]} onImported={vi.fn().mockResolvedValue(undefined)}/>);
-    const file=new File(["Date,Description,Amount","6/03/26,PAYPAL *XYZ,-47.99"].join("\n"),"statement.csv",{type:"text/csv"});
+    const file=new File([["Date,Description,Amount","6/03/26,PAYPAL *XYZ,-47.99"].join("\n")],"statement.csv",{type:"text/csv"});
     await user.upload(screen.getByLabelText(/Choose a statement file/i),file);
     expect(await screen.findByDisplayValue("PayPal")).toBeTruthy();
     expect(screen.getByText(/Suggestion source: Recognized payee/i)).toBeTruthy();
