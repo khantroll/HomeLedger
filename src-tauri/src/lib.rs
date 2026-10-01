@@ -1013,6 +1013,7 @@ struct MerchantRule {
     category: Option<String>,
     priority: i64,
     enabled: bool,
+    origin: String,
 }
 
 #[derive(Deserialize)]
@@ -1026,6 +1027,7 @@ struct MerchantRuleRequest {
     category: Option<String>,
     priority: i64,
     enabled: bool,
+    origin: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1418,7 +1420,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 22;
+const CURRENT_SCHEMA_VERSION: i64 = 23;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_RECOVERY_RETENTION: usize = 7;
@@ -1677,6 +1679,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let fk_errors: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
         if fk_errors != 0 { return Err(format!("PDF template layout migration failed foreign-key validation with {fk_errors} violation(s)")); }
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(22, 'PDF template debit-credit layouts')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 23 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/023_merchant_rule_origin.sql")).map_err(|e| e.to_string())?;
+        let origin_col:i64=tx.query_row("SELECT COUNT(*) FROM pragma_table_info('merchant_rules') WHERE name='origin'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if origin_col!=1{return Err("Merchant-rule origin migration did not add the origin column".into());}
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(23, 'merchant rule precedence origin')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2600,18 +2610,20 @@ fn clean_merchant_rule(request:MerchantRuleRequest,id:String)->Result<(MerchantR
     if !MATCH_TYPES.contains(&request.match_type.as_str()){return Err("Unsupported merchant-rule match type".into());}
     if !DIRECTIONS.contains(&request.direction.as_str()){return Err("Unsupported merchant-rule direction".into());}
     if !(-10_000..=10_000).contains(&request.priority){return Err("Priority must be between -10000 and 10000".into());}
+    let origin=request.origin.unwrap_or_else(||"manual".into());
+    if !["manual","remembered"].contains(&origin.as_str()){return Err("Unsupported merchant-rule origin".into());}
     let pattern=clean_required(request.pattern,"Match text",120)?;
     let normalized_pattern=normalize_merchant(&pattern);
     if normalized_pattern.is_empty(){return Err("Match text must contain a letter or number".into());}
     let rename_to=clean_optional(request.rename_to,160)?;
     let category=clean_optional(request.category,120)?;
     if rename_to.is_none()&&category.is_none(){return Err("A rule must rename the payee, assign a category, or both".into());}
-    Ok((MerchantRule{id,name:clean_required(request.name,"Rule name",80)?,pattern,match_type:request.match_type,direction:request.direction,rename_to,category,priority:request.priority,enabled:request.enabled},normalized_pattern))
+    Ok((MerchantRule{id,name:clean_required(request.name,"Rule name",80)?,pattern,match_type:request.match_type,direction:request.direction,rename_to,category,priority:request.priority,enabled:request.enabled,origin},normalized_pattern))
 }
 
 fn load_merchant_rules(connection:&Connection)->Result<Vec<MerchantRule>,String>{
-    let mut statement=connection.prepare("SELECT id,name,pattern,match_type,direction,rename_to,category,priority,enabled FROM merchant_rules ORDER BY priority DESC,id").map_err(|e|e.to_string())?;
-    let rows=statement.query_map([],|row|Ok(MerchantRule{id:row.get(0)?,name:row.get(1)?,pattern:row.get(2)?,match_type:row.get(3)?,direction:row.get(4)?,rename_to:row.get(5)?,category:row.get(6)?,priority:row.get(7)?,enabled:row.get(8)?})).map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT id,name,pattern,match_type,direction,rename_to,category,priority,enabled,origin FROM merchant_rules ORDER BY CASE origin WHEN 'manual' THEN 0 ELSE 1 END, priority DESC,id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],|row|Ok(MerchantRule{id:row.get(0)?,name:row.get(1)?,pattern:row.get(2)?,match_type:row.get(3)?,direction:row.get(4)?,rename_to:row.get(5)?,category:row.get(6)?,priority:row.get(7)?,enabled:row.get(8)?,origin:row.get(9)?})).map_err(|e|e.to_string())?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
@@ -2625,7 +2637,7 @@ fn list_merchant_rules(state:State<DbState>)->Result<Vec<MerchantRule>,String>{
 fn create_merchant_rule(request:MerchantRuleRequest,state:State<DbState>)->Result<MerchantRule,String>{
     let (rule,normalized)=clean_merchant_rule(request,Uuid::new_v4().to_string())?;
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
-    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled]).map_err(|e|e.to_string())?;
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled,rule.origin]).map_err(|e|e.to_string())?;
     Ok(rule)
 }
 
@@ -2634,7 +2646,7 @@ fn update_merchant_rule(rule_id:String,request:MerchantRuleRequest,state:State<D
     let rule_id=clean_required(rule_id,"Merchant rule",80)?;
     let (rule,normalized)=clean_merchant_rule(request,rule_id)?;
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
-    let changed=connection.execute("UPDATE merchant_rules SET name=?2,pattern=?3,normalized_pattern=?4,match_type=?5,direction=?6,rename_to=?7,category=?8,priority=?9,enabled=?10,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled]).map_err(|e|e.to_string())?;
+    let changed=connection.execute("UPDATE merchant_rules SET name=?2,pattern=?3,normalized_pattern=?4,match_type=?5,direction=?6,rename_to=?7,category=?8,priority=?9,enabled=?10,origin=?11,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled,rule.origin]).map_err(|e|e.to_string())?;
     if changed!=1{return Err("Merchant rule does not exist".into());}
     Ok(rule)
 }
