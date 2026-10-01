@@ -20,8 +20,14 @@ export function ruleMatches(rule:MerchantRule,payee:string,amountMinor:number):b
   return rule.matchType==="exact"?value===pattern:rule.matchType==="starts_with"?value.startsWith(pattern):value.includes(pattern);
 }
 
+export function merchantRulePrecedenceCompare(a:MerchantRule,b:MerchantRule):number{
+  const aRank=(a.origin??"manual")==="manual"?0:1;
+  const bRank=(b.origin??"manual")==="manual"?0:1;
+  return aRank-bRank||b.priority-a.priority||a.id.localeCompare(b.id);
+}
+
 export function applyMerchantRules<T extends ImportTransactionRow>(rows:T[],rules:MerchantRule[]):RuleApplication<T>[] {
-  const ordered=[...rules].sort((a,b)=>b.priority-a.priority||a.id.localeCompare(b.id));
+  const ordered=[...rules].sort(merchantRulePrecedenceCompare);
   return rows.map(source=>{
     const originalPayee=source.originalPayee??source.payee;
     // originalPayee marks a row that has already entered the reviewed import pipeline.
