@@ -541,6 +541,7 @@ export interface CrossDomainCashTransferResult {
 
 export type MerchantRuleMatchType = "contains" | "starts_with" | "exact";
 export type MerchantRuleDirection = "any" | "expense" | "income";
+export type MerchantRuleOrigin = "manual" | "remembered";
 
 export interface MerchantRule {
   id: string;
@@ -552,6 +553,8 @@ export interface MerchantRule {
   category?: string;
   priority: number;
   enabled: boolean;
+  /** Manual rules outrank review-created remembered corrections regardless of numeric priority. */
+  origin?: MerchantRuleOrigin;
 }
 
 export type MerchantRuleInput = Omit<MerchantRule,"id">;
