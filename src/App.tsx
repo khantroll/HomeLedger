@@ -206,7 +206,7 @@ export default function App() {
             <button key={label} className={active === label ? "active" : ""} onClick={() => openNav(label)}>
               <Icon size={17} />
               <span>{label}</span>
-              {!["Overview", "Accounts", "Portfolio", "Transactions", "Imports", "Rules", "Budget", "Bills", "Forecast", "Debt", "Reports", "AI Insights", "Settings"].includes(label) && <em>Planned</em>}
+              {!["Overview", "Accounts", "Portfolio", "Transactions", "Imports", "Rules", "Categories", "Budget", "Bills", "Forecast", "Debt", "Reports", "AI Insights", "Settings"].includes(label) && <em>Planned</em>}
             </button>
           ))}
         </nav>

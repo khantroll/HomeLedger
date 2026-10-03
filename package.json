@@ -1,12 +1,13 @@
 {
   "name": "homeledger",
   "private": true,
-  "version": "0.51.0",
+  "version": "0.52.0",
   "type": "module",
   "scripts": {
     "prepare:ocr": "node scripts/prepare-ocr-assets.mjs",
     "predev": "npm run prepare:ocr",
     "prebuild": "npm run prepare:ocr",
+    "pretest": "npm run prepare:ocr",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",

@@ -51,7 +51,7 @@ export function BackupPage({onRestored}:{onRestored:()=>Promise<void>}) {
       if(backupPassword!==backupConfirm)throw new Error("The backup passwords do not match");
       setBusy("backup");
       const snapshot=await backupRepository.exportSnapshot();
-      const encrypted=await encryptBackup(snapshot,backupPassword);
+      const encrypted=await encryptBackup(snapshot,backupPassword,{appVersion:"0.52.0"});
       const saved=await backupRepository.saveEncryptedFile(encrypted);
       if(saved){setMessage("Encrypted backup saved successfully. Keep its password somewhere separate and secure.");setBackupPassword("");setBackupConfirm("");}
     }catch(reason){setError(reason instanceof Error?reason.message:String(reason));}

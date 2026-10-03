@@ -4,12 +4,15 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-09-24T21:47:00Z
-- **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `5fc8077fe18f25d296c9f1ea04d0e0f90b3e2835` — #63 Transaction Notes & Flags squash-merged
-- **Open PRs (in progress):** PR #64 — Transaction Attachments & Receipt Retention (`cursor/transaction-attachments-1f15`), draft, intentionally unmerged
-- **Scope delivered:** Attachments + atomic import source retention (all-or-none); shared-byte safe rollback; attachment-aware `.hlb`; recovery DB-only + live store validation
-- **Next action:** Exact-head GitHub CI on retention all-or-none tip. Do not merge automatically. Do not start PR #65. Do not make a STATUS-only tip commit after CI passes.
+- **Updated:** 2026-10-03 — v0.52 closure recovery
+- **Source of truth:** GitHub/current code; this checkpoint is secondary.
+- **Base main:** `5fbb664c529258084a6ce1187055163f52a26e2a` (#64 squash merge)
+- **Open PR:** #65 — `cursor/v052-everyday-money-closure-1f15`, draft, intentionally unmerged.
+- **v0.52 scope:** stabilize and honestly document accumulated closure work. OCR/PDF development is frozen.
+- **OCR/PDF:** preserve local/no-CDN OCR, source retention/provenance, templates/parsers and fail-closed review. Advanced scanned-statement transaction reconstruction is experimental/deferred; RFCU success is not a v0.52 merge requirement. Future investigation is issue #69.
+- **Structured imports:** trusted current path; transaction review/learning foundations in #65 are retained.
+- **Roadmap:** #66 Home/Today daily cockpit → #67 general transaction learning/rules → #68 v0.53 daily-driver dogfood/polish. Do not begin these inside #65.
+- **Closure rule:** repository truth/docs must be committed before the final exact-head CI. Do not make a STATUS-only tip afterward. Do not merge automatically.
 
 ## Handoff protocol
 

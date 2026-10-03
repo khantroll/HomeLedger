@@ -1,6 +1,6 @@
 import { reconciliationDifference, sumMoney, normalizeTransactionQuery, ATTACHMENT_ALLOWED_EXTENSIONS, ATTACHMENT_MAX_BYTES, TRANSACTION_NOTE_MAX_LENGTH, type Account, type AttachBytesInput, type BudgetAllocation, type BudgetAllocationInput, type BudgetCategory, type BudgetCategoryInput, type BudgetMonth, type BulkMutationResult, type BulkSetTransactionCategoryInput, type BulkTransactionIdsInput, type BulkUpdateTransactionStatusInput, type CompleteReconciliationInput, type CreateAccountInput, type CreateTransactionInput, type CreateTransferInput, type CrossDomainCashTransferResult, type DebtPlan, type DebtPlanInput, type FinanceRepository, type ImportBatch, type ImportProfile, type ImportProfileInput, type ImportResult, type ImportTransactionsInput, type LabelRewriteResult, type MerchantRule, type MerchantRuleInput, type PickedAttachmentFile, type Reconciliation, type RetainImportSourceInput, type SavingsGoal, type SavingsGoalInput, type ScheduledAutoPostInput, type ScheduledImportMatch, type ScheduledImportMatchInput, type ScheduledOccurrence, type ScheduledOccurrenceQuery, type ScheduledPostResult, type ScheduledTransaction, type ScheduledTransactionInput, type Transaction, type TransactionAnnotationInput, type TransactionAttachment, type TransactionPage, type TransactionQuery, type TransferResult, type UndoImportResult, type UpdateAccountInput } from "./domain";
 import { isRememberedCategoryLabel } from "./labelVocabulary";
-import { applyMerchantRules } from "./merchantRules";
+import { applyMerchantRules,merchantRulePrecedenceCompare } from "./merchantRules";
 import { generateRecurrenceDates } from "./scheduledRecurrence";
 import { findScheduledMatches } from "./scheduledMatching";
 import { calculateBudgetMonth,validateMonth } from "./budgetMath";
@@ -651,9 +651,9 @@ export class DemoFinanceRepository implements FinanceRepository {
     this.crossDomainLinks.set(linkId,{ordinaryTransactionId,investmentEventId,ordinaryAccountId:ordinary.id,investmentAccountId:investment.id,investmentCashEffectMinor:investmentCashEffect,status:input.status,amountMinor:input.amountMinor});
     return{linkId,ordinaryTransactionId,investmentEventId,direction};
   }
-  async listMerchantRules():Promise<MerchantRule[]>{return structuredClone([...this.merchantRules].sort((a,b)=>b.priority-a.priority||a.id.localeCompare(b.id)));}
-  async createMerchantRule(input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const rule={id:crypto.randomUUID(),...input};this.merchantRules.push(rule);return structuredClone(rule);}
-  async updateMerchantRule(id:string,input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");const rule={id,...input};this.merchantRules[index]=rule;return structuredClone(rule);}
+  async listMerchantRules():Promise<MerchantRule[]>{return structuredClone([...this.merchantRules].sort(merchantRulePrecedenceCompare));}
+  async createMerchantRule(input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const rule={id:crypto.randomUUID(),origin:input.origin??"manual",...input};this.merchantRules.push(rule);return structuredClone(rule);}
+  async updateMerchantRule(id:string,input:MerchantRuleInput):Promise<MerchantRule>{validateMerchantRule(input);const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");const rule={id,origin:input.origin??this.merchantRules[index].origin??"manual",...input};this.merchantRules[index]=rule;return structuredClone(rule);}
   async deleteMerchantRule(id:string):Promise<void>{const index=this.merchantRules.findIndex(item=>item.id===id);if(index<0)throw new Error("Merchant rule does not exist");this.merchantRules.splice(index,1);}
   async listImportProfiles():Promise<ImportProfile[]>{return structuredClone(this.importProfiles);}
   async saveImportProfile(input:ImportProfileInput):Promise<ImportProfile>{validateImportProfile(input,this.accounts);const existing=this.importProfiles.find(item=>item.name===input.name&&item.headerSignature===input.headerSignature);const profile={id:existing?.id??crypto.randomUUID(),...input};if(existing)this.importProfiles[this.importProfiles.indexOf(existing)]=profile;else this.importProfiles.unshift(profile);return structuredClone(profile);}
@@ -782,6 +782,16 @@ export class DemoFinanceRepository implements FinanceRepository {
           && ((item.originalPayee ?? item.payee).trim().toLocaleLowerCase() === originalPayee || item.payee.trim().toLocaleLowerCase() === originalPayee);
       });
       if (duplicate) throw new Error(`A matching transaction already exists for ${row.postedDate}. Nothing was imported.`);
+      if(row.transferAccountId){
+        const other=this.accounts.find(item=>item.id===row.transferAccountId&&!item.archived);
+        if(!other)throw new Error("Transfer account does not exist");
+        if(other.id===account.id)throw new Error("A transfer must use two different accounts");
+        if(other.type==="investment"||account.type==="investment")throw new Error("Statement transfer import supports ordinary accounts only");
+        if(other.currency!==account.currency)throw new Error("Transfers between different currencies are not supported yet");
+        if(row.scheduledOccurrenceId)throw new Error("A statement row cannot be both a linked transfer and a scheduled-item link");
+        if(row.splits?.length)throw new Error("A linked transfer import cannot contain category splits");
+        if(row.amountMinor===0)throw new Error("A linked transfer amount cannot be zero");
+      }
     }
     const selectedOccurrences=new Set<string>();
     prepared.forEach(row=>{
@@ -806,70 +816,92 @@ export class DemoFinanceRepository implements FinanceRepository {
       attachments: new Map([...this.attachments.entries()].map(([key, value]) => [key, { meta: structuredClone(value.meta), contentBase64: value.contentBase64 }])),
       transactionAttachmentIds: new Map([...this.transactionAttachmentIds.entries()].map(([key, value]) => [key, new Set(value)])),
       batchAttachmentIds: new Map([...this.batchAttachmentIds.entries()].map(([key, value]) => [key, new Set(value)])),
-      balanceMinor: account.balanceMinor,
+      accountBalances:new Map(this.accounts.map(item=>[item.id,item.balanceMinor]))
     };
     try {
       const batchId = crypto.randomUUID();
-      const imported = prepared.map(row => ({
-        id: crypto.randomUUID(), accountId: input.accountId, postedDate: row.postedDate, payee: row.payee,
-        category: row.category ?? "Uncategorized", amountMinor: row.amountMinor, status: "review" as const,
-        memo: row.memo, flagged: false, externalId: row.externalId, originalPayee: row.originalPayee,
-        splits: row.splits?.map(split => ({ id: crypto.randomUUID(), category: split.category, amountMinor: split.amountMinor, memo: split.memo })),
-        source: "import" as const, importBatchId: batchId
-      }));
+      const imported:Transaction[]=[];
+      const counterparts:Transaction[]=[];
+      prepared.forEach(row=>{
+        const id=crypto.randomUUID(),originalPayee=row.originalPayee??row.payee;
+        if(row.transferAccountId){
+          const other=this.accounts.find(item=>item.id===row.transferAccountId)!;
+          const linkId=crypto.randomUUID(),counterpartId=crypto.randomUUID(),outgoing=row.amountMinor<0;
+          imported.push({
+            id,accountId:account.id,postedDate:row.postedDate,payee:row.payee,originalPayee,
+            category:`Transfer: ${other.name}`,amountMinor:row.amountMinor,status:"review",memo:row.memo,flagged:false,
+            externalId:row.externalId,source:"transfer",importBatchId:batchId,transferLinkId:linkId,transferAccountId:other.id
+          });
+          counterparts.push({
+            id:counterpartId,accountId:other.id,postedDate:row.postedDate,payee:row.payee,
+            category:`Transfer: ${account.name}`,amountMinor:outgoing?Math.abs(row.amountMinor):-Math.abs(row.amountMinor),status:"review",memo:row.memo,flagged:false,
+            source:"transfer",transferLinkId:linkId,transferAccountId:account.id
+          });
+        }else{
+          imported.push({
+            id,accountId:input.accountId,postedDate:row.postedDate,payee:row.payee,
+            category:row.category?.trim()||"Uncategorized",amountMinor:row.amountMinor,status:"review",memo:row.memo,flagged:false,
+            externalId:row.externalId,originalPayee,
+            splits:row.splits?.map(split=>({id:crypto.randomUUID(),category:split.category,amountMinor:split.amountMinor,memo:split.memo})),
+            source:"import",importBatchId:batchId
+          });
+        }
+      });
       prepared.forEach((row,index)=>{
         if(!row.scheduledOccurrenceId)return;
         const occurrence=this.scheduledOccurrences.find(item=>item.id===row.scheduledOccurrenceId)!;
         occurrence.status="linked";occurrence.transactionId=imported[index].id;
       });
-      this.transactions.unshift(...imported);
-      account.balanceMinor += imported.reduce((total, row) => total + row.amountMinor, 0);
-      this.importBatches.unshift({ id: batchId, accountId: account.id, accountName: account.name, sourceName: input.sourceName, importedAt: new Date().toISOString(), transactionCount: imported.length, totalMinor: imported.reduce((total, row) => total + row.amountMinor, 0) });
-      const transactionIds = imported.map(row => row.id);
-      this.importedTransactionIds.set(batchId, transactionIds);
-      if (input.retainSource) {
-        await this.retainImportSourceAttachment({
-          importBatchId: batchId,
-          transactionIds,
-          originalFilename: input.retainSource.originalFilename,
-          mediaType: input.retainSource.mediaType,
-          contentBase64: input.retainSource.contentBase64,
-        });
+      this.transactions.unshift(...imported,...counterparts);
+      for(const transaction of [...imported,...counterparts]){
+        const target=this.accounts.find(item=>item.id===transaction.accountId);
+        if(target)target.balanceMinor+=transaction.amountMinor;
       }
-      return { batchId, importedCount: imported.length, transactionIds };
-    } catch (error) {
-      this.transactions = snapshot.transactions;
-      this.importBatches = snapshot.importBatches;
-      this.importedTransactionIds = new Map(snapshot.importedTransactionIds);
-      this.scheduledOccurrences = snapshot.scheduledOccurrences;
-      this.attachments = new Map(snapshot.attachments);
-      this.transactionAttachmentIds = new Map(snapshot.transactionAttachmentIds);
-      this.batchAttachmentIds = new Map(snapshot.batchAttachmentIds);
-      account.balanceMinor = snapshot.balanceMinor;
+      this.importBatches.unshift({id:batchId,accountId:account.id,accountName:account.name,sourceName:input.sourceName,importedAt:new Date().toISOString(),transactionCount:imported.length,totalMinor:imported.reduce((total,row)=>total+row.amountMinor,0)});
+      const transactionIds=imported.map(row=>row.id);
+      this.importedTransactionIds.set(batchId,transactionIds);
+      if(input.retainSource){
+        await this.retainImportSourceAttachment({importBatchId:batchId,transactionIds,originalFilename:input.retainSource.originalFilename,mediaType:input.retainSource.mediaType,contentBase64:input.retainSource.contentBase64});
+      }
+      return{batchId,importedCount:imported.length,transactionIds};
+    }catch(error){
+      this.transactions=snapshot.transactions;
+      this.importBatches=snapshot.importBatches;
+      this.importedTransactionIds=new Map(snapshot.importedTransactionIds);
+      this.scheduledOccurrences=snapshot.scheduledOccurrences;
+      this.attachments=new Map(snapshot.attachments);
+      this.transactionAttachmentIds=new Map(snapshot.transactionAttachmentIds);
+      this.batchAttachmentIds=new Map(snapshot.batchAttachmentIds);
+      for(const target of this.accounts)target.balanceMinor=snapshot.accountBalances.get(target.id)??target.balanceMinor;
       throw error;
     }
   }
   async listImportBatches(): Promise<ImportBatch[]> { return structuredClone(this.importBatches); }
   async undoImportBatch(batchId: string): Promise<UndoImportResult> {
-    const batch = this.importBatches.find(item => item.id === batchId);
-    if (!batch) throw new Error("Import batch does not exist");
-    if (batch.undoneAt) throw new Error("This import has already been undone");
-    const ids = new Set(this.importedTransactionIds.get(batchId) ?? []);
-    if([...ids].some(id=>this.reconciledTransactionIds.has(id)))throw new Error("This import contains reconciled transactions and cannot be undone");
-    if([...ids].some(id=>this.scheduledOccurrences.some(item=>item.transactionId===id)))throw new Error("This import contains transactions linked to scheduled occurrences and cannot be undone");
-    const removed = this.transactions.filter(item => ids.has(item.id));
-    this.transactions = this.transactions.filter(item => !ids.has(item.id));
-    const account = this.accounts.find(item => item.id === batch.accountId);
-    if (account) account.balanceMinor -= removed.reduce((total, row) => total + row.amountMinor, 0);
-    batch.undoneAt = new Date().toISOString();
-    for (const id of ids) this.clearTransactionAttachmentLinks(id);
-    const batchLinks = this.batchAttachmentIds.get(batchId);
-    if (batchLinks) {
-      const attachmentIds = [...batchLinks];
-      this.batchAttachmentIds.delete(batchId);
-      for (const attachmentId of attachmentIds) this.garbageCollectAttachment(attachmentId);
+    const batch=this.importBatches.find(item=>item.id===batchId);
+    if(!batch)throw new Error("Import batch does not exist");
+    if(batch.undoneAt)throw new Error("This import has already been undone");
+    const sourceIds=new Set(this.importedTransactionIds.get(batchId)??[]);
+    const sourceRows=this.transactions.filter(item=>sourceIds.has(item.id));
+    const transferLinks=new Set(sourceRows.map(item=>item.transferLinkId).filter((id):id is string=>Boolean(id)));
+    const counterpartRows=this.transactions.filter(item=>item.transferLinkId&&transferLinks.has(item.transferLinkId)&&!sourceIds.has(item.id));
+    const allRemoved=[...sourceRows,...counterpartRows];
+    if(allRemoved.some(item=>this.reconciledTransactionIds.has(item.id)))throw new Error("This import contains reconciled transactions and cannot be undone");
+    if(sourceRows.some(item=>this.scheduledOccurrences.some(occurrence=>occurrence.transactionId===item.id)))throw new Error("This import contains transactions linked to scheduled occurrences and cannot be undone");
+    const removeIds=new Set(allRemoved.map(item=>item.id));
+    this.transactions=this.transactions.filter(item=>!removeIds.has(item.id));
+    for(const transaction of allRemoved){
+      const target=this.accounts.find(item=>item.id===transaction.accountId);
+      if(target)target.balanceMinor-=transaction.amountMinor;
+      this.clearTransactionAttachmentLinks(transaction.id);
     }
-    return { batchId, removedCount: removed.length };
+    batch.undoneAt=new Date().toISOString();
+    const batchLinks=this.batchAttachmentIds.get(batchId);
+    if(batchLinks){
+      const attachmentIds=[...batchLinks];this.batchAttachmentIds.delete(batchId);
+      for(const attachmentId of attachmentIds)this.garbageCollectAttachment(attachmentId);
+    }
+    return{batchId,removedCount:sourceRows.length};
   }
   async listTransactionAttachments(transactionId: string): Promise<TransactionAttachment[]> {
     if (!this.transactions.some((item) => item.id === transactionId)) throw new Error("Transaction does not exist");

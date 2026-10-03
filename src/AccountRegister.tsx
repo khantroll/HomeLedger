@@ -97,8 +97,16 @@ export function AccountRegister({
   }, [lockedAccountId]);
 
   useEffect(() => {
-    if (!locked && initialAccountId !== undefined) setAccountId(initialAccountId);
-  }, [initialAccountId, locked]);
+    if (locked) return;
+    // Financial Find and other landings must apply account scope even when clearing it
+    // (archived-account hits land on the global register with accountId undefined).
+    if (focusTransactionId) {
+      setAccountId(initialAccountId ?? "");
+      setFlaggedOnly(false);
+      return;
+    }
+    if (initialAccountId !== undefined) setAccountId(initialAccountId);
+  }, [focusTransactionId, initialAccountId, locked]);
 
   useEffect(() => {
     if (!locked) setStatus(initialStatus);

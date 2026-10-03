@@ -1,4 +1,4 @@
-use super::{apply_migrations, bulk_delete_transactions_inner, bulk_set_transaction_category_inner, bulk_update_transaction_status_inner, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, merge_categories_inner, merge_payees_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, remove_unused_category_inner, remove_unused_payee_inner, rename_category_inner, rename_payee_inner, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_annotation_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, BulkSetTransactionCategoryRequest, BulkTransactionIdsRequest, BulkUpdateTransactionStatusRequest, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransactionAnnotationRequest, TransferRequest, UpdateAccountRequest};
+use super::{apply_migrations, bulk_delete_transactions_inner, bulk_set_transaction_category_inner, bulk_update_transaction_status_inner, clean_import_profile, clean_optional, clean_required, clean_scheduled_transaction, complete_reconciliation_inner, create_savings_goal_inner, create_transaction_inner, create_transfer_inner, delete_savings_goal_inner, delete_transaction_inner, delete_transfer_inner, generate_scheduled_occurrences_inner, get_budget_month_inner, get_debt_plan_inner, import_transactions_inner, insert_scheduled_transaction, link_scheduled_occurrence_inner, list_savings_goals_inner, list_transactions_page_inner, load_merchant_rules, matching_merchant_rule, merge_categories_inner, merge_payees_inner, post_scheduled_occurrence_inner, process_scheduled_auto_post_inner, query_transactions, refresh_label_memory, remove_unused_category_inner, remove_unused_payee_inner, rename_category_inner, rename_payee_inner, reorder_accounts_inner, restore_database_inner, save_debt_plan_inner, set_account_archived_inner, skip_scheduled_occurrence_inner, snapshot_database, undo_import_batch_inner, update_account_inner, update_savings_goal_inner, update_transaction_annotation_inner, update_transaction_inner, update_transfer_inner, validate_backup_database, workbook_cell_text, BulkSetTransactionCategoryRequest, BulkTransactionIdsRequest, BulkUpdateTransactionStatusRequest, CompleteReconciliationRequest, CreateTransactionRequest, CreateTransactionSplitRequest, DebtPlanRequest, DebtTerm, ImportProfileRequest, ImportTransactionRow, ImportTransactionSplit, ImportTransactionsRequest, SavingsGoalRequest, ScheduledAutoPostRequest, ScheduledOccurrenceQuery, ScheduledTransactionRequest, TransactionQuery, TransactionAnnotationRequest, TransferRequest, UpdateAccountRequest};
 use calamine::Data;
 use rusqlite::Connection;
 use crate::investment::{snapshot_inner, SCALE_E8};
@@ -33,7 +33,7 @@ fn migration_creates_local_ledger_tables() {
     let catalog_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('categories','payees')",[],|row|row.get(0)).unwrap();
     let template_columns:i64=connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('source_kind','source_signature','pdf_layout','workbook_sheet_name','workbook_header_row')",[],|row|row.get(0)).unwrap();
     let audit_tables:i64=connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_analysis_audit'",[],|row|row.get(0)).unwrap();
-    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (21, 2, 1, 1, 2, 2,1,2,1,2,5,1));
+    assert_eq!((version, reconciliation_tables, merchant_tables, profile_tables, scheduled_tables, budget_tables,auto_post_columns,debt_tables,savings_tables,catalog_tables,template_columns,audit_tables), (23, 2, 1, 1, 2, 2,1,2,1,2,5,1));
     let oict: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ordinary_investment_cash_transfers'", [], |row| row.get(0)).unwrap();
     assert_eq!(oict, 1);
     let attachment_tables: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('attachments','transaction_attachments','import_batch_attachments')", [], |row| row.get(0)).unwrap();
@@ -63,7 +63,7 @@ fn migration_upgrades_a_populated_version_five_ledger() {
     let version: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
     let preserved: (String, i64) = connection.query_row("SELECT payee, amount_minor FROM transactions WHERE id='existing-transaction'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     let locale_columns: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_table_info('import_profiles') WHERE name IN ('date_order','number_format')", [], |row| row.get(0)).unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, 23);
     assert_eq!(preserved, ("Existing Payee".into(), -2500));
     assert_eq!(locale_columns, 2);
 }
@@ -115,9 +115,28 @@ fn migration_upgrades_populated_v17_without_breaking_account_foreign_keys() {
     let fk_count:i64=connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get(0)).unwrap();
     let related:(i64,i64,i64,i64,i64,i64)=connection.query_row("SELECT (SELECT COUNT(*) FROM transactions WHERE account_id='a'),(SELECT COUNT(*) FROM import_batches WHERE account_id='a'),(SELECT COUNT(*) FROM reconciliations WHERE account_id='a'),(SELECT COUNT(*) FROM import_profiles WHERE account_id='a'),(SELECT COUNT(*) FROM debt_terms WHERE account_id='b'),(SELECT COUNT(*) FROM savings_goals WHERE account_id='a')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
     connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('inv','Brokerage','investment','USD',0,'Household')",[]).unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, 23);
     assert_eq!(fk_count,0);
     assert_eq!(related,(1,1,1,1,1,1));
+}
+
+
+#[test]
+fn taught_pdf_layout_variants_survive_profile_cleaning_and_storage_constraint() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',0,'Household')",[]).unwrap();
+    let request=ImportProfileRequest{
+        name:"Taught statement".into(),account_id:Some("a".into()),header_signature:"Date|Description|Debit|Credit".into(),
+        source_kind:"pdf".into(),source_signature:Some("example.pdf".into()),pdf_layout:Some("debit-credit-before-balance".into()),
+        workbook_sheet_name:None,workbook_header_row:None,date_column:0,payee_column:1,amount_column:-1,debit_column:2,credit_column:3,
+        date_order:"mdy".into(),number_format:"dot".into()
+    };
+    let profile=clean_import_profile(request,"p".into()).unwrap();
+    connection.execute("INSERT INTO import_profiles(id,name,account_id,header_signature,source_kind,source_signature,pdf_layout,date_column,payee_column,amount_column,debit_column,credit_column,date_order,number_format) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+      rusqlite::params![profile.id,profile.name,profile.account_id,profile.header_signature,profile.source_kind,profile.source_signature,profile.pdf_layout,profile.date_column,profile.payee_column,profile.amount_column,profile.debit_column,profile.credit_column,profile.date_order,profile.number_format]).unwrap();
+    let saved:String=connection.query_row("SELECT pdf_layout FROM import_profiles WHERE id='p'",[],|row|row.get(0)).unwrap();
+    assert_eq!(saved,"debit-credit-before-balance");
 }
 
 #[test]
@@ -285,6 +304,7 @@ fn transaction_notes_and_flags_are_metadata_only_and_survive_edits() {
         account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
             posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
             amount_minor: -5500, memo: Some("imported statement memo".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
+            transfer_account_id: None,
         }],
         retain_source: None,
     }).unwrap();
@@ -297,6 +317,7 @@ fn transaction_notes_and_flags_are_metadata_only_and_survive_edits() {
         account_id: "a".into(), source_name: "statement.csv".into(), rows: vec![ImportTransactionRow {
             posted_date: "2026-09-21".into(), payee: "UTILITY".into(), original_payee: Some("UTILITY CO".into()),
             amount_minor: -5500, memo: Some("should not overwrite".into()), external_id: Some("ext-1".into()), category: None, splits: None, scheduled_occurrence_id: None,
+            transfer_account_id: None,
         }],
         retain_source: None,
     }) {
@@ -421,6 +442,7 @@ fn statement_import_is_atomic_and_rejects_duplicates() {
             posted_date: "2026-09-18".into(), payee: "Store".into(), original_payee: None, amount_minor: -1250, memo: None,
             external_id: Some("bank-1".into()), category: Some("Split transaction".into()),
             scheduled_occurrence_id: None,
+            transfer_account_id: None,
             splits: Some(vec![
                 ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None },
                 ImportTransactionSplit { category: "Household".into(), amount_minor: -250, memo: Some("Supplies".into()) },
@@ -457,6 +479,7 @@ fn statement_import_rejects_unbalanced_splits_before_writing() {
             posted_date: "2026-09-18".into(), payee: "Store".into(), original_payee: None, amount_minor: -1250, memo: None,
             external_id: None, category: Some("Split transaction".into()),
             scheduled_occurrence_id: None,
+            transfer_account_id: None,
             splits: Some(vec![ImportTransactionSplit { category: "Food".into(), amount_minor: -1000, memo: None }])
         }],
         retain_source: None,
@@ -478,11 +501,41 @@ fn statement_import_applies_deterministic_merchant_rules() {
             posted_date: "2026-09-18".into(), payee: "SQ *NEIGHBORHOOD MARKET #42".into(), original_payee: None,
             amount_minor: -1250, memo: None, external_id: None, category: None, splits: None,
             scheduled_occurrence_id: None,
+            transfer_account_id: None,
         }],
         retain_source: None,
     }).unwrap();
     let imported: (String,String,String) = connection.query_row("SELECT payee,original_payee,category FROM transactions", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
     assert_eq!(imported, ("Neighborhood Market".into(), "SQ *NEIGHBORHOOD MARKET #42".into(), "Food: Groceries".into()));
+}
+
+#[test]
+fn reviewed_statement_corrections_outrank_existing_merchant_rules() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',0,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES('r','Old rule','ARKANSAS VALLEY','arkansas valley','exact','expense','Old Payee','Old Category',100,1,'manual')",[]).unwrap();
+    import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
+      account_id:"a".into(),source_name:"statement.pdf".into(),
+      rows:vec![ImportTransactionRow{
+        posted_date:"2026-06-03".into(),payee:"Arkansas Valley Electric".into(),original_payee:Some("ARKANSAS VALLEY".into()),
+        amount_minor:-7995,memo:None,external_id:None,category:Some("Utilities: Electric".into()),splits:None,scheduled_occurrence_id:None,transfer_account_id:None
+      }],retain_source:None
+    }).unwrap();
+    let row:(String,String,String)=connection.query_row("SELECT payee,original_payee,category FROM transactions",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(row,("Arkansas Valley Electric".into(),"ARKANSAS VALLEY".into(),"Utilities: Electric".into()));
+}
+
+#[test]
+fn manual_merchant_rules_outrank_remembered_corrections() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES('remembered','Remembered','ARKANSAS VALLEY','arkansas valley','exact','expense','Remembered Payee','Remembered Category',9999,1,'remembered')",[]).unwrap();
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES('manual','Custom','ARKANSAS VALLEY','arkansas valley','exact','expense','Arkansas Valley Electric','Utilities: Electric',10,1,'manual')",[]).unwrap();
+    let rules=load_merchant_rules(&connection).unwrap();
+    let matched=matching_merchant_rule(&rules,"ARKANSAS VALLEY",-7995).unwrap();
+    assert_eq!(matched.id,"manual");
+    assert_eq!(matched.origin,"manual");
 }
 
 #[test]
@@ -629,7 +682,7 @@ fn statement_import_links_an_eligible_occurrence_in_the_same_transaction() {
     let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
     let imported=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
         account_id:"a".into(),source_name:"statement.csv".into(),rows:vec![ImportTransactionRow{
-            posted_date:"2026-01-30".into(),payee:"UTILITY PAYMENT".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id.clone()),
+            posted_date:"2026-01-30".into(),payee:"UTILITY PAYMENT".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id.clone()),transfer_account_id:None,
         }],
         retain_source:None,
     }).unwrap();
@@ -651,7 +704,7 @@ fn statement_import_rolls_back_when_selected_occurrence_is_ineligible() {
     let occurrence_id:String=connection.query_row("SELECT id FROM scheduled_occurrences",[],|row|row.get(0)).unwrap();
     let result=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
         account_id:"a".into(),source_name:"statement.csv".into(),rows:vec![ImportTransactionRow{
-            posted_date:"2026-01-30".into(),payee:"Unrelated merchant".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id),
+            posted_date:"2026-01-30".into(),payee:"Unrelated merchant".into(),original_payee:None,amount_minor:-2600,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:Some(occurrence_id),transfer_account_id:None,
         }],
         retain_source:None,
     });
@@ -1373,4 +1426,39 @@ fn cross_domain_ordinary_leg_rejects_generic_edit_delete_and_reconciliation() {
     crate::cross_domain_transfer::delete_cross_domain_cash_transfer_inner(&mut connection, created.link_id).unwrap();
     let remaining: i64 = connection.query_row("SELECT COUNT(*) FROM transactions WHERE id=?1", [&created.ordinary_transaction_id], |r| r.get(0)).unwrap();
     assert_eq!(remaining, 0);
+}
+
+#[test]
+fn statement_import_can_create_confirmed_linked_transfer_and_undo_both_legs() {
+    let mut connection=Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('checking','RFCU Checking','checking','USD',0,'Household')",[]).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('citi','Citi Card','credit','USD',0,'Household')",[]).unwrap();
+    let imported=import_transactions_inner(&mut connection,None,ImportTransactionsRequest{
+        account_id:"checking".into(),source_name:"STATEMENT-2026-08-31.pdf".into(),
+        rows:vec![ImportTransactionRow{
+            posted_date:"2026-06-03".into(),payee:"Citi".into(),original_payee:Some("CITI AUTOPAY".into()),
+            amount_minor:-15000,memo:None,external_id:None,category:None,splits:None,scheduled_occurrence_id:None,
+            transfer_account_id:Some("citi".into()),
+        }],retain_source:None
+    }).unwrap();
+    assert_eq!(imported.imported_count,1);
+    assert_eq!(imported.transaction_ids.len(),1);
+    let source_id=&imported.transaction_ids[0];
+    let source:(String,String,String,i64,String)=connection.query_row(
+        "SELECT payee,original_payee,category,amount_minor,source FROM transactions WHERE id=?1",[source_id],
+        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))
+    ).unwrap();
+    assert_eq!(source,("Citi".into(),"CITI AUTOPAY".into(),"Transfer: Citi Card".into(),-15000,"transfer".into()));
+    let counterpart:(String,i64,String)=connection.query_row(
+        "SELECT txn.account_id,txn.amount_minor,txn.category FROM transfer_links link JOIN transactions txn ON txn.id=link.to_transaction_id WHERE link.from_transaction_id=?1",
+        [source_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))
+    ).unwrap();
+    assert_eq!(counterpart,("citi".into(),15000,"Transfer: RFCU Checking".into()));
+    let undone=undo_import_batch_inner(&mut connection,&imported.batch_id).unwrap();
+    assert_eq!(undone.removed_count,1);
+    let remaining:i64=connection.query_row("SELECT COUNT(*) FROM transactions",[],|row|row.get(0)).unwrap();
+    assert_eq!(remaining,0);
+    let links:i64=connection.query_row("SELECT COUNT(*) FROM transfer_links",[],|row|row.get(0)).unwrap();
+    assert_eq!(links,0);
 }

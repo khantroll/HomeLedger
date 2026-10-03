@@ -381,6 +381,8 @@ export interface ImportTransactionRow {
   category?: string;
   splits?: ImportTransactionSplit[];
   scheduledOccurrenceId?: string;
+  /** Explicitly confirmed counter-account for a statement row that should import as a linked transfer. */
+  transferAccountId?: string;
 }
 
 export type ScheduledMatchConfidence = "exact" | "probable" | "possible";
@@ -539,6 +541,7 @@ export interface CrossDomainCashTransferResult {
 
 export type MerchantRuleMatchType = "contains" | "starts_with" | "exact";
 export type MerchantRuleDirection = "any" | "expense" | "income";
+export type MerchantRuleOrigin = "manual" | "remembered";
 
 export interface MerchantRule {
   id: string;
@@ -550,6 +553,8 @@ export interface MerchantRule {
   category?: string;
   priority: number;
   enabled: boolean;
+  /** Manual rules outrank review-created remembered corrections regardless of numeric priority. */
+  origin?: MerchantRuleOrigin;
 }
 
 export type MerchantRuleInput = Omit<MerchantRule,"id">;
@@ -561,7 +566,7 @@ export interface ImportProfile {
   headerSignature: string;
   sourceKind: "delimited"|"workbook"|"pdf"|"ocr";
   sourceSignature?: string;
-  pdfLayout?: "signed-last"|"signed-before-balance"|"expenses-last"|"expenses-before-balance";
+  pdfLayout?: "signed-last"|"signed-before-balance"|"debit-credit-last"|"debit-credit-before-balance"|"expenses-last"|"expenses-before-balance";
   workbookSheetName?: string;
   workbookHeaderRow?: number;
   dateColumn: number;

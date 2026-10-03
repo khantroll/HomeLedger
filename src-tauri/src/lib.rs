@@ -1013,6 +1013,7 @@ struct MerchantRule {
     category: Option<String>,
     priority: i64,
     enabled: bool,
+    origin: String,
 }
 
 #[derive(Deserialize)]
@@ -1026,6 +1027,7 @@ struct MerchantRuleRequest {
     category: Option<String>,
     priority: i64,
     enabled: bool,
+    origin: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1089,6 +1091,7 @@ pub(crate) struct ImportTransactionRow {
     category: Option<String>,
     splits: Option<Vec<ImportTransactionSplit>>,
     scheduled_occurrence_id: Option<String>,
+    transfer_account_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1417,7 +1420,7 @@ struct RestoreResult {
     transaction_count: i64,
 }
 
-const CURRENT_SCHEMA_VERSION: i64 = 21;
+const CURRENT_SCHEMA_VERSION: i64 = 23;
 const HOMELEDGER_APPLICATION_ID: i64 = 1_212_957_767;
 const MAX_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_RECOVERY_RETENTION: usize = 7;
@@ -1668,6 +1671,22 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         let tables: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('attachments','transaction_attachments','import_batch_attachments')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
         if tables != 3 { return Err("Transaction attachments migration did not create required tables".into()); }
         tx.execute("INSERT INTO schema_migrations(version, description) VALUES(21, 'transaction attachments and receipt retention')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 22 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/022_pdf_template_layouts.sql")).map_err(|e| e.to_string())?;
+        let fk_errors: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if fk_errors != 0 { return Err(format!("PDF template layout migration failed foreign-key validation with {fk_errors} violation(s)")); }
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(22, 'PDF template debit-credit layouts')", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if version < 23 {
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(include_str!("../migrations/023_merchant_rule_origin.sql")).map_err(|e| e.to_string())?;
+        let origin_col:i64=tx.query_row("SELECT COUNT(*) FROM pragma_table_info('merchant_rules') WHERE name='origin'",[],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if origin_col!=1{return Err("Merchant-rule origin migration did not add the origin column".into());}
+        tx.execute("INSERT INTO schema_migrations(version, description) VALUES(23, 'merchant rule precedence origin')", []).map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2591,18 +2610,20 @@ fn clean_merchant_rule(request:MerchantRuleRequest,id:String)->Result<(MerchantR
     if !MATCH_TYPES.contains(&request.match_type.as_str()){return Err("Unsupported merchant-rule match type".into());}
     if !DIRECTIONS.contains(&request.direction.as_str()){return Err("Unsupported merchant-rule direction".into());}
     if !(-10_000..=10_000).contains(&request.priority){return Err("Priority must be between -10000 and 10000".into());}
+    let origin=request.origin.unwrap_or_else(||"manual".into());
+    if !["manual","remembered"].contains(&origin.as_str()){return Err("Unsupported merchant-rule origin".into());}
     let pattern=clean_required(request.pattern,"Match text",120)?;
     let normalized_pattern=normalize_merchant(&pattern);
     if normalized_pattern.is_empty(){return Err("Match text must contain a letter or number".into());}
     let rename_to=clean_optional(request.rename_to,160)?;
     let category=clean_optional(request.category,120)?;
     if rename_to.is_none()&&category.is_none(){return Err("A rule must rename the payee, assign a category, or both".into());}
-    Ok((MerchantRule{id,name:clean_required(request.name,"Rule name",80)?,pattern,match_type:request.match_type,direction:request.direction,rename_to,category,priority:request.priority,enabled:request.enabled},normalized_pattern))
+    Ok((MerchantRule{id,name:clean_required(request.name,"Rule name",80)?,pattern,match_type:request.match_type,direction:request.direction,rename_to,category,priority:request.priority,enabled:request.enabled,origin},normalized_pattern))
 }
 
 fn load_merchant_rules(connection:&Connection)->Result<Vec<MerchantRule>,String>{
-    let mut statement=connection.prepare("SELECT id,name,pattern,match_type,direction,rename_to,category,priority,enabled FROM merchant_rules ORDER BY priority DESC,id").map_err(|e|e.to_string())?;
-    let rows=statement.query_map([],|row|Ok(MerchantRule{id:row.get(0)?,name:row.get(1)?,pattern:row.get(2)?,match_type:row.get(3)?,direction:row.get(4)?,rename_to:row.get(5)?,category:row.get(6)?,priority:row.get(7)?,enabled:row.get(8)?})).map_err(|e|e.to_string())?;
+    let mut statement=connection.prepare("SELECT id,name,pattern,match_type,direction,rename_to,category,priority,enabled,origin FROM merchant_rules ORDER BY CASE origin WHEN 'manual' THEN 0 ELSE 1 END, priority DESC,id").map_err(|e|e.to_string())?;
+    let rows=statement.query_map([],|row|Ok(MerchantRule{id:row.get(0)?,name:row.get(1)?,pattern:row.get(2)?,match_type:row.get(3)?,direction:row.get(4)?,rename_to:row.get(5)?,category:row.get(6)?,priority:row.get(7)?,enabled:row.get(8)?,origin:row.get(9)?})).map_err(|e|e.to_string())?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
 }
 
@@ -2616,7 +2637,7 @@ fn list_merchant_rules(state:State<DbState>)->Result<Vec<MerchantRule>,String>{
 fn create_merchant_rule(request:MerchantRuleRequest,state:State<DbState>)->Result<MerchantRule,String>{
     let (rule,normalized)=clean_merchant_rule(request,Uuid::new_v4().to_string())?;
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
-    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled]).map_err(|e|e.to_string())?;
+    connection.execute("INSERT INTO merchant_rules(id,name,pattern,normalized_pattern,match_type,direction,rename_to,category,priority,enabled,origin) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled,rule.origin]).map_err(|e|e.to_string())?;
     Ok(rule)
 }
 
@@ -2625,7 +2646,7 @@ fn update_merchant_rule(rule_id:String,request:MerchantRuleRequest,state:State<D
     let rule_id=clean_required(rule_id,"Merchant rule",80)?;
     let (rule,normalized)=clean_merchant_rule(request,rule_id)?;
     let connection=state.0.lock().map_err(|_|"Database lock failed".to_string())?;
-    let changed=connection.execute("UPDATE merchant_rules SET name=?2,pattern=?3,normalized_pattern=?4,match_type=?5,direction=?6,rename_to=?7,category=?8,priority=?9,enabled=?10,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled]).map_err(|e|e.to_string())?;
+    let changed=connection.execute("UPDATE merchant_rules SET name=?2,pattern=?3,normalized_pattern=?4,match_type=?5,direction=?6,rename_to=?7,category=?8,priority=?9,enabled=?10,origin=?11,modified_at=CURRENT_TIMESTAMP WHERE id=?1",params![rule.id,rule.name,rule.pattern,normalized,rule.match_type,rule.direction,rule.rename_to,rule.category,rule.priority,rule.enabled,rule.origin]).map_err(|e|e.to_string())?;
     if changed!=1{return Err("Merchant rule does not exist".into());}
     Ok(rule)
 }
@@ -2648,7 +2669,7 @@ fn clean_import_profile(request:ImportProfileRequest,id:String)->Result<ImportPr
     if !["delimited","workbook","pdf","ocr"].contains(&request.source_kind.as_str()){return Err("Import profile source kind is invalid".into());}
     let source_signature=clean_optional(request.source_signature,200)?;
     let pdf_layout=clean_optional(request.pdf_layout,40)?;
-    if pdf_layout.as_ref().is_some_and(|layout|!["signed-last","signed-before-balance","expenses-last","expenses-before-balance"].contains(&layout.as_str())){return Err("Import profile PDF layout is invalid".into());}
+    if pdf_layout.as_ref().is_some_and(|layout|!["signed-last","signed-before-balance","debit-credit-last","debit-credit-before-balance","expenses-last","expenses-before-balance"].contains(&layout.as_str())){return Err("Import profile PDF layout is invalid".into());}
     if (request.source_kind=="pdf"||request.source_kind=="ocr")&&(source_signature.is_none()||pdf_layout.is_none()){return Err("PDF and OCR templates require a source signature and statement layout".into());}
     let workbook_sheet_name=clean_optional(request.workbook_sheet_name,200)?;
     if request.workbook_header_row.is_some_and(|row|!(0..=10000).contains(&row)){return Err("Workbook header row is out of range".into());}
@@ -3531,6 +3552,12 @@ fn import_transactions_inner(
         clean_optional(row.memo.clone(), 500)?;
         clean_optional(row.external_id.clone(), 255)?;
         clean_optional(row.category.clone(), 120)?;
+        if let Some(transfer_account_id)=&row.transfer_account_id {
+            clean_required(transfer_account_id.clone(),"Transfer account",80)?;
+            if row.scheduled_occurrence_id.is_some(){return Err("A statement row cannot be both a linked transfer and a scheduled-item link".into());}
+            if row.splits.as_ref().is_some_and(|items|!items.is_empty()){return Err("A linked transfer import cannot contain category splits".into());}
+            if row.amount_minor==0{return Err("A linked transfer amount cannot be zero".into());}
+        }
         if let Some(occurrence_id)=&row.scheduled_occurrence_id{
             let occurrence_id=clean_required(occurrence_id.clone(),"Scheduled occurrence",80)?;
             if !selected_occurrences.insert(occurrence_id){return Err("A scheduled occurrence was selected more than once".into());}
@@ -3559,21 +3586,49 @@ fn import_transactions_inner(
     tx.execute("INSERT INTO import_batches(id, account_id, source_name, original_transaction_count, original_total_minor) VALUES(?1, ?2, ?3, ?4, ?5)", params![batch_id, account_id, source_name, imported_count as i64, original_total_minor]).map_err(|e| e.to_string())?;
     let mut transaction_ids = Vec::with_capacity(imported_count);
     for row in request.rows {
+        let reviewed=row.original_payee.is_some();
         let original_payee=clean_required(row.original_payee.clone().unwrap_or_else(||row.payee.clone()),"Description/payee",160)?;
-        let matched_rule=matching_merchant_rule(&merchant_rules,&original_payee,row.amount_minor);
-        let payee=matched_rule.and_then(|rule|rule.rename_to.clone()).unwrap_or_else(||row.payee.trim().to_string());
+        let submitted_payee=clean_required(row.payee.clone(),"Description/payee",160)?;
+        let matched_rule=if reviewed{None}else{matching_merchant_rule(&merchant_rules,&original_payee,row.amount_minor)};
+        let payee=matched_rule.and_then(|rule|rule.rename_to.clone()).unwrap_or(submitted_payee);
         let duplicate: Option<i64> = tx.query_row(
             "SELECT 1 FROM transactions WHERE account_id = ?1 AND ((?5 IS NOT NULL AND external_id = ?5) OR (posted_date = ?2 AND amount_minor = ?3 AND (lower(trim(COALESCE(original_payee,payee))) = lower(trim(?4)) OR lower(trim(payee)) = lower(trim(?4))))) LIMIT 1",
             params![account_id, row.posted_date, row.amount_minor, original_payee, row.external_id],
             |result| result.get(0)
         ).optional().map_err(|e| e.to_string())?;
         if duplicate.is_some() { return Err(format!("A matching transaction already exists for {}. Nothing was imported.", row.posted_date)); }
+
+        if let Some(other_account_id)=row.transfer_account_id.clone(){
+            let other_account_id=clean_required(other_account_id,"Transfer account",80)?;
+            if other_account_id==account_id{return Err("A transfer must use two different accounts".into());}
+            let (from_id,to_id,current_is_from)=if row.amount_minor<0{(account_id.clone(),other_account_id.clone(),true)}else{(other_account_id.clone(),account_id.clone(),false)};
+            let (from_name,to_name)=transfer_accounts(&tx,&from_id,&to_id)?;
+            let link_id=Uuid::new_v4().to_string();
+            let source_transaction_id=Uuid::new_v4().to_string();
+            let counterpart_transaction_id=Uuid::new_v4().to_string();
+            let absolute=row.amount_minor.checked_abs().ok_or("Transfer amount is too large")?;
+            let source_category=if current_is_from{format!("Transfer: {to_name}")}else{format!("Transfer: {from_name}")};
+            let counterpart_category=if current_is_from{format!("Transfer: {from_name}")}else{format!("Transfer: {to_name}")};
+            tx.execute(
+                "INSERT INTO transactions(id,account_id,posted_date,payee,original_payee,category,amount_minor,status,memo,source,import_batch_id,external_id) VALUES(?1,?2,?3,?4,?5,?6,?7,'review',?8,'transfer',?9,?10)",
+                params![source_transaction_id,account_id,row.posted_date,payee,original_payee,source_category,row.amount_minor,row.memo,batch_id,row.external_id]
+            ).map_err(|e|e.to_string())?;
+            tx.execute(
+                "INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,memo,source) VALUES(?1,?2,?3,?4,?5,?6,'review',?7,'transfer')",
+                params![counterpart_transaction_id,other_account_id,row.posted_date,payee,counterpart_category,if current_is_from{absolute}else{-absolute},row.memo]
+            ).map_err(|e|e.to_string())?;
+            let (from_transaction_id,to_transaction_id)=if current_is_from{(&source_transaction_id,&counterpart_transaction_id)}else{(&counterpart_transaction_id,&source_transaction_id)};
+            tx.execute("INSERT INTO transfer_links(id,from_transaction_id,to_transaction_id) VALUES(?1,?2,?3)",params![link_id,from_transaction_id,to_transaction_id]).map_err(|e|e.to_string())?;
+            transaction_ids.push(source_transaction_id);
+            continue;
+        }
+
         if let Some(occurrence_id)=&row.scheduled_occurrence_id{
             let eligible=scheduled_candidates(&tx,&account_id,&row,&payee)?.into_iter().any(|candidate|candidate.occurrence_id==*occurrence_id);
             if !eligible{return Err("The selected scheduled occurrence is no longer eligible for this transaction".into());}
         }
         let transaction_id = Uuid::new_v4().to_string();
-        let source_category=row.category.as_deref().map(str::trim).filter(|value|!value.is_empty()&&*value!="Uncategorized");
+        let source_category=row.category.as_deref().map(str::trim).filter(|value|!value.is_empty());
         let category=source_category.or_else(||matched_rule.and_then(|rule|rule.category.as_deref())).unwrap_or("Uncategorized");
         tx.execute(
             "INSERT INTO transactions(id, account_id, posted_date, payee, original_payee, category, amount_minor, status, memo, source, import_batch_id, external_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'review', ?8, 'import', ?9, ?10)",
@@ -3637,10 +3692,31 @@ fn undo_import_batch_inner(connection: &mut Connection, batch_id: &str) -> Resul
     let batch: Option<(Option<String>, i64)> = tx.query_row("SELECT undone_at, original_transaction_count FROM import_batches WHERE id = ?1", params![batch_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|e| e.to_string())?;
     let (undone_at, expected_count) = batch.ok_or("Import batch does not exist")?;
     if undone_at.is_some() { return Err("This import has already been undone".into()); }
-    let reconciled: Option<i64> = tx.query_row("SELECT 1 FROM reconciliation_items item JOIN transactions txn ON txn.id = item.transaction_id WHERE txn.import_batch_id = ?1 LIMIT 1", params![batch_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let reconciled: Option<i64> = tx.query_row(
+        "SELECT 1 FROM reconciliation_items item JOIN transactions txn ON txn.id=item.transaction_id
+         WHERE txn.import_batch_id=?1 OR txn.id IN (
+           SELECT CASE WHEN source.id=link.from_transaction_id THEN link.to_transaction_id ELSE link.from_transaction_id END
+           FROM transactions source JOIN transfer_links link ON source.id IN (link.from_transaction_id,link.to_transaction_id)
+           WHERE source.import_batch_id=?1
+         ) LIMIT 1",
+        params![batch_id], |row| row.get(0)
+    ).optional().map_err(|e| e.to_string())?;
     if reconciled.is_some() { return Err("This import contains reconciled transactions and cannot be undone".into()); }
     let scheduled: Option<i64> = tx.query_row("SELECT 1 FROM scheduled_occurrences occurrence JOIN transactions txn ON txn.id=occurrence.transaction_id WHERE txn.import_batch_id=?1 LIMIT 1",params![batch_id],|row|row.get(0)).optional().map_err(|e|e.to_string())?;
     if scheduled.is_some(){return Err("This import contains transactions linked to scheduled occurrences and cannot be undone".into());}
+    let counterpart_ids:Vec<String>={
+        let mut statement=tx.prepare(
+          "SELECT CASE WHEN source.id=link.from_transaction_id THEN link.to_transaction_id ELSE link.from_transaction_id END
+           FROM transactions source JOIN transfer_links link ON source.id IN (link.from_transaction_id,link.to_transaction_id)
+           WHERE source.import_batch_id=?1"
+        ).map_err(|e|e.to_string())?;
+        let rows=statement.query_map(params![batch_id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        rows.collect::<Result<Vec<String>,_>>().map_err(|e|e.to_string())?
+    };
+    tx.execute("DELETE FROM transfer_links WHERE from_transaction_id IN (SELECT id FROM transactions WHERE import_batch_id=?1) OR to_transaction_id IN (SELECT id FROM transactions WHERE import_batch_id=?1)",params![batch_id]).map_err(|e|e.to_string())?;
+    for counterpart_id in counterpart_ids {
+        tx.execute("DELETE FROM transactions WHERE id=?1 AND source='transfer' AND import_batch_id IS NULL",params![counterpart_id]).map_err(|e|e.to_string())?;
+    }
     let removed_count = tx.execute("DELETE FROM transactions WHERE import_batch_id = ?1", params![batch_id]).map_err(|e| e.to_string())?;
     if removed_count as i64 != expected_count { return Err("Import batch no longer matches its original transaction count; nothing was removed".into()); }
     tx.execute("UPDATE import_batches SET undone_at = CURRENT_TIMESTAMP WHERE id = ?1 AND undone_at IS NULL", params![batch_id]).map_err(|e| e.to_string())?;
