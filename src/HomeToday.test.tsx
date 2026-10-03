@@ -29,7 +29,7 @@ describe("Home / Today cockpit",()=>{
  });
  it("prioritizes overdue, auto-post, review, flagged, forecast and budget attention deterministically",()=>{
   const templates:ScheduledTransaction[]=[
-   {id:"rent",kind:"transaction",accountId:"checking",payee:"Rent",category:"Housing",amountMinor:-250000,status:"pending",frequency:"monthly",anchorDate:"2026-10-01",enabled:true,autoPost:false},
+   {id:"rent",kind:"transaction",accountId:"checking",payee:"Rent",category:"Housing",amountMinor:-350000,status:"pending",frequency:"monthly",anchorDate:"2026-10-01",enabled:true,autoPost:false},
    {id:"utility",kind:"transaction",accountId:"checking",payee:"Utility",category:"Utilities",amountMinor:-10000,status:"pending",frequency:"monthly",anchorDate:"2026-10-03",enabled:true,autoPost:true},
   ];
   const occurrences:ScheduledOccurrence[]=[{id:"late",scheduledTransactionId:"rent",dueDate:"2026-10-01",status:"expected"},{id:"auto",scheduledTransactionId:"utility",dueDate:"2026-10-03",status:"expected"}];
@@ -52,7 +52,7 @@ describe("Home / Today cockpit",()=>{
   const {onNavigate,onOpenAccount}=renderHome({transactions,templates,occurrences});
   await user.click(screen.getByRole("button",{name:/flagged transaction/i}));
   expect(onNavigate).toHaveBeenCalledWith({page:"Transactions",status:"all",flaggedOnly:true});
-  await user.click(screen.getByRole("button",{name:/Oct 4, 2026 Payroll Expected income/}));
+  await user.click(screen.getByRole("button",{name:/Oct 4, 2026PayrollExpected income/}));
   expect(onNavigate).toHaveBeenCalledWith({page:"Bills",focus:{kind:"day",dueDate:"2026-10-04"}});
   await user.click(screen.getByRole("button",{name:/Checking/i}));
   expect(onOpenAccount).toHaveBeenCalledWith("checking");
