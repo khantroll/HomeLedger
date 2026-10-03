@@ -31,8 +31,11 @@ export type NavigationIntent =
       transactionId?: string;
       /** When set with transactionId, narrow the register date window so the focused row is loadable. */
       postedDate?: string;
+      /** Contextual Home/Today entry for follow-up flags. */
+      flaggedOnly?: boolean;
     }
   | { page: "Bills"; focus: BillsNavigationFocus }
   | { page: "Forecast"; focus?: ForecastNavigationFocus }
   | { page: "Budget"; focus?: BudgetNavigationFocus }
+  | { page: "Debt" }
   | { page: "Portfolio"; focus?: PortfolioNavigationFocus };
