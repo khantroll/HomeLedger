@@ -38,7 +38,7 @@ describe("App navigation shell", () => {
 
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Overview" })).toBeTruthy();
-    expect(screen.getByText("Available cash")).toBeTruthy();
+    expect(screen.getByText("Checking, savings & cash")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Recent transactions" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Accounts" })).toBeTruthy();
 
@@ -70,8 +70,8 @@ describe("App navigation shell", () => {
 
     render(<App />);
     await screen.findByRole("heading", { name: "Overview" });
-    await screen.findByText("Household Checking");
-    expect(screen.getAllByText("Needs review").length).toBeGreaterThan(1);
+    expect((await screen.findAllByText("Household Checking")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Needs review")).toHaveLength(1);
     expect(screen.queryByText("Emergency Savings")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Accounts" }));

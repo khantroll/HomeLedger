@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import { AlertTriangle, ArrowLeft, ArrowLeftRight, BarChart3, Bot, BriefcaseBusiness, CalendarDays, CircleDollarSign, FileInput, FolderTree, Landmark, LayoutDashboard, ListFilter, LockKeyhole, Menu, ReceiptText, Search, Settings, Tags, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
 import { formatMoney, parseMoney, type Account, type AccountType, type BudgetMonth, type CreateTransactionInput, type MerchantRuleInput, type ScheduledOccurrence, type ScheduledTransaction, type ScheduledTransactionInput, type Security, type Transaction } from "./domain";
 import { financeRepository as repository, investmentRepository, isNativeApp } from "./repository";
-import { calculateHouseholdValuation, householdCurrencies } from "./householdValuation";
-import type { PortfolioSnapshot } from "./domain";
 import { ImportPage } from "./ImportPage";
 import { BackupPage } from "./BackupPage";
 import { TransactionDialog } from "./TransactionDialog";
@@ -30,6 +28,7 @@ import { InvestmentAccountDialog } from "./InvestmentEditors";
 import { FinancialFindDialog } from "./FinancialFindDialog";
 import type { FinancialFindResult } from "./financialFind";
 import { resolveFinancialFindLanding } from "./financialFindNavigation";
+import { HomeToday } from "./HomeToday";
 
 type EditorDialog =
   | { kind: "account"; account?: Account }
@@ -62,8 +61,6 @@ export default function App() {
   const [dialog, setDialog] = useState<EditorDialog>(null);
   const [error, setError] = useState("");
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-  const [overviewPortfolio, setOverviewPortfolio] = useState<PortfolioSnapshot>();
-  const [valuationCurrency, setValuationCurrency] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -102,11 +99,7 @@ export default function App() {
   }, [refresh]);
 
   const activeAccounts = useMemo(() => accounts.filter(account => !account.archived), [accounts]);
-  const valuationCurrencies = useMemo(() => householdCurrencies(activeAccounts), [activeAccounts]);
-  useEffect(() => { if (!valuationCurrencies.includes(valuationCurrency)) setValuationCurrency(valuationCurrencies[0] ?? "USD"); }, [valuationCurrencies, valuationCurrency]);
-  useEffect(() => { if (active !== "Overview") return; const ids=activeAccounts.filter(a=>a.type==="investment").map(a=>a.id); if(!ids.length){setOverviewPortfolio({asOfDate:todayIso(),accounts:[]});return;} let cancelled=false; investmentRepository.calculatePortfolioSnapshot(ids,todayIso()).then(value=>{if(!cancelled)setOverviewPortfolio(value);}).catch(reason=>{if(!cancelled){setOverviewPortfolio(undefined);setError(reason instanceof Error?reason.message:String(reason));}}); return()=>{cancelled=true}; }, [active, activeAccounts]);
-  const household = useMemo(() => calculateHouseholdValuation(activeAccounts, overviewPortfolio, valuationCurrency || valuationCurrencies[0] || "USD"), [activeAccounts, overviewPortfolio, valuationCurrency, valuationCurrencies]);
-  const reviewCount = useMemo(() => transactions.filter((item) => item.status === "review").length, [transactions]);
+
 
 
   useEffect(() => {
@@ -274,7 +267,7 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <AccountRegister accounts={accounts} initialAccountId={navigationIntent?.page==="Transactions"?navigationIntent.accountId:undefined} initialStatus={navigationIntent?.page==="Transactions"?navigationIntent.status:"all"} initialSearch={navigationIntent?.page==="Transactions"?navigationIntent.search:undefined} focusPostedDate={navigationIntent?.page==="Transactions"?navigationIntent.postedDate:undefined} focusTransactionId={navigationIntent?.page==="Transactions"?navigationIntent.transactionId:undefined} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
+              <AccountRegister accounts={accounts} initialAccountId={navigationIntent?.page==="Transactions"?navigationIntent.accountId:undefined} initialStatus={navigationIntent?.page==="Transactions"?navigationIntent.status:"all"} initialSearch={navigationIntent?.page==="Transactions"?navigationIntent.search:undefined} initialFlaggedOnly={navigationIntent?.page==="Transactions"?Boolean(navigationIntent.flaggedOnly):false} focusPostedDate={navigationIntent?.page==="Transactions"?navigationIntent.postedDate:undefined} focusTransactionId={navigationIntent?.page==="Transactions"?navigationIntent.transactionId:undefined} refreshToken={registerToken} onRequestDialog={handleRegisterDialog} />
             </>
           ) : active === "Accounts" ? (
             <>
@@ -316,16 +309,7 @@ export default function App() {
                   onDismiss={() => setOnboardingDismissed(true)}
                 />
               )}
-                            <div className="overview-valuation-scope"><label>Household currency <select aria-label="Household valuation currency" value={household.currency} onChange={event=>setValuationCurrency(event.target.value)}>{valuationCurrencies.length?valuationCurrencies.map(currency=><option key={currency}>{currency}</option>):<option>USD</option>}</select></label>{household.incompleteInvestment&&<span className="notice">Net worth is incomplete because some investment holdings have no eligible price.</span>}</div>
-              <div className="summary-grid">
-                <Summary label="Available cash" value={formatMoney(household.availableCashMinor,household.currency)} detail="Positive checking, savings, and cash balances" tone="positive" />
-                <Summary label="Liabilities" value={formatMoney(Math.abs(household.liabilitiesMinor),household.currency)} detail="Credit and loan balances" tone="negative" />
-                <Summary label="Net worth" value={formatMoney(household.netWorthKnownMinor,household.currency)} detail={household.incompleteInvestment?`Known subtotal · ${household.unvaluedHoldingCount} unvalued investment${household.unvaluedHoldingCount===1?"":"s"}`:"Ordinary + investment value"} />
-                <Summary label="Needs review" value={String(reviewCount)} detail="Transactions requiring attention" tone="warning" />
-              </div>
-              <OverviewCommandCenter accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} onNavigate={openIntent}/>
-              <UpcomingScheduled accounts={activeAccounts} templates={scheduledTemplates} occurrences={scheduledOccurrences} onNavigate={openIntent} />
-              <section className="panel overview-accounts">
+              <HomeToday accounts={activeAccounts} transactions={transactions} templates={scheduledTemplates} occurrences={scheduledOccurrences} budgets={overviewBudgets} onNavigate={openIntent} onOpenAccount={openAccountDestination} />\n              <section className="panel overview-accounts">
                 <div className="panel-heading">
                   <div>
                     <h2>Accounts</h2>
