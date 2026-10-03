@@ -25,6 +25,7 @@ export type NavigationIntent =
   | {
       page: "Transactions";
       status: "review" | "all";
+      flaggedOnly?: boolean;
       accountId?: string;
       /** Optional register text filter; focusTransactionId remains authoritative for landing. */
       search?: string;
@@ -35,4 +36,5 @@ export type NavigationIntent =
   | { page: "Bills"; focus: BillsNavigationFocus }
   | { page: "Forecast"; focus?: ForecastNavigationFocus }
   | { page: "Budget"; focus?: BudgetNavigationFocus }
-  | { page: "Portfolio"; focus?: PortfolioNavigationFocus };
+  | { page: "Portfolio"; focus?: PortfolioNavigationFocus }
+  | { page: "Debt" };
