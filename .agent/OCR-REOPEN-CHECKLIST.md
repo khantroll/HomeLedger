@@ -1,25 +1,37 @@
-# OCR reopen checklist (frozen until structured import dogfood passes)
+# Deferred scanned-statement / OCR investigation
 
-## Stay frozen while
-- Exact-head CI on #65 is red, or
-- Structured Excel/CSV Import Review dogfood is incomplete, or
-- OCR is still required for everyday import
+**Status: DEFERRED / FUTURE EXPERIMENT. Do not reopen as part of v0.52 closure.**
 
-## Primary path
-- Structured CSV/Excel is the product path for everyday money.
-- OCR is best-effort assist only; never the Import gate.
+v0.52 preserves useful local document-processing infrastructure: packaged local Tesseract/PDF assets, no-CDN privacy behavior, scanned-PDF/image extraction, source retention/provenance, existing templates/parsers, and fail-closed review. Structured CSV/Excel and other structured financial formats remain the trusted import path.
 
-## If reopening OCR later — fix these first
-1. Section-aware parse (HISTORY vs DEPOSITS / similar regions; no double-count).
-2. Amount grammar: leading decimals (`.45`), trailing minus (`15.00-`), separate debit/credit vs signed-amount tokenizers; never teach Signed amount on Debit/Credit layouts.
-3. Balance column sacred: balance-aware continuity; fail closed when amount↔balance math breaks.
-4. Teaching = proposal until Apply; Save/update template is separate; never auto-link transfers from OCR text.
-5. No Tesseract training / LLM classification. Optional preprocess (deskew/contrast) only after 1–3 fail on a *new* scan.
+## Dogfood findings to preserve
 
-## Acceptance bar (one frozen RFCU fixture)
-- CITI / AFFINITY / similar: transaction amounts are amounts; running balances are not imported.
-- Continuation/detail lines separated from unresolved candidates; disabled Import explains blockers.
-- Apply teaching vs Save template semantics clear.
+The RFCU experiment exposed structural problems that should not be papered over with more regex/layout variants:
 
-## Out of scope on reopen spike
-- New milestone, AI categorizer, visual region editor, CDN OCR.
+- trailing-sign values such as `15.50-` can be reconstructed inconsistently by OCR;
+- one physical statement row can become duplicate logical rows with incorrect amounts;
+- identical physical schemas can reach parsing/teaching with incompatible token structures;
+- teaching/tagging cannot reliably repair damage introduced before a trustworthy physical row exists.
+
+## Architectural direction when deliberately reopened
+
+Future scanned-statement work should converge on one pipeline:
+
+OCR words/tokens + coordinates/bounding boxes
+→ physical row reconstruction
+→ column inference across multiple rows
+→ canonical Date / Description / Amount / Running Balance representation
+→ deterministic balance-continuity validation where evidence exists
+→ trustworthy structured transaction rows
+→ the existing HomeLedger review/categorization/import pipeline.
+
+The parser and teaching UI must consume the same reconstructed row model; they must not independently tokenize the same OCR row.
+
+## Safety bar
+
+- Never fabricate missing dates, signs, amounts, balances, or transactions.
+- Ambiguous/unresolved transaction candidates remain fail-closed.
+- Running balance is validation evidence, not a substitute transaction amount.
+- No LLM/AI authoritative parsing.
+- No automatic transfer creation from OCR text.
+- Do not make successful import of the RFCU dogfood statement a v0.52 requirement.
