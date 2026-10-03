@@ -209,10 +209,22 @@ Implement Milestone 1. Begin by creating the architecture and tests, then build 
 
 The original phased plan above remains the architectural guide. As of v0.52, Everyday Money is implemented and validated on top of the v0.51 investment foundation:
 
-- Ordinary household-finance daily driver: registers, transfers, splits, bills/recurring, budgeting (including Budget From History), savings goals, debt plans, cash-flow forecast, reports, import/OCR, reconciliation, Financial Find, category/payee management, transaction reuse, register bulk actions, notes/flags, and managed transaction attachments with optional import source retention.
+- Ordinary household-finance daily driver: registers, transfers, splits, bills/recurring, budgeting (including Budget From History), savings goals, debt plans, cash-flow forecast, reports, structured imports, reconciliation, Financial Find, category/payee management, transaction reuse, register bulk actions, notes/flags, and managed transaction attachments with optional import source retention. Local PDF/OCR infrastructure exists, but advanced scanned-statement transaction reconstruction is experimental/deferred and must fail closed when structure is ambiguous.
 - Attachment-aware portable `.hlb` backup/restore; automatic recovery snapshots remain database-only with live attachment-store validation.
 - Portfolio Foundation / Portfolio Manager, investment-aware household valuation/reporting, and atomic ordinary ↔ investment cash transfers remain in force from v0.51.
 
 Still intentionally not implemented by this milestone: brokerage/bank connectivity, investment import, trading, Watchlist, FX conversion, tax calculations, device/cloud sync, portfolio-performance algorithms, OCR-driven receipt→transaction automation, attachment content search, or a general document manager.
 
 The next roadmap work should begin only after this milestone-closure PR is reviewed; it should not be inferred from the obsolete “First task” wording above.
+
+## Post-v0.52 roadmap
+
+The repository-native backlog is intentionally small. The immediate sequence after v0.52 is:
+
+1. **Home / Today daily cockpit.** Build on the existing Overview/Today planning bridge so the home surface answers what needs attention, what bills and income are coming, which transactions need review, what happens before the next important cash-flow point, and where the user should go next. Reuse existing deterministic Bills, schedules, forecasts, budgets, review flags, and account data.
+2. **Transaction learning and rules as a general workflow.** Continue payee normalization, categorization memory, correction → remember behavior, rule management, and transfer recognition independently of import source. Structured imports and ordinary transaction correction are the primary test beds.
+3. **v0.53 daily-driver dogfood / polish.** Dogfood navigation, register editing, Bills, budgets/planning, reconciliation, reports/drilldowns, Find, categories/payees, backup/recovery, the Portfolio boundary, keyboard/accessibility behavior, and empty/setup states.
+
+The scanned-statement/OCR redesign remains parked until deliberately reopened. Its future direction is layout-aware reconstruction: OCR words/tokens plus coordinates → physical rows → cross-row column inference → canonical Date / Description / Amount / Running Balance → balance-continuity validation → the same structured transaction model used by CSV/Excel and the existing review/categorization/import pipeline. Parsing and teaching must not independently tokenize the same OCR row.
+
+Later candidates remain investment import, optional brokerage connectivity, device sync, and bank sync. They are not part of the immediate post-v0.52 work.
