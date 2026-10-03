@@ -71,7 +71,7 @@ describe("App navigation shell", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Overview" });
     expect((await screen.findAllByText("Household Checking")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Needs review").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("Needs review")).toHaveLength(1);
     expect(screen.queryByText("Emergency Savings")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Accounts" }));
