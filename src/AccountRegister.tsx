@@ -47,6 +47,8 @@ interface AccountRegisterProps {
   initialAccountId?: string;
   /** Optional starting status for contextual entry into the global register. */
   initialStatus?: TransactionStatusFilter;
+  /** Optional starting flag filter for contextual Home/Today entry. */
+  initialFlaggedOnly?: boolean;
   initialSearch?: string;
   /** Optional posted-date window used with focusTransactionId so Find landings are not lost to pagination. */
   focusPostedDate?: string;
@@ -61,6 +63,7 @@ export function AccountRegister({
   lockedAccountId,
   initialAccountId,
   initialStatus = "all",
+  initialFlaggedOnly = false,
   initialSearch = "",
   focusPostedDate,
   focusTransactionId,
@@ -89,7 +92,7 @@ export function AccountRegister({
   const [bulkCategory, setBulkCategory] = useState("");
   const [bulkStatus, setBulkStatus] = useState<"pending" | "cleared" | "review">("cleared");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [flaggedOnly, setFlaggedOnly] = useState(initialFlaggedOnly);
   const suggestions = useLedgerSuggestions();
 
   useEffect(() => {
@@ -111,6 +114,10 @@ export function AccountRegister({
   useEffect(() => {
     if (!locked) setStatus(initialStatus);
   }, [initialStatus, locked]);
+
+  useEffect(() => {
+    if (!locked && !focusTransactionId) setFlaggedOnly(initialFlaggedOnly);
+  }, [focusTransactionId, initialFlaggedOnly, locked]);
 
   useEffect(() => {
     if (!locked) { setSearch(initialSearch); setDraftSearch(initialSearch); }
