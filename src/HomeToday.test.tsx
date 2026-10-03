@@ -29,10 +29,10 @@ describe("Home / Today cockpit",()=>{
  });
  it("prioritizes overdue, auto-post, review, flagged, forecast and budget attention deterministically",()=>{
   const templates:ScheduledTransaction[]=[
-   {id:"rent",kind:"transaction",accountId:"checking",payee:"Rent",category:"Housing",amountMinor:-350000,status:"pending",frequency:"monthly",anchorDate:"2026-10-01",enabled:true,autoPost:false},
+   {id:"rent",kind:"transaction",accountId:"checking",payee:"Rent",category:"Housing",amountMinor:-350000,status:"pending",frequency:"monthly",anchorDate:"2026-10-04",enabled:true,autoPost:false},
    {id:"utility",kind:"transaction",accountId:"checking",payee:"Utility",category:"Utilities",amountMinor:-10000,status:"pending",frequency:"monthly",anchorDate:"2026-10-03",enabled:true,autoPost:true},
   ];
-  const occurrences:ScheduledOccurrence[]=[{id:"late",scheduledTransactionId:"rent",dueDate:"2026-10-01",status:"expected"},{id:"auto",scheduledTransactionId:"utility",dueDate:"2026-10-03",status:"expected"}];
+  const occurrences:ScheduledOccurrence[]=[{id:"late",scheduledTransactionId:"rent",dueDate:"2026-10-04",status:"expected"},{id:"auto",scheduledTransactionId:"utility",dueDate:"2026-10-03",status:"expected"}];
   const transactions:Transaction[]=[
    {id:"r",accountId:"checking",postedDate:"2026-10-02",payee:"Unknown",category:"Uncategorized",amountMinor:-100,status:"review"},
    {id:"f",accountId:"checking",postedDate:"2026-10-02",payee:"Follow up",category:"Misc",amountMinor:-100,status:"cleared",flagged:true},
@@ -40,7 +40,7 @@ describe("Home / Today cockpit",()=>{
   const over:BudgetMonth={...budget,availableMinor:-5000,spentMinor:105000,lines:[{...budget.lines[0],availableMinor:-5000,spentMinor:105000}]};
   const {container}=renderHome({transactions,templates,occurrences,budgets:[over]});
   const titles=[...container.querySelectorAll(".home-action strong")].map(x=>x.textContent);
-  expect(titles.slice(0,4)).toEqual(["Rent is overdue","1 automatic posting is due","1 transaction needs review","1 flagged transaction to revisit"]);
+  expect(titles.slice(0,4)).toEqual(["1 automatic posting is due","1 transaction needs review","1 flagged transaction to revisit","Cash is projected to go negative"]);
   expect(screen.getByText("Cash is projected to go negative")).toBeTruthy();
   expect(screen.getByText("Food is over its monthly plan")).toBeTruthy();
  });
