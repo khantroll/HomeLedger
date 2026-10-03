@@ -11,8 +11,8 @@ const checking:Account={id:"checking",name:"Checking",type:"checking",currency:"
 const budget:BudgetMonth={month:"2026-10",plannedMinor:100000,spentMinor:40000,carryInMinor:0,availableMinor:60000,lines:[{id:"food",category:"Food",rolloverEnabled:false,plannedMinor:100000,spentMinor:40000,carryInMinor:0,availableMinor:60000}]};
 function renderHome(extra:{accounts?:Account[];transactions?:Transaction[];templates?:ScheduledTransaction[];occurrences?:ScheduledOccurrence[];budgets?:BudgetMonth[]}={}){
  const onNavigate=vi.fn(),onOpenAccount=vi.fn();
- render(<HomeToday accounts={extra.accounts??[checking]} transactions={extra.transactions??[]} templates={extra.templates??[]} occurrences={extra.occurrences??[]} budgets={extra.budgets??[budget]} onNavigate={onNavigate} onOpenAccount={onOpenAccount} today="2026-10-03"/>);
- return{onNavigate,onOpenAccount};
+ const view=render(<HomeToday accounts={extra.accounts??[checking]} transactions={extra.transactions??[]} templates={extra.templates??[]} occurrences={extra.occurrences??[]} budgets={extra.budgets??[budget]} onNavigate={onNavigate} onOpenAccount={onOpenAccount} today="2026-10-03"/>);
+ return{...view,onNavigate,onOpenAccount};
 }
 describe("Home / Today cockpit",()=>{
  it("is reassuring and useful when the household is quiet",()=>{
@@ -52,7 +52,7 @@ describe("Home / Today cockpit",()=>{
   const {onNavigate,onOpenAccount}=renderHome({transactions,templates,occurrences});
   await user.click(screen.getByRole("button",{name:/flagged transaction/i}));
   expect(onNavigate).toHaveBeenCalledWith({page:"Transactions",status:"all",flaggedOnly:true});
-  await user.click(screen.getByRole("button",{name:/Payroll/i}));
+  await user.click(screen.getByRole("button",{name:/Oct 4, 2026 Payroll Expected income/}));
   expect(onNavigate).toHaveBeenCalledWith({page:"Bills",focus:{kind:"day",dueDate:"2026-10-04"}});
   await user.click(screen.getByRole("button",{name:/Checking/i}));
   expect(onOpenAccount).toHaveBeenCalledWith("checking");
@@ -60,7 +60,7 @@ describe("Home / Today cockpit",()=>{
  it("keeps investment value outside spendable cash and forecast truth",()=>{
   const investment:Account={id:"broker",name:"Brokerage",type:"investment",currency:"USD",balanceMinor:99999999,ownerLabel:"Household"};
   renderHome({accounts:[checking,investment]});
-  expect(screen.getByText("$2,000.00")).toBeTruthy();
+  expect(screen.getAllByText("$2,000.00")).toHaveLength(2);
   expect(screen.getByText(/Investment accounts are available in Portfolio/)).toBeTruthy();
   expect(screen.queryByText("$999,999.99")).toBeNull();
  });
