@@ -4,14 +4,15 @@
 
 ## Current checkpoint
 
-- **Updated:** 2026-10-01T19:05:00Z
-- **Updated by:** Cursor cloud agent
-- **Canonical main (verified):** `5fbb664c529258084a6ce1187055163f52a26e2a` — #64 Transaction Attachments & Receipt Retention squash-merged
-- **Open PRs (in progress):** PR #65 — v0.52 Everyday Money Milestone Audit & Closure (`cursor/v052-everyday-money-closure-1f15`), draft, intentionally unmerged
-- **CI fix tip:** `3fe21cb` — Portfolio As-of / Import review / merchant-rule import fixes for exact-head CI (awaiting green on tip after this docs commit)
-- **OCR:** Still frozen. Reopen bar parked at [`.agent/OCR-REOPEN-CHECKLIST.md`](./OCR-REOPEN-CHECKLIST.md). No OCR/PDF behavior changes.
-- **Closure status:** NOT CLOSED / not merged. Structured-import work remains on this draft PR.
-- **Next action:** Exact-head GitHub CI green. Leave #65 draft/open/unmerged. Do not start #66. Do not unfreeze OCR. Do not make a STATUS-only tip after CI.
+- **Updated:** 2026-10-03 — v0.52 closure recovery
+- **Source of truth:** GitHub/current code; this checkpoint is secondary.
+- **Base main:** `5fbb664c529258084a6ce1187055163f52a26e2a` (#64 squash merge)
+- **Open PR:** #65 — `cursor/v052-everyday-money-closure-1f15`, draft, intentionally unmerged.
+- **v0.52 scope:** stabilize and honestly document accumulated closure work. OCR/PDF development is frozen.
+- **OCR/PDF:** preserve local/no-CDN OCR, source retention/provenance, templates/parsers and fail-closed review. Advanced scanned-statement transaction reconstruction is experimental/deferred; RFCU success is not a v0.52 merge requirement. Future investigation is issue #69.
+- **Structured imports:** trusted current path; transaction review/learning foundations in #65 are retained.
+- **Roadmap:** #66 Home/Today daily cockpit → #67 general transaction learning/rules → #68 v0.53 daily-driver dogfood/polish. Do not begin these inside #65.
+- **Closure rule:** repository truth/docs must be committed before the final exact-head CI. Do not make a STATUS-only tip afterward. Do not merge automatically.
 
 ## Handoff protocol
 
