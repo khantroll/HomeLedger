@@ -1,3 +1,4 @@
+import { saveRememberedCorrection } from "./transactionLearning";
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { FileSpreadsheet, History, RotateCcw, Save, Trash2, Undo2, Upload, X } from "lucide-react";
 import { buildPreview, headerSignature, parseDelimited, suggestMapping, suggestParsingOptions, type ColumnMapping, type DelimitedParsingOptions, type ParsedTable } from "./csvImport";
@@ -206,10 +207,8 @@ export function ImportPage({accounts,transactions,onImported}:{accounts:Account[
     const direction:MerchantRuleDirection=row.amountMinor<0?"expense":row.amountMinor>0?"income":"any";
     setError("");
     try{
-      const persistedRules=await financeRepository.listMerchantRules();
-      const existing=persistedRules.find(rule=>(rule.origin??"manual")==="remembered"&&rule.matchType==="exact"&&rule.direction===direction&&normalizeMerchant(rule.pattern)===normalizeMerchant(raw));
-      const input:MerchantRuleInput={name:`Remember ${raw}`,pattern:raw,matchType:"exact",direction,renameTo,category,priority:existing?.priority??1000,enabled:true,origin:"remembered"};
-      if(existing)await financeRepository.updateMerchantRule(existing.id,input);else await financeRepository.createMerchantRule(input);
+      const input:MerchantRuleInput={name:`Remember ${raw}`,pattern:raw,matchType:"exact",direction,renameTo,category,priority:1000,enabled:true,origin:"remembered"};
+      await saveRememberedCorrection(financeRepository,input);
       setMessage(`Remembered the exact statement description “${raw}”. It will apply on future imports; this review will not rewrite other rows unless you explicitly use Apply to matching rows.`);
     }catch(reason){showError(reason);}
   }

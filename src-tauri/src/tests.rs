@@ -1462,3 +1462,44 @@ fn statement_import_can_create_confirmed_linked_transfer_and_undo_both_legs() {
     let links:i64=connection.query_row("SELECT COUNT(*) FROM transfer_links",[],|row|row.get(0)).unwrap();
     assert_eq!(links,0);
 }
+
+#[test]
+fn ordinary_payee_corrections_preserve_first_description_and_never_create_rules_or_transfers() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',10000,'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,category,amount_minor,status,source) VALUES('manual','a','2026-10-01','ARKANSAS VALLEY ELEC','Uncategorized',-7995,'cleared','manual')", []).unwrap();
+    let request = |payee: &str| CreateTransactionRequest {
+        account_id: "a".into(), posted_date: "2026-10-01".into(), payee: payee.into(), category: "Utilities: Electric".into(),
+        amount_minor: -7995, status: "cleared".into(), memo: None, flagged: false, splits: None,
+    };
+    let saved = update_transaction_inner(&mut connection, "manual".into(), request("Arkansas Valley Electric")).unwrap();
+    assert_eq!(saved.original_payee.as_deref(), Some("ARKANSAS VALLEY ELEC"));
+    let again = update_transaction_inner(&mut connection, "manual".into(), request("Electric Utility")).unwrap();
+    assert_eq!(again.original_payee.as_deref(), Some("ARKANSAS VALLEY ELEC"));
+    let counts: (i64,i64,i64,i64) = connection.query_row("SELECT (SELECT COUNT(*) FROM transactions),(SELECT COUNT(*) FROM merchant_rules),(SELECT COUNT(*) FROM transfer_links),(SELECT SUM(amount_minor) FROM transactions)", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
+    assert_eq!(counts, (1,0,0,-7995));
+    connection.execute("UPDATE transactions SET original_payee='SOURCE IMPORT',source='import',external_id='external' WHERE id='manual'", []).unwrap();
+    let imported = update_transaction_inner(&mut connection, "manual".into(), request("New normalized name")).unwrap();
+    assert_eq!(imported.original_payee.as_deref(), Some("SOURCE IMPORT"));
+    assert_eq!(imported.source, "import");
+    assert_eq!(imported.external_id.as_deref(), Some("external"));
+}
+
+#[test]
+fn correction_provenance_is_unchanged_when_scheduled_or_reconciled_mutations_are_rejected() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut connection).unwrap();
+    connection.execute("INSERT INTO accounts(id,name,account_type,currency,opening_balance_minor,owner_label) VALUES('a','Checking','checking','USD',10000,'Household')", []).unwrap();
+    connection.execute("INSERT INTO transactions(id,account_id,posted_date,payee,original_payee,category,amount_minor,status,source) VALUES('t','a','2026-10-01','Utility','SOURCE TEXT','Utilities',-100,'cleared','manual')", []).unwrap();
+    connection.execute("INSERT INTO scheduled_transactions(id,kind,account_id,payee,category,amount_minor,status,frequency,anchor_date) VALUES('s','transaction','a','Utility','Utilities',-100,'cleared','monthly','2026-10-01')", []).unwrap();
+    connection.execute("INSERT INTO scheduled_occurrences(id,scheduled_transaction_id,due_date,status,transaction_id) VALUES('o','s','2026-10-01','linked','t')", []).unwrap();
+    let request = || CreateTransactionRequest {account_id:"a".into(),posted_date:"2026-10-01".into(),payee:"Wrong".into(),category:"Wrong".into(),amount_minor:-999,status:"cleared".into(),memo:None,flagged:false,splits:None};
+    assert!(update_transaction_inner(&mut connection,"t".into(),request()).err().unwrap().contains("scheduled"));
+    connection.execute("DELETE FROM scheduled_occurrences WHERE id='o'", []).unwrap();
+    connection.execute("INSERT INTO reconciliations(id,account_id,statement_end_date,opening_balance_minor,closing_balance_minor) VALUES('r','a','2026-10-31',10000,9900)", []).unwrap();
+    connection.execute("INSERT INTO reconciliation_items(reconciliation_id,transaction_id,amount_minor,status_before) VALUES('r','t',-100,'cleared')", []).unwrap();
+    assert!(update_transaction_inner(&mut connection,"t".into(),request()).err().unwrap().contains("Reconciled"));
+    let unchanged:(String,String,String,i64)=connection.query_row("SELECT payee,original_payee,category,amount_minor FROM transactions WHERE id='t'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(unchanged,("Utility".into(),"SOURCE TEXT".into(),"Utilities".into(),-100));
+}

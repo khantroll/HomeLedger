@@ -3309,7 +3309,7 @@ fn update_transaction_inner(connection: &mut Connection, transaction_id: String,
     if import_batch_id.is_some() && item.account_id != existing_account_id { return Err("Imported transactions cannot be moved to another account; undo and re-import the batch instead".into()); }
     let account_exists: Option<i64> = tx.query_row("SELECT 1 FROM accounts WHERE id = ?1 AND archived_at IS NULL", params![item.account_id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
     if account_exists.is_none() { return Err("Account does not exist".into()); }
-    tx.execute("UPDATE transactions SET account_id=?2, posted_date=?3, payee=?4, category=?5, amount_minor=?6, status=?7, memo=?8, flagged=?9, modified_at=CURRENT_TIMESTAMP WHERE id=?1", params![transaction_id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo, item.flagged as i64]).map_err(|e| e.to_string())?;
+    tx.execute("UPDATE transactions SET account_id=?2, posted_date=?3, original_payee=CASE WHEN payee<>?4 THEN COALESCE(original_payee,payee) ELSE original_payee END, payee=?4, category=?5, amount_minor=?6, status=?7, memo=?8, flagged=?9, modified_at=CURRENT_TIMESTAMP WHERE id=?1", params![transaction_id, item.account_id, item.posted_date, item.payee, item.category, item.amount_minor, item.status, item.memo, item.flagged as i64]).map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM transaction_splits WHERE transaction_id = ?1", params![transaction_id]).map_err(|e| e.to_string())?;
     insert_transaction_splits(&tx, &transaction_id, &item.splits)?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -3317,6 +3317,7 @@ fn update_transaction_inner(connection: &mut Connection, transaction_id: String,
     item.external_id = external_id;
     item.source = source;
     item.import_batch_id = import_batch_id;
+    item.original_payee = connection.query_row("SELECT original_payee FROM transactions WHERE id=?1", [&item.id], |row| row.get(0)).map_err(|e| e.to_string())?;
     Ok(item)
 }
 

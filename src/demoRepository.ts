@@ -514,14 +514,14 @@ export class DemoFinanceRepository implements FinanceRepository {
     const index = this.transactions.findIndex(item=>item.id===id);
     if(index<0)throw new Error("Transaction does not exist");
     const current=this.transactions[index];
-    if(this.reconciledTransactionIds.has(id))throw new Error("Reconciled transactions cannot be edited");
-    if(current.transferLinkId)throw new Error("Linked transfers must be edited through the transfer editor");
+    this.requireBulkEditable(id);
+    if(current.importBatchId&&input.accountId!==current.accountId)throw new Error("Imported transactions cannot be moved to another account; undo and re-import the batch instead");
     const oldAccount=this.accounts.find(item=>item.id===current.accountId);
     const newAccount=this.accounts.find(item=>item.id===input.accountId);
     if(!newAccount)throw new Error("Account does not exist");
     if(oldAccount)oldAccount.balanceMinor-=current.amountMinor;
     newAccount.balanceMinor+=input.amountMinor;
-    const updated:Transaction={...current,...input,flagged:Boolean(input.flagged),splits:input.splits?.map(split=>({id:crypto.randomUUID(),...split}))};
+    const updated:Transaction={...current,...input,originalPayee:current.originalPayee??(current.payee!==input.payee?current.payee:undefined),flagged:Boolean(input.flagged),splits:input.splits?.map(split=>({id:crypto.randomUUID(),...split}))};
     this.transactions[index]=updated;
     return structuredClone(updated);
   }
