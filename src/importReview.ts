@@ -46,7 +46,7 @@ export function suggestTransferAccountWithEvidence(
 ):TransferAccountSuggestion|undefined{
   if(row.amountMinor===0)return undefined;
   const sourceAccount=accounts.find(account=>account.id===sourceAccountId);
-  const text=normalizeMerchant(row.originalPayee??row.payee);
+  const text=normalizeMerchant([row.originalPayee??"",row.payee].join(" "));
   const scored=accounts.filter(account=>
     account.id!==sourceAccountId&&!account.archived&&account.type!=="investment"&&
     (!sourceAccount||account.currency===sourceAccount.currency)

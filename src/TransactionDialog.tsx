@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Paperclip, Plus, Trash2, X } from "lucide-react";
-import { formatMoney, parseMoney, sumMoney, TRANSACTION_NOTE_MAX_LENGTH, type Account, type CreateTransactionInput, type CreateTransactionSplit, type Transaction, type TransactionAttachment, type TransactionSplit, type TransactionStatus } from "./domain";
+import { formatMoney, parseMoney, sumMoney, TRANSACTION_NOTE_MAX_LENGTH, type Account, type CreateTransactionInput, type CreateTransactionSplit, type Transaction, type TransactionAttachment, type TransactionSplit, type TransactionStatus, type MerchantRuleInput } from "./domain";
 import { financeRepository as repository } from "./repository";
 import { SuggestionLists, useLedgerSuggestions } from "./useLedgerSuggestions";
+import { RuleDialog } from "./RulesPage";
+import { rememberedCorrectionDraft, saveRememberedCorrection } from "./transactionLearning";
+import { suggestTransferAccountWithEvidence } from "./importReview";
 import "./transactionEditor.css";
 
 interface SplitDraft { key:string; category:string; direction:"expense"|"income"; amount:string; memo:string; }
@@ -11,6 +14,9 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
   const suggestions=useLedgerSuggestions();
   const [error,setError]=useState("");
   const [saving,setSaving]=useState(false);
+  const [rememberDraft,setRememberDraft]=useState<MerchantRuleInput>();
+  const [customizing,setCustomizing]=useState(false);
+  const [payee,setPayee]=useState(transaction?.payee??draft?.payee??"");
   const [confirmDelete,setConfirmDelete]=useState(false);
   const [attachments,setAttachments]=useState<TransactionAttachment[]>([]);
   const [attachmentsLoading,setAttachmentsLoading]=useState(false);
@@ -70,7 +76,8 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
         splits:preparedSplits
       };
       if(transaction)await repository.updateTransaction(transaction.id,input);else await repository.createTransaction(input);
-      await onSaved();
+      const learning=transaction?rememberedCorrectionDraft(transaction,input):undefined;
+      if(learning){setRememberDraft(learning);setSaving(false);}else await onSaved();
     }catch(reason){setError(reason instanceof Error?reason.message:String(reason));setSaving(false);}
   }
 
@@ -118,13 +125,33 @@ export function TransactionDialog({accounts,transaction,draft,defaultAccountId,o
     finally{setAttachmentBusy(false);}
   }
 
+  async function remember(){
+    if(!rememberDraft)return;
+    setSaving(true);setError("");
+    try{await saveRememberedCorrection(repository,rememberDraft);}
+    catch(reason){setError(`Transaction saved. Rule was not saved: ${reason instanceof Error?reason.message:String(reason)}`);setSaving(false);return;}
+    await onSaved();
+  }
+  if(rememberDraft){
+    if(customizing)return <RuleDialog draft={{...rememberDraft,origin:"manual"}} onClose={()=>setCustomizing(false)} onSaved={onSaved}/>;
+    return <div className="dialog-backdrop"><section className="dialog" role="dialog" aria-modal="true" aria-labelledby="remember-title"><h2 id="remember-title">Transaction saved. Remember this correction?</h2>
+      <p>Future {rememberDraft.direction} descriptions matching exactly “{rememberDraft.pattern}” after capitalization and punctuation normalization:</p>
+      {rememberDraft.renameTo&&<p>Payee: {rememberDraft.renameTo}</p>}{rememberDraft.category&&<p>Category: {rememberDraft.category}</p>}
+      <p>Existing transactions will stay as they are. Transfer suggestions still require confirmation.</p>
+      {error&&<p role="alert">{error}</p>}
+      <div className="form-actions"><button disabled={saving} onClick={()=>void onSaved()}>Just this one</button><button disabled={saving} onClick={()=>setCustomizing(true)}>Customize rule</button><button className="primary" disabled={saving} onClick={()=>void remember()}>Remember</button></div>
+    </section></div>;
+  }
+  const transferSuggestion=transaction?suggestTransferAccountWithEvidence({...transaction,payee},transaction.accountId,accounts):undefined;
   const imported=Boolean(transaction?.importBatchId);
   const defaultDirection=seed&&seed.amountMinor>=0?"income":"expense";
   const defaultAmount=seed?(Math.abs(seed.amountMinor)/100).toFixed(2):"";
   return <div className="dialog-backdrop" role="presentation" onMouseDown={event=>{if(event.currentTarget===event.target)onClose();}}><section className="dialog transaction-dialog" role="dialog" aria-modal="true" aria-labelledby="transaction-title"><div className="dialog-header"><h2 id="transaction-title">{transaction?"Edit transaction":draft?"Duplicate transaction":"New transaction"}</h2><button onClick={onClose} aria-label="Close"><X size={18}/></button></div><form onSubmit={submit} className="entry-form transaction-form">
     <label>Account<select name={imported?undefined:"accountId"} defaultValue={seed?.accountId??defaultAccountId??accounts[0]?.id} disabled={imported}>{accounts.map(account=><option key={account.id} value={account.id}>{account.name}</option>)}</select>{imported&&<input type="hidden" name="accountId" value={transaction?.accountId}/>}</label>
     <div className="form-row"><label>Date<input name="date" type="date" defaultValue={seed?.postedDate??new Date().toISOString().slice(0,10)} required/></label>{!splitMode&&<label>Type<select name="direction" defaultValue={defaultDirection}><option value="expense">Expense</option><option value="income">Income</option></select></label>}</div>
-    <label>Payee<input name="payee" list={suggestions.payeeListId} defaultValue={seed?.payee} required maxLength={160} autoFocus/></label>
+    <label>Payee<input name="payee" list={suggestions.payeeListId} value={payee} onChange={event=>setPayee(event.target.value)} required maxLength={160} autoFocus/></label>
+    {transaction?.originalPayee&&<p>Original description: {transaction.originalPayee}</p>}
+    {transferSuggestion&&!transaction?.transferLinkId&&<p role="note">Possible transfer to {transferSuggestion.account.name}: {transferSuggestion.reasons.join("; ")}. This is a suggestion only. Confirm through the transfer workflow; saving this editor creates no counterpart transaction.</p>}
     {!splitMode?<div className="form-row"><label>Category<input name="category" list={suggestions.categoryListId} defaultValue={seed?.category??"Uncategorized"} required maxLength={120}/></label><label>Amount<input name="amount" inputMode="decimal" defaultValue={defaultAmount} placeholder="0.00" required/></label></div>:<section className="split-editor"><div className="split-heading"><div><strong>Transaction splits</strong><small>Each line has its own income/expense direction.</small></div><button type="button" onClick={()=>setSplits(current=>[...current,blankSplit()])}><Plus size={13}/> Add line</button></div>{splits.map((split,index)=><div className="split-row" key={split.key}><label>Category<input list={suggestions.categoryListId} value={split.category} onChange={event=>updateSplit(split.key,{category:event.target.value})} maxLength={120} placeholder={`Split ${index+1}`}/></label><label>Type<select value={split.direction} onChange={event=>updateSplit(split.key,{direction:event.target.value as SplitDraft["direction"]})}><option value="expense">Expense</option><option value="income">Income</option></select></label><label>Amount<input value={split.amount} onChange={event=>updateSplit(split.key,{amount:event.target.value})} inputMode="decimal" placeholder="0.00"/></label><label>Memo<input value={split.memo} onChange={event=>updateSplit(split.key,{memo:event.target.value})} maxLength={500}/></label><button type="button" className="split-remove" onClick={()=>setSplits(current=>current.filter(item=>item.key!==split.key))} aria-label={`Remove split ${index+1}`}><Trash2 size={14}/></button></div>)}<div className="split-total"><span>Calculated transaction total</span><strong className={(splitTotal??0)<0?"negative":""}>{splitTotal===null?"Check split amounts":formatMoney(splitTotal)}</strong></div></section>}
     <button type="button" className="split-toggle" onClick={enableSplits}>{splitMode?"Use one category":"Split among categories"}</button>
     <label>Status<select name="status" defaultValue={seed?.status??"cleared"}><option value="pending">Pending</option><option value="cleared">Cleared</option>{transaction?.status==="reconciled"&&<option value="reconciled" disabled>Reconciled by statement</option>}<option value="review">Needs review</option></select></label>
